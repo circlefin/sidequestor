@@ -1,8 +1,20 @@
 # Yourself as a Service (yaas) — v2
 
-A personal Slack/email/calendar agent that monitors threads, channels, DMs,
-Gmail queries, and cron schedules. Dispatches Claude Opus only when there's
-real new activity.
+A personal Slack, email, and calendar agent that acts as you, and fits like a
+jacket over your local working directory for Claude Code, Codex, or Cursor.
+Drop it into the repo you already work in and it wraps your existing harness
+instead of replacing it.
+
+Everything worth your attention becomes a **quest**: a first-class unit of work
+with its own objective, watchers, timeline, and memory. yaas keeps your quests
+moving, watching the threads, channels, DMs, Gmail queries, and cron schedules
+each one cares about, and waking an LLM worker only when that quest has genuine
+new activity to act on.
+
+The monitoring is **intelligent and cost-free**: a pure-bash triage loop sweeps
+every watched channel on a 60-second heartbeat, tracks a per-quest watermark so
+nothing is seen twice or missed, and spends zero tokens until something real
+lands.
 
 **$0 when idle. Tokens spent only on dispatch.**
 
