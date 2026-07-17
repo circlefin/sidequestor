@@ -53,6 +53,11 @@ def parse_slack_messages(
 
         ts_m = re.match(r"Message TS:\s*([0-9]+\.[0-9]+)", lines[i])
         if ts_m:
+            # current_user_id is only valid for the message right after its
+            # header; capture then clear so a TS block with no preceding header
+            # can't inherit (and mis-attribute to) the previous message's author.
+            msg_user_id = current_user_id
+            current_user_id = None
             ts = float(ts_m.group(1))
             if ts > since:
                 body, j = [], i + 1
@@ -66,7 +71,7 @@ def parse_slack_messages(
                     j += 1
                 body_text = " ".join(" ".join(body).split())
 
-                if filter_user_ids and current_user_id not in filter_user_ids:
+                if filter_user_ids and msg_user_id not in filter_user_ids:
                     i += 1
                     continue
                 if filter_keywords:

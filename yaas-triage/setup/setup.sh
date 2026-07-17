@@ -113,7 +113,7 @@ AUTH_URL+="&state=$STATE_NONCE"
 # ── Start local callback server ─────────────────────────────────────────────
 # The server writes the received code (or error) to $STATE_SERVER_LOG and exits.
 python3 - "$PORT" "$STATE_SERVER_LOG" "$STATE_NONCE" <<'PY' &
-import http.server, urllib.parse, sys, socket, os
+import http.server, urllib.parse, sys, socket, os, html
 
 PORT = int(sys.argv[1])
 LOG_PATH = sys.argv[2]
@@ -147,7 +147,7 @@ class H(http.server.BaseHTTPRequestHandler):
         state = q.get("state", [""])[0]
         err = q.get("error", [""])[0]
         if err:
-            msg = f"error={err}"
+            msg = "error=" + html.escape(err)  # escape: err is reflected into HTML
             with open(LOG_PATH, "w") as f: f.write(f"ERROR {msg}\n")
             self.send_response(400); self.send_header("Content-Type","text/html"); self.end_headers()
             self.wfile.write(RESPONSE_ERR(msg))
@@ -209,11 +209,15 @@ echo "✓ Authorization code received"
 
 # ── Exchange code for token ─────────────────────────────────────────────────
 echo "Exchanging code for user OAuth token..."
-EXCHANGE=$(curl -sS -X POST https://slack.com/api/oauth.v2.access \
-  -d "client_id=$CLIENT_ID" \
-  -d "code=$CODE" \
-  -d "code_verifier=$CODE_VERIFIER" \
-  -d "redirect_uri=$REDIRECT")
+# Pass the fields via a curl config on stdin (--config -) rather than -d on the
+# argv, so the single-use auth code and PKCE verifier never appear in `ps`.
+EXCHANGE=$(curl -sS -X POST https://slack.com/api/oauth.v2.access --config - <<CURLCFG
+data = "client_id=$CLIENT_ID"
+data = "code=$CODE"
+data = "code_verifier=$CODE_VERIFIER"
+data = "redirect_uri=$REDIRECT"
+CURLCFG
+)
 
 OK=$(printf '%s' "$EXCHANGE" | jq -r '.ok')
 if [ "$OK" != "true" ]; then
@@ -237,6 +241,11 @@ fi
 echo "✓ Token issued for user $USER_ID in workspace $TEAM (length ${#TOKEN})"
 
 # ── Store in keychain ───────────────────────────────────────────────────────
+# Note: `security add-generic-password -w "$TOKEN"` puts the token on this
+# process's argv for the ~ms the `security` binary runs, briefly visible via
+# `ps` to other local users. The macOS `security` CLI has no argv-free way to
+# pass a generic-password value (no stdin mode), so this one-time, setup-moment
+# exposure is accepted. The recurring token use (mcp-call.sh) is argv-free.
 security delete-generic-password -s slack-xoxp-token -a yaas > /dev/null 2>&1 || true
 security add-generic-password \
   -s slack-xoxp-token \

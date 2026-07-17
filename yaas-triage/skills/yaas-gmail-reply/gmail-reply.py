@@ -88,13 +88,18 @@ def main():
     subject = orig_subject if orig_subject.startswith("Re:") else f"Re: {orig_subject}"
     references = f"{orig_refs} {orig_msg_id}".strip()
 
+    # Strip CR/LF from any header value derived from the inbound message so a
+    # crafted From/Message-ID/References can't fold in extra headers.
+    def _hdr(v):
+        return v.replace("\r", " ").replace("\n", " ")
+
     # Build RFC 2822 reply
     mime = MIMEText(reply_body, "plain", "utf-8")
-    mime["To"] = from_addr
+    mime["To"] = _hdr(from_addr)
     mime["From"] = os.environ.get("YAAS_FROM_EMAIL", "")
-    mime["Subject"] = subject
-    mime["In-Reply-To"] = orig_msg_id
-    mime["References"] = references
+    mime["Subject"] = _hdr(subject)
+    mime["In-Reply-To"] = _hdr(orig_msg_id)
+    mime["References"] = _hdr(references)
 
     raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
 

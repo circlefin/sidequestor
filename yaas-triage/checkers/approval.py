@@ -29,6 +29,7 @@ Output: 1|message   if status == "reviewed" (approved → execute) or
 import sys
 import os
 import json
+import fcntl
 
 CHECKERS_DIR = os.path.dirname(os.path.abspath(__file__))
 YAAS_DIR     = os.path.dirname(CHECKERS_DIR)
@@ -62,7 +63,14 @@ def main():
 
     try:
         with open(APPROVALS) as f:
-            data = json.load(f)
+            # approval-helper.py truncates+rewrites this file under LOCK_EX.
+            # Take a shared lock so a tick landing mid-write can't read a
+            # half-written (invalid) JSON and spuriously report error->dirty.
+            fcntl.flock(f, fcntl.LOCK_SH)
+            try:
+                data = json.load(f)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
     except Exception as e:
         print(f"error|could not read pending-approvals.json: {e}", file=sys.stderr)
         print("error|could not read approvals file")

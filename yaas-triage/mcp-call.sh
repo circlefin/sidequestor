@@ -54,12 +54,18 @@ fi
 REQ=$(jq -cn --arg name "$TOOL_NAME" --argjson args "$TOOL_ARGS" \
   '{jsonrpc:"2.0", id:1, method:"tools/call", params:{name:$name, arguments:$args}}')
 
+# The Authorization header carries the long-lived xoxp token. Pass it via a
+# curl config on stdin (--config -) instead of -H on the argv, so the token is
+# never visible in the process table (`ps`) to other local processes/users.
 RAW=$(curl -sS -X POST https://mcp.slack.com/mcp \
-  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "MCP-Protocol-Version: 2025-06-18" \
-  -d "$REQ")
+  -d "$REQ" \
+  --config - <<CURLCFG
+header = "Authorization: Bearer $TOKEN"
+CURLCFG
+)
 
 unset TOKEN
 

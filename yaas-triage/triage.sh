@@ -79,10 +79,13 @@ vlog() { [ "${VERBOSE:-0}" = "1" ] && log "  $*" || true; }
 # Codex/Cursor emit no server-status event, so we verify Slack is up BEFORE
 # spending a dispatch. If Slack is down we skip the tick (watermarks preserved).
 slack_health_ok() {
-  local out
-  out=$("$MCP_CALL" slack_search_public_and_private '{"query":"yaas-health-ping","limit":1}' 2>/dev/null) || return 1
-  [ -n "$out" ] || return 1
-  return 0
+  # Healthy iff mcp-call.sh exits 0. Its exit code already encodes real failure:
+  # 1 = curl/network or token issue, 2 = JSON-RPC .error from Slack. Do NOT also
+  # require non-empty output — a search that legitimately returns zero results
+  # yields empty text on a perfectly healthy, authed Slack, and treating that as
+  # "down" would skip the dispatch for no reason (false negative). Worst case a
+  # rare non-JSON 5xx reads as "up" and the wasted dispatch self-corrects.
+  "$MCP_CALL" slack_search_public_and_private '{"query":"yaas-health-ping","limit":1}' >/dev/null 2>&1
 }
 
 # ── Single-instance lock ────────────────────────────────────────────────────
@@ -134,6 +137,9 @@ for _lagfile in "$SCRIPT_DIR/checkers/"*.lag; do
   [ -f "$_lagfile" ] || continue
   _type=$(basename "$_lagfile" .lag)
   _lag=$(tr -d '[:space:]' < "$_lagfile")
+  # A non-integer lag file would fail --argjson and, under set -e, abort the
+  # whole tick (all dispatch stops). Skip a malformed file instead.
+  case "$_lag" in ''|*[!0-9]*) continue ;; esac
   LAG_MAP=$(printf '%s' "$LAG_MAP" | jq --arg t "$_type" --argjson l "$_lag" '. + {($t): $l}')
 done
 
@@ -315,6 +321,10 @@ for qd in "${QUEST_DIRS[@]}"; do
   _days=$(jq -r "(.retire_slack_threads_after_days // $RETIRE_DEFAULT_DAYS) | tostring" "$meta")
   case "$_days" in
     0|false|never|null|"") continue ;;
+    # Reject any non-integer. _days flows into $(( )) below, where bash
+    # evaluates array subscripts — a poisoned meta.json value like
+    # "1[$(cmd)]" would execute cmd in this (unsandboxed) triage process.
+    *[!0-9]*) continue ;;
   esac
 
   _cutoff=$((NOW_EPOCH_INT - _days * 86400))

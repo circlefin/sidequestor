@@ -102,7 +102,12 @@ def main():
         hour = parse_field(fields[1], 0, 23)
         dom = parse_field(fields[2], 1, 31)
         month = parse_field(fields[3], 1, 12)
-        dow = parse_field(fields[4].replace('7', '0'), 0, 6)
+        # cron allows Sunday as 0 or 7. Parse the raw field (0-7), then map 7->0
+        # per value. A blind fields[4].replace('7','0') mangles ranges/steps:
+        # "1-7" -> "1-0" (empty range) and "*/7" -> "*/0" (zero step), both of
+        # which raise and wedge the schedule into a permanent error->redispatch.
+        dow = parse_field(fields[4], 0, 7)
+        dow = {0 if v == 7 else v for v in dow}
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)

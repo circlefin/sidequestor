@@ -33,14 +33,30 @@ Emits one or more short lines per event:
 
 Unknown types pass through as "<type>: <first 120 chars>" so nothing is lost.
 """
-import sys, json
+import sys, json, re
 
 PREVIEW = 140           # max chars per tool input/output preview
 tool_names_by_id = {}   # tool_use_id -> name, so tool_result can be labeled
 
+# Worker Bash commands (e.g. curl with sandbox API keys) get previewed into the
+# worker log. logs/ is gitignored, but redact obvious secret shapes anyway so a
+# shared screen or repo-tree grep can't surface a live token.
+_SECRET_RE = [
+    (re.compile(r'(?i)(bearer\s+)[A-Za-z0-9._\-]+'), r'\1***'),
+    (re.compile(r'xox[baprs]-[A-Za-z0-9-]+'), 'xox***'),
+    (re.compile(r'sk-[A-Za-z0-9]{8,}'), 'sk-***'),
+    (re.compile(r'(?i)\b(api[_-]?key|token|secret|password)("?\s*[:=]\s*"?)[^\s"&]+'), r'\1\2***'),
+]
+
+def _redact(s):
+    for rx, repl in _SECRET_RE:
+        s = rx.sub(repl, s)
+    return s
+
 def short(v, n=PREVIEW):
     s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
     s = " ".join(s.split())
+    s = _redact(s)          # mask secrets before truncation
     return s if len(s) <= n else s[:n - 1] + "…"
 
 for raw in sys.stdin:
