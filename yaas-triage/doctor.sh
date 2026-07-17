@@ -1,0 +1,215 @@
+#!/bin/bash
+# Copyright 2026 Circle Internet Group, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# doctor.sh — health check for yaas-triage install.
+#
+# Verifies prerequisites, config, credentials, launchd state, and recent
+# successful runs. Prints a checklist; exits 0 if everything is green,
+# 1 if anything failed.
+#
+# Usage:
+#   ./doctor.sh            # full report
+#   ./doctor.sh --quiet    # only show problems (for cron / CI use)
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+QUIET=0
+[ "${1:-}" = "--quiet" ] && QUIET=1
+
+FAIL=0
+ok()    { [ "$QUIET" = "0" ] && printf '  \033[32m✓\033[0m %s\n' "$1"; }
+warn()  { printf '  \033[33m⚠\033[0m %s\n' "$1"; }
+fail()  { printf '  \033[31m✗\033[0m %s\n' "$1"; FAIL=$((FAIL + 1)); }
+section() { [ "$QUIET" = "0" ] && printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+# ── 1. Required commands ────────────────────────────────────────────────────
+section "Prerequisites"
+for cmd in claude jq perl python3 security; do
+  if command -v "$cmd" >/dev/null 2>&1; then
+    ok "$cmd present: $(command -v "$cmd")"
+  else
+    fail "$cmd not found in PATH"
+  fi
+done
+
+# Optional but common
+for cmd in gws node; do
+  if command -v "$cmd" >/dev/null 2>&1; then
+    ok "$cmd present (optional): $(command -v "$cmd")"
+  else
+    warn "$cmd not found in PATH (needed if you use Gmail/Coda)"
+  fi
+done
+
+# ── 2. .env ─────────────────────────────────────────────────────────────────
+section ".env config"
+ENV_FILE="$REPO_ROOT/.env"
+if [ ! -f "$ENV_FILE" ]; then
+  fail "$ENV_FILE missing — copy from .env.example and fill in"
+else
+  ok ".env present"
+  # Source it in a subshell to catch syntax errors
+  if ( set -a && source "$ENV_FILE" && set +a ) 2>/dev/null; then
+    ok ".env parses cleanly"
+  else
+    fail ".env has syntax errors — try sourcing it manually for the message"
+  fi
+
+  set -a; source "$ENV_FILE" 2>/dev/null || true; set +a
+  for var in SLACK_APP_ID SLACK_CLIENT_ID SLACK_WORKSPACE_NAME SLACK_WORKSPACE_DOMAIN YAAS_FROM_EMAIL; do
+    if [ -n "${!var:-}" ]; then
+      ok "$var set"
+    else
+      fail "$var empty in .env"
+    fi
+  done
+  for var in CODA_API_KEY CODA_MCP_PATH; do
+    if [ -n "${!var:-}" ]; then
+      ok "$var set (Coda MCP enabled)"
+    else
+      warn "$var empty (Coda MCP disabled — fine if you don't use it)"
+    fi
+  done
+fi
+
+# ── 3. CLAUDE.md ────────────────────────────────────────────────────────────
+section "Worker instructions"
+if [ -f "$REPO_ROOT/CLAUDE.md" ]; then
+  ok "CLAUDE.md present at $REPO_ROOT/CLAUDE.md"
+  if grep -q "Quest Activation Protocol" "$REPO_ROOT/CLAUDE.md" 2>/dev/null; then
+    ok "CLAUDE.md contains the Quest Activation Protocol"
+  else
+    fail "CLAUDE.md is missing Quest Activation Protocol — copy from CLAUDE.example.md"
+  fi
+else
+  fail "CLAUDE.md missing at $REPO_ROOT/CLAUDE.md — copy from CLAUDE.example.md"
+fi
+
+# ── 4. Slack token in Keychain ──────────────────────────────────────────────
+section "Slack credentials"
+if security find-generic-password -s slack-xoxp-token -a yaas >/dev/null 2>&1; then
+  ok "Slack OAuth token in Keychain (service=slack-xoxp-token, account=yaas)"
+else
+  fail "Slack token not in Keychain — run ./setup/setup.sh"
+fi
+
+# ── 5. State directory ──────────────────────────────────────────────────────
+section "State directories"
+for d in state state/quests state/quests/active state/triage logs; do
+  if [ -d "$REPO_ROOT/$d" ]; then
+    ok "$d/ exists"
+  else
+    warn "$d/ missing (will be created on first run)"
+  fi
+done
+
+# ── 6. launchd job ──────────────────────────────────────────────────────────
+section "launchd"
+PLIST="$HOME/Library/LaunchAgents/com.yaas.triage.plist"
+if [ -f "$PLIST" ]; then
+  ok "plist installed at $PLIST"
+else
+  fail "plist not installed — run ./setup/install-launchd.sh"
+fi
+
+if launchctl list com.yaas.triage >/dev/null 2>&1; then
+  STATUS=$(launchctl list com.yaas.triage | grep LastExitStatus | sed 's/.*= //; s/;//')
+  PID=$(launchctl list com.yaas.triage | grep '"PID"' | sed 's/.*= //; s/;//')
+  ok "launchd job loaded (PID=$PID, LastExitStatus=$STATUS)"
+  case "$STATUS" in
+    0)
+      ok "Last triage tick exited cleanly"
+      ;;
+    36608)
+      # 143 << 8 — SIGTERM, expected when watchdog kills worker
+      ok "Last exit was SIGTERM (143) — handled normally by watchdog logic"
+      ;;
+    512)
+      # 2 << 8 — set -eu aborted
+      fail "Last exit was code 2 — set -eu aborted (often .env syntax). Run ./triage.sh manually to see the error."
+      ;;
+    *)
+      warn "Unexpected LastExitStatus=$STATUS — check logs/triage.err.log"
+      ;;
+  esac
+else
+  fail "launchd job not loaded — run ./setup/install-launchd.sh"
+fi
+
+# ── 7. Recent activity ──────────────────────────────────────────────────────
+section "Recent activity"
+LAST_RUN="$REPO_ROOT/state/triage/last-run.json"
+if [ -f "$LAST_RUN" ]; then
+  LAST_TS=$(jq -r '.last_triage_completed_utc // "never"' "$LAST_RUN" 2>/dev/null)
+  if [ -n "$LAST_TS" ] && [ "$LAST_TS" != "never" ]; then
+    # Compute age in minutes (BSD/GNU date compat)
+    LAST_EPOCH=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$LAST_TS" +%s 2>/dev/null || \
+                 date -u -d "$LAST_TS" +%s 2>/dev/null || echo "")
+    if [ -n "$LAST_EPOCH" ]; then
+      AGE_MIN=$(( ( $(date +%s) - LAST_EPOCH ) / 60 ))
+      if [ "$AGE_MIN" -lt 5 ]; then
+        ok "Last triage completed $AGE_MIN min ago"
+      elif [ "$AGE_MIN" -lt 60 ]; then
+        warn "Last triage was $AGE_MIN min ago — expected every 1–2 min"
+      else
+        fail "Last triage was $AGE_MIN min ago — triage may be stuck"
+      fi
+    else
+      ok "Last triage: $LAST_TS"
+    fi
+  fi
+
+  TOTAL=$(jq -r '.runs_total // 0' "$LAST_RUN")
+  IDLE=$(jq -r '.runs_idle // 0' "$LAST_RUN")
+  DISP=$(jq -r '.runs_dispatched // 0' "$LAST_RUN")
+  [ "$QUIET" = "0" ] && echo "    Totals: $TOTAL runs ($IDLE idle, $DISP dispatched)"
+else
+  warn "No last-run.json yet — triage may not have run successfully"
+fi
+
+# ── 8. Quest folder sanity ──────────────────────────────────────────────────
+section "Quest folders"
+QUEST_COUNT=0
+for q in "$REPO_ROOT/state/quests/active/"*/; do
+  [ -d "$q" ] || continue
+  QUEST_COUNT=$((QUEST_COUNT + 1))
+  qid=$(basename "$q")
+  for f in meta.json watch.json context.md timeline.ndjson; do
+    if [ ! -f "$q/$f" ]; then
+      fail "$qid missing $f"
+    fi
+  done
+  if [ -f "$q/meta.json" ]; then
+    meta_id=$(jq -r '.id' "$q/meta.json" 2>/dev/null)
+    if [ "$meta_id" != "$qid" ]; then
+      fail "$qid: meta.json id=\"$meta_id\" does not match folder name"
+    fi
+  fi
+done
+ok "$QUEST_COUNT active quest(s) checked"
+
+# ── Summary ─────────────────────────────────────────────────────────────────
+section "Summary"
+if [ "$FAIL" -eq 0 ]; then
+  echo "  All checks passed."
+  exit 0
+else
+  echo "  $FAIL check(s) failed. Address the ✗ items above."
+  exit 1
+fi

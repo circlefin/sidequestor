@@ -1,0 +1,1321 @@
+<!DOCTYPE html>
+<!--
+Copyright 2026 Circle Internet Group, Inc. All rights reserved.
+
+SPDX-License-Identifier: Apache-2.0
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YAAS</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #0c0c0c;
+  --surface:   #141414;
+  --border:    #1e1e1e;
+  --border2:   #252525;
+  --text:      #e2e2e2;
+  --text2:     #888;
+  --text3:     #4a4a4a;
+  --green:     #22c55e;
+  --green-dim: #14532d;
+  --amber:     #f59e0b;
+  --blue:      #60a5fa;
+  --red:       #f87171;
+  --orange:    #fb923c;
+  --mono:      'SF Mono', 'Fira Code', ui-monospace, monospace;
+  --sans:      -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+}
+
+html { background: var(--bg); }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 28px 40px 64px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.header h1 {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.06em;
+}
+/* Stat strip: fixed anchor points under the header instead of a prose line */
+.stat-strip {
+  display: flex;
+  align-items: flex-end;
+  gap: 36px;
+  padding: 12px 2px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.stat-n {
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--text);
+  line-height: 1.2;
+}
+.stat-warn .stat-n { color: var(--amber); }
+.stat-l {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text3);
+  margin-top: 2px;
+}
+.stat-ago { font-family: var(--mono); font-size: 16px; color: var(--text); }
+.stat-runs {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text3);
+  padding-bottom: 2px;
+}
+
+/* Shared tag primitive: small mono label (mode tags, drawer tags, ...) */
+.tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.tag-send  { background: #0d2010; color: var(--green); border: 1px solid #1a3a20; }
+.tag-draft { background: #1e1500; color: var(--amber); border: 1px solid #3a2a00; }
+.tag-mode  { background: var(--surface); color: var(--text2); border: 1px solid var(--border2); }
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+#conn {
+  font-size: 10px;
+  font-family: var(--mono);
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: #0d2010;
+  color: var(--green);
+  border: 1px solid #1a4020;
+  letter-spacing: 0.04em;
+}
+#conn.err        { background: #200d0d; color: var(--red);  border-color: #3a1a1a; }
+#conn.connecting { background: #0d1020; color: var(--blue); border-color: #1a2040; }
+
+/* ── Live run pill (header, sneak peek) ─────────────────────────────────────── */
+.live-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: #0a1c0d;
+  border: 1px solid #1a3a20;
+  color: var(--text2);
+  cursor: pointer;
+  max-width: 260px;
+}
+.live-pill:hover { border-color: var(--green); color: var(--text); }
+.live-pill .live-dot { flex-shrink: 0; }
+.live-pill-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 0 rgba(34,197,94,0.6);
+  animation: live-pulse 1.4s infinite;
+}
+@keyframes live-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
+  70%  { box-shadow: 0 0 0 6px rgba(34,197,94,0); }
+  100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+}
+
+/* ── Live run panel (expanded, slides in like the quest drawer) ─────────────── */
+#live-panel {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: min(640px, 92vw);
+  background: var(--surface);
+  border-left: 1px solid var(--border2);
+  overflow-y: auto;
+  z-index: 20;
+  padding: 22px 28px 48px;
+}
+.live-panel-head { display: flex; align-items: flex-start; gap: 12px; }
+.live-panel-targets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.live-panel-targets .chip {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 2px 8px;
+  color: var(--text2);
+}
+.live-panel-elapsed { font-family: var(--mono); font-size: 11px; color: var(--text3); margin-top: 10px; }
+.live-panel-tail {
+  margin-top: 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text2);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.live-panel-tail div:last-child { color: var(--text); }
+.live-panel-empty { color: var(--text3); font-size: 12px; margin-top: 20px; }
+
+/* ── Tabs ────────────────────────────────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 18px;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text2);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: #fff; border-bottom-color: var(--blue); }
+.tab .tab-count {
+  font-size: 9px;
+  color: var(--text3);
+  margin-left: 6px;
+}
+
+/* ── Briefs ──────────────────────────────────────────────────────────────────── */
+.brief {
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.brief > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 18px;
+  user-select: none;
+}
+.brief > summary::-webkit-details-marker { display: none; }
+.brief > summary:hover { background: #111; }
+.brief[open] > summary { border-bottom: 1px solid var(--border); }
+.brief-type {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #0d1525;
+  color: var(--blue);
+  border: 1px solid #1a2a45;
+}
+.brief-type.morning { background:#1e1500; color:var(--amber);  border-color:#3a2a00; }
+.brief-type.evening { background:#1a1020; color:#c084fc;        border-color:#2a1a35; }
+.brief-type.weekly  { background:#0d2010; color:var(--green);   border-color:#1a3a20; }
+.brief-type.monthly { background:#200d0d; color:var(--red);     border-color:#3a1a1a; }
+.brief-title { color: var(--text); font-weight: 500; font-size: 13px; }
+.brief-ago   { margin-left: auto; font-family: var(--mono); color: var(--text3); font-size: 11px; }
+.brief-body  { padding: 6px 22px 20px; }
+.brief-body h2 { font-size: 15px; color:#fff; margin: 18px 0 8px; font-weight: 600; }
+.brief-body h3 {
+  font-size: 11px; color: var(--text3); margin: 18px 0 6px;
+  text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600;
+}
+.brief-body h4 { font-size: 12px; color: var(--text2); margin: 12px 0 4px; }
+.brief-body p  { margin: 8px 0; color: var(--text); }
+.brief-body ul { margin: 6px 0 6px 4px; list-style: none; }
+.brief-body li { padding: 3px 0 3px 16px; position: relative; color: var(--text); }
+.brief-body li::before { content: "›"; position: absolute; left: 0; color: var(--text3); }
+.brief-body a { color: var(--blue); text-decoration: none; border-bottom: 1px solid #1a2a45; }
+.brief-body a:hover { border-bottom-color: var(--blue); }
+.brief-body strong { color: #fff; font-weight: 600; }
+.brief-body em { color: var(--text2); font-style: italic; }
+.brief-body code { font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 3px; }
+
+/* ── Sections ────────────────────────────────────────────────────────────────── */
+.section { margin-top: 24px; }
+.section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text3);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+
+/* ── Event badges ────────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.badge-message_sent      { background: #0d2010; color: var(--green);  border: 1px solid #1a3a20; }
+.badge-draft_posted      { background: #1e1500; color: var(--amber);  border: 1px solid #3a2a00; }
+.badge-executed          { background: #0d1525; color: var(--blue);   border: 1px solid #1a2a45; }
+.badge-info_received     { background: #151515; color: var(--text2);  border: 1px solid var(--border2); }
+.badge-weekly_recap_posted { background: #0d2010; color: #4ade80;     border: 1px solid #1a3a20; }
+.badge-status_change     { background: #1a1020; color: #c084fc;       border: 1px solid #2a1a35; }
+.badge-blocked           { background: #1e1500; color: var(--amber);  border: 1px solid #3a2a00; }
+.badge-default           { background: var(--surface); color: var(--text2); border: 1px solid var(--border2); }
+
+/* ── Quest table ─────────────────────────────────────────────────────────────── */
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text3);
+  padding: 10px 16px 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+thead th:last-child { padding-right: 0; }
+tbody tr { border-bottom: 1px solid var(--border); }
+tbody tr:hover td { background: #111; }
+tbody td { padding: 8px 16px 8px 0; vertical-align: top; }
+tbody td:last-child { padding-right: 0; }
+
+/* Quest rows open the detail drawer */
+tbody tr[data-quest-id] { cursor: pointer; }
+.row-blocked td:first-child { border-left: 2px solid var(--amber); padding-left: 10px; }
+.action-cell { position: relative; padding-right: 22px !important; }
+.row-arrow {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text3);
+  font-size: 15px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+tbody tr:hover .row-arrow { opacity: 1; }
+
+.quest-title { color: var(--text); font-weight: 500; font-size: 13px; }
+
+.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: middle; position: relative; top: -1px; }
+.dot-active  { background: var(--green); box-shadow: 0 0 4px var(--green-dim); }
+.dot-blocked { background: var(--amber); }
+
+.status-text { font-size: 12px; color: var(--text2); }
+.status-quiet { color: var(--text3); }
+.status-warn  { color: var(--amber); }
+
+.pri-pill {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-weight: 500;
+}
+.pri-high   { background: #1e0f00; color: var(--orange); border: 1px solid #3a1e00; }
+.pri-normal { background: transparent; color: var(--text3); border: none; }
+.pri-low    { background: transparent; color: var(--text3); border: none; }
+
+.action-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.ago { font-family: var(--mono); color: var(--text3); font-size: 11px; }
+.action-note {
+  color: var(--text2);
+  font-size: 12px;
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.blocked-badge {
+  font-size: 11px;
+  color: #5a4020;
+  margin-top: 4px;
+  cursor: help;
+}
+
+/* ── Activity feed ───────────────────────────────────────────────────────────── */
+#activity-feed { max-height: 420px; overflow-y: auto; }
+.feed-item {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 0 14px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.feed-item:last-child { border-bottom: none; }
+.feed-time {
+  font-family: var(--mono);
+  color: var(--text3);
+  font-size: 11px;
+  padding-top: 2px;
+}
+.feed-body {}
+.feed-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 3px;
+}
+.feed-quest {
+  font-size: 11px;
+  color: var(--text2);
+}
+.feed-note {
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.5;
+}
+.empty { color: var(--text3); padding: 12px 0; font-size: 12px; }
+
+/* ── Review cards ────────────────────────────────────────────────────────────── */
+.review-card {
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-left: 3px solid var(--amber);
+  border-radius: 6px;
+  padding: 20px 22px;
+  margin-bottom: 12px;
+}
+.rc-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.rc-title  { font-weight: 600; color: #fff; font-size: 14px; }
+.rc-risk   { font-size: 11px; color: var(--amber); margin-top: 4px; }
+.rc-age    { font-family: var(--mono); color: var(--text3); font-size: 11px; flex-shrink: 0; margin-left: 12px; }
+.rc-target { font-family: var(--mono); font-size: 11px; color: var(--text3); margin-bottom: 14px; }
+
+.rc-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text3);
+  margin-bottom: 6px;
+}
+.rc-context {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 14px;
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 14px;
+}
+textarea, input[type=text] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 9px 12px;
+  outline: none;
+  resize: vertical;
+  transition: border-color 0.15s;
+  line-height: 1.5;
+}
+textarea { min-height: 80px; }
+textarea:focus, input[type=text]:focus { border-color: #444; }
+input[type=text].field-error { border-color: var(--amber); }
+.rc-note-row { margin-top: 12px; }
+
+.rc-actions { display: flex; gap: 8px; margin-top: 16px; }
+.btn {
+  padding: 7px 16px;
+  border: none;
+  border-radius: 5px;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-review  { background: #14532d; color: #86efac; border: 1px solid #166534; }
+.btn-review:hover:not(:disabled) { background: #166534; }
+.btn-revise  { background: transparent; color: #93c5fd; border: 1px solid #1e3a5f; }
+.btn-revise:hover:not(:disabled) { background: #0d1f33; border-color: #2b5583; }
+.btn-cancel  { background: transparent; color: var(--text2); border: 1px solid var(--border2); }
+.btn-cancel:hover:not(:disabled) { border-color: #444; color: var(--text); }
+.rc-revisions {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.rc-rev-line { color: var(--text2); margin-top: 6px; }
+.rc-rev-line:first-child { margin-top: 0; }
+.rc-rev-k { color: var(--text3); font-weight: 600; margin-right: 8px; text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; }
+
+.card-done { opacity: 0.25; pointer-events: none; transition: opacity 0.4s; }
+
+/* ── History tab ─────────────────────────────────────────────────────────────── */
+.badge-cancelled { background: #200d0d; color: var(--red); border: 1px solid #3a1a1a; }
+.hist-card {
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  padding: 13px 18px;
+  margin-bottom: 10px;
+}
+.hist-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hist-head .rc-age { margin-left: auto; }
+.hist-title { font-weight: 600; color: var(--text); font-size: 13px; }
+.hist-line { font-size: 12px; color: var(--text2); margin-top: 7px; }
+.hist-k {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text3);
+  margin-right: 7px;
+}
+.hist-trail { font-family: var(--mono); font-size: 10px; color: var(--text3); margin-top: 9px; }
+.hist-msg { margin-top: 8px; }
+.hist-msg > summary {
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text3);
+  user-select: none;
+}
+.hist-msg[open] > summary { margin-bottom: 6px; }
+.hist-msg .rc-context, .hist-card .rc-context { margin-bottom: 0; white-space: pre-wrap; }
+.runs-err { color: var(--red); font-size: 12px; }
+
+/* ── Quest detail drawer ─────────────────────────────────────────────────────── */
+#drawer-backdrop, #live-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 19;
+}
+#drawer {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: min(640px, 92vw);
+  background: var(--surface);
+  border-left: 1px solid var(--border2);
+  overflow-y: auto;
+  z-index: 20;
+  padding: 22px 28px 48px;
+}
+.drawer-head { display: flex; align-items: flex-start; gap: 12px; }
+.drawer-title { font-size: 16px; font-weight: 600; color: #fff; line-height: 1.4; }
+.drawer-id {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 3px;
+  word-break: break-all;
+}
+.drawer-close {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--border2);
+  border-radius: 5px;
+  color: var(--text2);
+  font-size: 14px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.drawer-close:hover { color: #fff; border-color: #444; }
+.drawer-tags { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0 2px; }
+.drawer-context {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 16px 12px;
+  max-height: 380px;
+  overflow-y: auto;
+}
+.watch-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.watch-item:last-child { border-bottom: none; }
+.watch-reason { color: var(--text2); flex: 1 1 60%; }
+.watch-meta { font-family: var(--mono); font-size: 11px; color: var(--text3); margin-left: auto; }
+.tl-link { color: var(--blue); text-decoration: none; font-size: 11px; margin-left: 6px; }
+.tl-link:hover { text-decoration: underline; }
+.tl-truncated { color: var(--text3); font-size: 11px; padding: 8px 0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>YAAS</h1>
+  <div class="header-right">
+    <div class="live-pill" id="live-pill" style="display:none" title="click for details">
+      <span class="live-dot"></span>
+      <span class="live-pill-text" id="live-pill-text"></span>
+    </div>
+    <span id="conn" class="connecting">connecting</span>
+  </div>
+</div>
+
+<div class="stat-strip" id="meta"></div>
+
+<div class="tabs">
+  <button class="tab active" data-tab="dashboard">Dashboard</button>
+  <button class="tab" data-tab="briefs">Briefs<span class="tab-count" id="briefs-count"></span></button>
+  <button class="tab" data-tab="history">History</button>
+</div>
+
+<div class="tabpane" id="tab-dashboard">
+  <div class="section" id="review-section" style="display:none">
+    <div class="section-label">pending review</div>
+    <div id="review-cards"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">active quests</div>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:28%">quest</th>
+          <th style="width:8%">status</th>
+          <th style="width:7%">priority</th>
+          <th style="width:7%">mode</th>
+          <th>last action</th>
+        </tr>
+      </thead>
+      <tbody id="quest-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-label">recent activity</div>
+    <div id="activity-feed"></div>
+  </div>
+</div>
+
+<div class="tabpane" id="tab-briefs" style="display:none">
+  <div class="section" style="margin-top:24px">
+    <div id="briefs-list"></div>
+  </div>
+</div>
+
+<div class="tabpane" id="tab-history" style="display:none">
+  <div class="section">
+    <div class="section-label">approvals</div>
+    <div id="history-approvals"></div>
+  </div>
+  <div class="section">
+    <div class="section-label">dispatch log</div>
+    <div id="history-runs"></div>
+  </div>
+</div>
+
+<div id="drawer-backdrop" hidden></div>
+<aside id="drawer" hidden></aside>
+
+<div id="live-backdrop" hidden></div>
+<aside id="live-panel" hidden></aside>
+
+<script>
+const POLL_MS = 2000;
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function ago(iso) {
+  if (!iso) return '-';
+  const sec = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (sec < 60)    return `${Math.round(sec)}s ago`;
+  if (sec < 3600)  return `${Math.round(sec/60)}m ago`;
+  if (sec < 86400) return `${Math.round(sec/3600)}h ago`;
+  return `${Math.round(sec/86400)}d ago`;
+}
+
+function hhmm(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12:false});
+}
+
+function badge(ev) {
+  const known = ['message_sent','draft_posted','executed','info_received','weekly_recap_posted','status_change','blocked'];
+  const cls = known.includes(ev) ? `badge-${ev}` : 'badge-default';
+  return `<span class="badge ${cls}">${esc(ev)}</span>`;
+}
+
+// ── Minimal, safe Markdown → HTML (escape first, then transform) ───────────────
+function safeUrl(u) {
+  u = String(u).trim();
+  return /^(https?:\/\/|mailto:|slack:\/\/)/i.test(u) ? u : '';
+}
+function mdInline(s) {
+  // operates on already-escaped text
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, txt, url) => {
+    const safe = safeUrl(url.replace(/&amp;/g, '&'));
+    return safe ? `<a href="${esc(safe)}" target="_blank" rel="noopener">${txt}</a>` : txt;
+  });
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  return s;
+}
+function mdToHtml(md) {
+  const lines = String(md).split('\n');
+  let html = '', inList = false;
+  const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
+  for (let raw of lines) {
+    const line = esc(raw);
+    let m;
+    if ((m = line.match(/^#\s+(.*)$/)))      { closeList(); html += `<h2>${mdInline(m[1])}</h2>`; }
+    else if ((m = line.match(/^##\s+(.*)$/))) { closeList(); html += `<h3>${mdInline(m[1])}</h3>`; }
+    else if ((m = line.match(/^###\s+(.*)$/))){ closeList(); html += `<h4>${mdInline(m[1])}</h4>`; }
+    else if ((m = line.match(/^\s*[-•]\s+(.*)$/))) { if (!inList) { html += '<ul>'; inList = true; } html += `<li>${mdInline(m[1])}</li>`; }
+    else if (line.trim() === '')              { closeList(); }
+    else                                      { closeList(); html += `<p>${mdInline(line)}</p>`; }
+  }
+  closeList();
+  return html;
+}
+
+// ── Tab switching (selection persists across polls) ────────────────────────────
+let activeTab = 'dashboard';
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    activeTab = btn.dataset.tab;
+    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.tabpane').forEach(p => {
+      p.style.display = (p.id === `tab-${activeTab}`) ? '' : 'none';
+    });
+    if (activeTab === 'history') pollHistory().catch(() => {});
+  });
+});
+
+// ── Diff-aware rendering: per-section signatures (same idea as lastBriefsSig) ──
+const sigs = {};
+function changed(key, obj) {
+  const s = JSON.stringify(obj);
+  if (sigs[key] === s) return false;
+  sigs[key] = s;
+  return true;
+}
+
+// Relative times age independently of re-renders: every "ago" label carries
+// data-ts and tick() refreshes them all each poll, so 304-skipped polls (and
+// signature-skipped sections) never show stale "3m ago" text.
+function agoSpan(iso, cls = 'ago') {
+  return `<span class="${cls}" data-ts="${esc(iso || '')}">${ago(iso)}</span>`;
+}
+function tick() {
+  document.querySelectorAll('[data-ts]').forEach(el => {
+    if (el.dataset.ts) el.textContent = ago(el.dataset.ts);
+  });
+}
+
+const briefTypeLabel = { morning:'Morning', evening:'Evening', weekly:'Weekly', monthly:'Monthly' };
+let lastBriefsSig = null;
+function renderBriefs(briefs) {
+  briefs = briefs || [];
+  document.getElementById('briefs-count').textContent = briefs.length ? ` ${briefs.length}` : '';
+  // Only rebuild when the set changes: preserves <details> open/closed + scroll.
+  const sig = briefs.map(b => b.file).join('|');
+  if (sig === lastBriefsSig) return;
+  lastBriefsSig = sig;
+  const el = document.getElementById('briefs-list');
+  if (!briefs.length) { el.innerHTML = '<div class="empty">no briefs yet</div>'; return; }
+  el.innerHTML = briefs.map((b, i) => {
+    const t = (b.type || '').toLowerCase();
+    const label = briefTypeLabel[t] || (b.type || 'brief');
+    return `<details class="brief"${i === 0 ? ' open' : ''}>
+      <summary>
+        <span class="brief-type ${esc(t)}">${esc(label)}</span>
+        <span class="brief-title">${esc(b.title)}</span>
+        ${agoSpan(b.ts, 'brief-ago')}
+      </summary>
+      <div class="brief-body">${mdToHtml(b.markdown)}</div>
+    </details>`;
+  }).join('');
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function render(data) {
+  renderMeta(data);
+  renderLiveRun(data.live_run);
+  renderPending(data);
+  renderQuests(data);
+  renderFeed(data);
+  renderBriefs(data.briefs);
+}
+
+// ── Live run: header pill (sneak peek) + expandable panel ──────────────────────
+let latestLiveRun = null;
+let livePanelOpen  = false;
+
+function renderLiveRun(live) {
+  latestLiveRun = live;
+  const pill = document.getElementById('live-pill');
+  if (!live || !live.running) {
+    pill.style.display = 'none';
+    if (livePanelOpen) closeLivePanel();
+    return;
+  }
+  pill.style.display = '';
+  const last = (live.targets || [])[0] || 'working';
+  document.getElementById('live-pill-text').textContent =
+    (live.targets || []).length > 1 ? `${last} +${live.targets.length - 1}` : last;
+  if (livePanelOpen) renderLivePanel(live);
+}
+
+function openLivePanel() {
+  livePanelOpen = true;
+  document.getElementById('live-backdrop').hidden = false;
+  document.getElementById('live-panel').hidden = false;
+  renderLivePanel(latestLiveRun);
+}
+
+function closeLivePanel() {
+  livePanelOpen = false;
+  document.getElementById('live-backdrop').hidden = true;
+  document.getElementById('live-panel').hidden = true;
+}
+
+function renderLivePanel(live) {
+  const panelEl = document.getElementById('live-panel');
+  if (!live || !live.running) {
+    panelEl.innerHTML = `<div class="live-panel-head">
+        <div class="drawer-title">Nothing running</div>
+        <button class="drawer-close" data-action="close-live-panel" title="close">✕</button>
+      </div><div class="live-panel-empty">No worker is dispatched right now.</div>`;
+    return;
+  }
+  const tailEl = panelEl.querySelector('.live-panel-tail');
+  const wasAtBottom = tailEl ? (tailEl.scrollHeight - tailEl.scrollTop - tailEl.clientHeight < 20) : true;
+  const targets = (live.targets || []).map(t => `<span class="chip">${esc(t)}</span>`).join('') || '<span class="chip">-</span>';
+  panelEl.innerHTML = `<div class="live-panel-head">
+      <div>
+        <div class="drawer-title">Running now</div>
+        <div class="live-panel-targets">${targets}</div>
+        <div class="live-panel-elapsed">started ${agoSpan(live.started_at, 'live-panel-elapsed-ago')}</div>
+      </div>
+      <button class="drawer-close" data-action="close-live-panel" title="close">✕</button>
+    </div>
+    <div class="live-panel-tail">${(live.tail || []).map(l => `<div>${esc(l)}</div>`).join('')}</div>`;
+  const newTailEl = panelEl.querySelector('.live-panel-tail');
+  if (wasAtBottom) newTailEl.scrollTop = newTailEl.scrollHeight;
+}
+
+document.getElementById('live-pill').addEventListener('click', openLivePanel);
+document.getElementById('live-backdrop').addEventListener('click', closeLivePanel);
+
+// A quest is "currently blocked" only if the block is newer than the last
+// successful action; stale blocked events (e.g. a past outage) don't count.
+function isBlockedNow(q) {
+  if (q.status === 'blocked') return true;
+  const lb = q.last_blocked;
+  const seen = q.last_seen_ts || q.last_action?.ts || '';
+  return !!lb && String(lb.ts || '') > String(seen);
+}
+
+function renderMeta(data) {
+  const tr = data.triage || {};
+  const quests  = data.quests || [];
+  const blocked = quests.filter(isBlockedNow).length;
+  const pending = (data.pending_review || []).filter(i => i.status === 'pending_review').length;
+  if (!changed('meta', {tr, n: quests.length, blocked, pending})) return;
+  const total = tr.runs_total ? tr.runs_total.toLocaleString() : '?';
+  const dispatched = tr.runs_dispatched ? tr.runs_dispatched.toLocaleString() : '?';
+  document.getElementById('meta').innerHTML = `
+    <div class="stat"><div class="stat-n">${quests.length}</div><div class="stat-l">quests</div></div>
+    <div class="stat${blocked ? ' stat-warn' : ''}"><div class="stat-n">${blocked}</div><div class="stat-l">blocked</div></div>
+    <div class="stat${pending ? ' stat-warn' : ''}"><div class="stat-n">${pending}</div><div class="stat-l">pending review</div></div>
+    <div class="stat"><div class="stat-n">${agoSpan(tr.last_triage_completed_utc, 'stat-ago')}</div><div class="stat-l">last triage</div></div>
+    <div class="stat-runs">${total} runs · ${dispatched} dispatched</div>`;
+}
+
+function renderPending(data) {
+  // No signature guard: add/remove-by-id already avoids churn and must never
+  // rebuild cards (a rebuild would wipe in-progress textarea edits).
+  const pending  = (data.pending_review || []).filter(i => i.status === 'pending_review');
+  const section  = document.getElementById('review-section');
+  const cardsEl  = document.getElementById('review-cards');
+  section.style.display = pending.length ? '' : 'none';
+  const existingIds = new Set([...cardsEl.querySelectorAll('[data-appr-id]')].map(el => el.dataset.apprId));
+  const freshIds    = new Set(pending.map(i => i.id));
+  for (const id of existingIds) {
+    if (!freshIds.has(id)) cardsEl.querySelector(`[data-appr-id="${CSS.escape(id)}"]`)?.remove();
+  }
+  for (const item of pending) {
+    if (!existingIds.has(item.id)) cardsEl.insertAdjacentHTML('beforeend', buildCard(item));
+  }
+}
+
+// Sort: blocked first, then priority, then most recent action.
+const PRI_RANK = { high: 0, normal: 1, low: 2 };
+function questSortKey(q) {
+  const pri = PRI_RANK[q.priority] ?? 1;
+  const ts  = q.last_action?.ts || '';
+  return [isBlockedNow(q) ? 0 : 1, pri, ts];
+}
+
+function renderQuests(data) {
+  const quests = [...(data.quests || [])].sort((a, b) => {
+    const ka = questSortKey(a), kb = questSortKey(b);
+    if (ka[0] !== kb[0]) return ka[0] - kb[0];
+    if (ka[1] !== kb[1]) return ka[1] - kb[1];
+    return kb[2].localeCompare(ka[2]);
+  });
+  if (!changed('quests', quests)) return;
+  document.getElementById('quest-tbody').innerHTML = quests.map(q => {
+    const isBlocked = isBlockedNow(q);
+    const dot    = isBlocked ? 'dot-blocked' : 'dot-active';
+    const stCls  = isBlocked ? 'status-text status-warn' : 'status-text status-quiet';
+    const priCls = `pri-${q.priority || 'normal'}`;
+    const mode   = q.allow_send
+      ? '<span class="tag tag-send">send</span>'
+      : '<span class="tag tag-draft">draft</span>';
+    const la = q.last_action;
+    const lb = isBlocked ? q.last_blocked : null;  // hide stale block warnings
+    const actionCell = la
+      ? `<div class="action-row">${badge(la.event)}${agoSpan(la.ts)}</div>
+         ${la.note ? `<div class="action-note">${esc(la.note)}</div>` : ''}
+         ${lb ? `<div class="blocked-badge" title="${esc(lb.reason)}">⚠ blocked ${ago(lb.ts)}</div>` : ''}`
+      : lb
+        ? `<div class="blocked-badge" title="${esc(lb.reason)}">⚠ blocked ${ago(lb.ts)}</div>`
+        : `<span class="ago">-</span>`;
+    return `<tr data-quest-id="${esc(q.id)}"${isBlocked ? ' class="row-blocked"' : ''}>
+      <td class="quest-title">${esc(q.title)}</td>
+      <td><span class="dot ${dot}"></span><span class="${stCls}">${esc(q.status)}</span></td>
+      <td><span class="pri-pill ${priCls}">${esc(q.priority || 'normal')}</span></td>
+      <td>${mode}</td>
+      <td class="action-cell">${actionCell}<span class="row-arrow">›</span></td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="5" class="empty">no active quests</td></tr>`;
+}
+
+function feedTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay ? hhmm(iso)
+                 : d.toLocaleDateString('en-US', {month:'short', day:'2-digit'}) + ' ' + hhmm(iso);
+}
+
+function renderFeed(data) {
+  const feed = data.recent_activity || [];
+  if (!changed('feed', feed)) return;
+  document.getElementById('activity-feed').innerHTML = feed.map(a =>
+    `<div class="feed-item">
+      <div class="feed-time">${feedTime(a.ts)}</div>
+      <div class="feed-body">
+        <div class="feed-top">${badge(a.event)}<span class="feed-quest">${esc(a.quest_title)}</span></div>
+        ${a.note ? `<div class="feed-note">${esc(a.note)}</div>` : ''}
+      </div>
+    </div>`
+  ).join('') || '<div class="empty">no recent activity</div>';
+}
+
+// Prior revision rounds: render review_history (reviewer notes + worker replies)
+// so a draft that came back from "Submit for revision" shows what was asked and
+// what the worker changed. Empty string when this is the first pass.
+function revisionsBlock(item) {
+  const hist = item.review_history || [];
+  if (!hist.length) return '';
+  const lines = hist.map(h => h.from === 'reviewer'
+    ? `<div class="rc-rev-line"><span class="rc-rev-k">you asked</span>${esc(h.note || '')}</div>`
+    : `<div class="rc-rev-line"><span class="rc-rev-k">yaas</span>${esc(h.reply || '')}</div>`
+  ).join('');
+  return `<div class="rc-label">revision history</div><div class="rc-revisions">${lines}</div>`;
+}
+
+function buildCard(item) {
+  const t = item.target || {};
+  const targetStr = [t.channel_id, t.thread_ts ? `thread ${t.thread_ts}` : 'new thread'].filter(Boolean).join(' · ');
+  return `
+  <div class="review-card" data-appr-id="${esc(item.id)}">
+    <div class="rc-header">
+      <div>
+        <div class="rc-title">${esc(item.quest_title)}</div>
+        <div class="rc-risk">${esc(item.risk_reason)}</div>
+      </div>
+      ${agoSpan(item.created_at, 'rc-age')}
+    </div>
+    <div class="rc-target">${esc(targetStr)}</div>
+    <div class="rc-label">context</div>
+    <div class="rc-context">${esc(item.context)}</div>
+    ${revisionsBlock(item)}
+    <div class="rc-label">message</div>
+    <textarea data-field="message_text">${esc(item.message_text || '')}</textarea>
+    <div class="rc-note-row">
+      <div class="rc-label" style="margin-bottom:6px">review note &nbsp;·&nbsp; instruction for the worker (required to submit for revision)</div>
+      <input type="text" data-field="review_note" placeholder='e.g. "make it more polite"  ·  "send as pptx"  ·  "loop in a teammate too"'>
+    </div>
+    <div class="rc-actions">
+      <button class="btn btn-review" data-action="review">Mark as Reviewed</button>
+      <button class="btn btn-revise" data-action="revise">Submit for revision</button>
+      <button class="btn btn-cancel" data-action="cancel">Cancel</button>
+    </div>
+  </div>`;
+}
+
+const ACTION_LABELS = { review: 'Mark as Reviewed', revise: 'Submit for revision', cancel: 'Cancel' };
+const ACTION_PENDING = { review: 'Submitting…', revise: 'Submitting…', cancel: 'Cancelling…' };
+
+async function submitReview(id, action) {
+  const card = document.querySelector(`[data-appr-id="${CSS.escape(id)}"]`);
+  if (!card) return;
+  const btns = [...card.querySelectorAll('.rc-actions .btn')];
+  const active = card.querySelector(`.btn-${action}`);
+
+  const msgField  = card.querySelector('[data-field="message_text"]');
+  const noteField = card.querySelector('[data-field="review_note"]');
+
+  // A revision needs an instruction for the worker to act on.
+  if (action === 'revise' && !noteField?.value.trim()) {
+    noteField?.focus();
+    noteField?.classList.add('field-error');
+    setTimeout(() => noteField?.classList.remove('field-error'), 1500);
+    return;
+  }
+
+  btns.forEach(b => b.disabled = true);
+  if (active) active.textContent = ACTION_PENDING[action] || 'Submitting…';
+
+  const payload = {};
+  if (msgField) payload.message_text = msgField.value;
+  if (noteField?.value.trim()) payload.review_note = noteField.value.trim();
+
+  try {
+    const resp = await fetch(`/api/${action}/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (resp.ok) {
+      card.classList.add('card-done');
+      setTimeout(() => card.remove(), 600);
+    } else {
+      console.error('review failed', await resp.text());
+      btns.forEach(b => b.disabled = false);
+      if (active) active.textContent = ACTION_LABELS[action] || active.textContent;
+    }
+  } catch (e) {
+    console.error(e);
+    btns.forEach(b => b.disabled = false);
+    if (active) active.textContent = ACTION_LABELS[action] || active.textContent;
+  }
+}
+
+// ── History tab (lazy: fetched on first activation, polled while active) ───────
+let lastHistEtag = null;
+
+function histStatusBadge(st) {
+  const cls = st === 'executed'  ? 'badge-message_sent'
+            : st === 'cancelled' ? 'badge-cancelled'
+            : (st === 'reviewed' || st === 'executing') ? 'badge-executed'
+            : 'badge-default';
+  return `<span class="badge ${cls}">${esc(st || '?')}</span>`;
+}
+
+const TRAIL_KEYS = [
+  ['created_at', 'created'], ['reviewed_at', 'reviewed'], ['executing_at', 'executing'],
+  ['sent_at', 'sent'], ['cancelled_at', 'cancelled'],
+];
+function histTrail(i) {
+  return TRAIL_KEYS.filter(([k]) => i[k]).map(([k, label]) => `${label} ${feedTime(i[k])}`).join('  ·  ');
+}
+
+function histCard(i) {
+  const msg  = i.message_text || '';
+  const long = msg.length > 350 || msg.split('\n').length > 4;
+  const msgHtml = !msg ? ''
+    : long
+      ? `<details class="hist-msg"><summary>message</summary><div class="rc-context">${esc(msg)}</div></details>`
+      : `<div class="rc-context" style="margin-top:8px">${esc(msg)}</div>`;
+  return `<div class="hist-card">
+    <div class="hist-head">
+      ${histStatusBadge(i.status)}
+      <span class="hist-title">${esc(i.quest_title || i.quest_id || '')}</span>
+      ${i.human_edited ? '<span class="tag tag-draft">edited</span>' : ''}
+      ${agoSpan(i.created_at, 'rc-age')}
+    </div>
+    ${msgHtml}
+    ${i.review_note   ? `<div class="hist-line"><span class="hist-k">review note</span>${esc(i.review_note)}</div>` : ''}
+    ${i.cancel_reason ? `<div class="hist-line"><span class="hist-k">cancel reason</span>${esc(i.cancel_reason)}</div>` : ''}
+    ${i.response_ts   ? `<div class="hist-line"><span class="hist-k">response ts</span>${esc(i.response_ts)}</div>` : ''}
+    <div class="hist-trail">${esc(histTrail(i))}</div>
+  </div>`;
+}
+
+function targetChips(targets) {
+  return (targets || []).map(t => {
+    const short = String(t).replace(/^quest-/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
+    return `<span class="tag tag-mode" title="${esc(t)}">${esc(short)}</span>`;
+  }).join(' ');
+}
+
+function runRow(r) {
+  let result, isErr = false;
+  if (r.kind === 'dispatch')         { result = r.ok ? 'ok' : 'failed'; isErr = !r.ok; }
+  else if (r.kind === 'failure')     { result = `exit ${r.exit_code ?? '?'}`; isErr = true; }
+  else if (r.kind === 'skip_locked') { result = `locked pid ${r.holder_pid ?? '?'}`; }
+  else                               { result = [r.reason, r.status].filter(Boolean).join(' '); }
+  const kindCls = r.kind === 'dispatch' ? 'badge-executed' : (isErr ? 'badge-cancelled' : 'badge-default');
+  const cost = r.cost_usd != null ? '$' + Number(r.cost_usd).toFixed(2) : '';
+  const dur  = r.wall_sec != null ? r.wall_sec + 's' : '';
+  return `<tr>
+    <td class="ago">${feedTime(r.ts)}</td>
+    <td><span class="badge ${kindCls}">${esc(r.kind)}</span></td>
+    <td>${targetChips(r.targets)}</td>
+    <td class="ago">${cost}</td>
+    <td class="ago">${dur}</td>
+    <td class="${isErr ? 'runs-err' : 'ago'}">${esc(result)}</td>
+  </tr>`;
+}
+
+function renderHistory(d) {
+  if (changed('hist-approvals', d.approvals)) {
+    document.getElementById('history-approvals').innerHTML =
+      (d.approvals || []).map(histCard).join('') || '<div class="empty">no reviewed items yet</div>';
+  }
+  if (changed('hist-runs', d.runs)) {
+    document.getElementById('history-runs').innerHTML = (d.runs || []).length
+      ? `<table><thead><tr>
+           <th style="width:11%">time</th><th style="width:11%">kind</th><th>targets</th>
+           <th style="width:7%">cost</th><th style="width:8%">duration</th><th style="width:17%">result</th>
+         </tr></thead><tbody>${d.runs.map(runRow).join('')}</tbody></table>`
+      : '<div class="empty">no dispatch history</div>';
+  }
+}
+
+async function pollHistory() {
+  const headers = lastHistEtag ? {'If-None-Match': lastHistEtag} : {};
+  const resp = await fetch('/api/history', {cache: 'no-store', headers});
+  if (resp.status === 304) return;
+  if (!resp.ok) throw new Error(resp.status);
+  lastHistEtag = resp.headers.get('ETag');
+  renderHistory(await resp.json());
+}
+
+// ── Quest detail drawer ─────────────────────────────────────────────────────────
+// Lazy: fetched on open, never touched by the poll loop.
+const drawerEl   = document.getElementById('drawer');
+const backdropEl = document.getElementById('drawer-backdrop');
+let openQuestId  = null;
+
+function agoEpoch(s) {
+  const f = parseFloat(s);
+  return (isFinite(f) && f > 0) ? ago(new Date(f * 1000).toISOString()) : '';
+}
+
+document.getElementById('quest-tbody').addEventListener('click', e => {
+  const tr = e.target.closest('tr[data-quest-id]');
+  if (tr) openDrawer(tr.dataset.questId);
+});
+backdropEl.addEventListener('click', closeDrawer);
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  closeDrawer();
+  if (livePanelOpen) closeLivePanel();
+});
+
+function closeDrawer() {
+  openQuestId = null;
+  drawerEl.hidden = true;
+  backdropEl.hidden = true;
+  drawerEl.innerHTML = '';
+}
+
+async function openDrawer(id) {
+  openQuestId = id;
+  drawerEl.hidden = false;
+  backdropEl.hidden = false;
+  drawerEl.innerHTML = `<div class="drawer-head">
+      <div><div class="drawer-title">${esc(id)}</div></div>
+      <button class="drawer-close" data-action="close-drawer" title="close">✕</button>
+    </div><div class="empty">loading…</div>`;
+  try {
+    const resp = await fetch(`/api/quest/${encodeURIComponent(id)}`, {cache: 'no-store'});
+    if (!resp.ok) throw new Error(resp.status);
+    const d = await resp.json();
+    if (openQuestId === id) renderDrawer(d);
+  } catch {
+    if (openQuestId === id) {
+      drawerEl.querySelector('.empty').textContent = 'failed to load quest detail';
+    }
+  }
+}
+
+function watchRow(w) {
+  const mode  = w.watch_mode ? `<span class="tag tag-mode">${esc(w.watch_mode)}</span>` : '';
+  const meta  = w.type === 'schedule'
+    ? [w.cron, w.tz].filter(Boolean).join(' ')
+    : (w.last_checked_ts ? `checked ${agoEpoch(w.last_checked_ts)}` : '');
+  return `<div class="watch-item">
+    ${badge(w.type || 'watch')}${mode}
+    <span class="watch-reason">${esc(w.reason || w.query || w.approval_id || '')}</span>
+    <span class="watch-meta">${esc(meta)}</span>
+  </div>`;
+}
+
+function timelineRow(e) {
+  const safe = e.permalink ? safeUrl(e.permalink) : '';
+  const link = safe ? `<a class="tl-link" href="${esc(safe)}" target="_blank" rel="noopener">open</a>` : '';
+  const text = e.note || e.reason || '';
+  return `<div class="feed-item">
+    <div class="feed-time">${feedTime(e.ts)}</div>
+    <div class="feed-body">
+      <div class="feed-top">${badge(e.event || '?')}${link}</div>
+      ${text ? `<div class="feed-note">${esc(text)}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function renderDrawer(d) {
+  const meta = d.meta || {};
+  const isBlocked = meta.status === 'blocked';
+  const tags = `
+    <span class="dot ${isBlocked ? 'dot-blocked' : 'dot-active'}"></span>
+    <span class="${isBlocked ? 'status-text status-warn' : 'status-text'}">${esc(meta.status || 'active')}</span>
+    <span class="pri-pill pri-${esc(meta.priority || 'normal')}">${esc(meta.priority || 'normal')}</span>
+    ${meta.allow_send ? '<span class="tag tag-send">send enabled</span>' : '<span class="tag tag-draft">draft only</span>'}
+    ${meta.created ? `<span class="ago">created ${esc(String(meta.created).slice(0, 10))}</span>` : ''}`;
+  const truncNote = d.timeline.length < d.timeline_total
+    ? `<div class="tl-truncated">showing ${d.timeline.length} of ${d.timeline_total} entries</div>` : '';
+  drawerEl.innerHTML = `
+    <div class="drawer-head">
+      <div>
+        <div class="drawer-title">${esc(meta.title || d.id)}</div>
+        <div class="drawer-id">${esc(d.id)}</div>
+      </div>
+      <button class="drawer-close" data-action="close-drawer" title="close">✕</button>
+    </div>
+    <div class="drawer-tags">${tags}</div>
+    <div class="section">
+      <div class="section-label">watches</div>
+      ${d.watches.length ? d.watches.map(watchRow).join('') : '<div class="empty">no watches</div>'}
+    </div>
+    <div class="section">
+      <div class="section-label">context</div>
+      ${d.context_md
+        ? `<div class="drawer-context brief-body">${mdToHtml(d.context_md)}</div>`
+        : '<div class="empty">no context yet</div>'}
+    </div>
+    <div class="section">
+      <div class="section-label">timeline</div>
+      ${d.timeline.length ? d.timeline.map(timelineRow).join('') : '<div class="empty">no timeline entries</div>'}
+      ${truncNote}
+    </div>`;
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+// Conditional GET: the server hashes the payload into an ETag, so idle polls
+// come back 304 with no body. tick() still runs so relative times keep aging.
+const connEl = document.getElementById('conn');
+let lastDashEtag = null;
+
+async function poll() {
+  try {
+    const headers = lastDashEtag ? {'If-None-Match': lastDashEtag} : {};
+    const resp = await fetch('/api/dashboard', {cache: 'no-store', headers});
+    if (resp.status !== 304) {
+      if (!resp.ok) throw new Error(resp.status);
+      lastDashEtag = resp.headers.get('ETag');
+      render(await resp.json());
+    }
+    if (activeTab === 'history') await pollHistory();
+    connEl.textContent = 'live';
+    connEl.className   = '';
+  } catch {
+    connEl.textContent = 'disconnected';
+    connEl.className   = 'err';
+  }
+  tick();
+}
+
+poll();
+setInterval(poll, POLL_MS);
+
+// Delegated click handling. Inline on*= handlers are removed so a strict CSP
+// (script-src 'nonce-…', no 'unsafe-inline') can block any injected script.
+// Buttons carry data-action; approval buttons resolve their id from the
+// enclosing card's data-appr-id (no user value ever sits in an inline handler).
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-action]');
+  if (!el) return;
+  const action = el.dataset.action;
+  if (action === 'close-live-panel') { closeLivePanel(); return; }
+  if (action === 'close-drawer')     { closeDrawer();    return; }
+  if (action === 'review' || action === 'revise' || action === 'cancel') {
+    const card = el.closest('[data-appr-id]');
+    if (card) submitReview(card.dataset.apprId, action);
+  }
+});
+</script>
+</body>
+</html>
