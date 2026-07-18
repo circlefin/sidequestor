@@ -37,6 +37,7 @@ Watch entry fields by type:
   slack_thread:  channel_id, thread_ts, reason
   slack_channel: channel_id, reason
   slack_dm:      user_id, reason
+  slack_mention: user_id, reason   (fires on any message that @mentions user_id, anywhere)
   schedule:      cron (5-field), tz (IANA), reason  [optional: id]
   email:         query (Gmail search string), reason
 
@@ -80,6 +81,7 @@ REQUIRED_FIELDS = {
     "slack_thread":  ["channel_id", "thread_ts"],
     "slack_channel": ["channel_id"],
     "slack_dm":      ["user_id"],
+    "slack_mention": ["user_id"],
     "schedule":      ["cron", "tz"],
     "email":         ["query"],
 }

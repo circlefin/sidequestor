@@ -111,6 +111,7 @@ Currently: `email.lag = 120`. All other types have no `.lag` file (lag = 0).
     {"type": "slack_thread",  "channel_id": "C...", "thread_ts": "1234.567", "last_checked_ts": "0", "reason": "..."},
     {"type": "slack_channel", "channel_id": "C...", "last_checked_ts": "0", "reason": "..."},
     {"type": "slack_dm",      "user_id": "U...",    "last_checked_ts": "0", "reason": "..."},
+    {"type": "slack_mention", "user_id": "U...",    "last_checked_ts": "0", "reason": "..."},
     {"type": "schedule",      "cron": "0 9 * * 1", "tz": "Asia/Singapore", "last_checked_ts": "0", "reason": "..."},
     {"type": "email",         "query": "from:partner@company.com subject:Re:", "last_checked_ts": "0", "reason": "..."}
   ]

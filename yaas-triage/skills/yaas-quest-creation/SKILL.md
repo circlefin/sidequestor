@@ -30,6 +30,7 @@ Ask the user for, in order:
    - **`slack_thread`** — provide Slack permalink(s). Extract `channel_id` and `thread_ts` from each URL. Use when watching a specific thread for new replies.
    - **`slack_channel`** — provide channel name or ID. Watches entire channel for new top-level messages. Does NOT catch replies inside existing threads; for those, add the specific thread as `slack_thread`.
    - **`slack_dm`** — Slack user IDs or names of people whose new DMs should trigger this quest. Resolve names → IDs via `mcp__slack__slack_search_users` if needed.
+   - **`slack_mention`** — a Slack `user_id`. Fires on any new message that @mentions that user, anywhere the searcher can see (global, not channel-scoped). No channel field; the worker re-runs the mention search to locate each hit. Use for "back me up: respond when anyone @mentions me." Skips `[BOT]` authors and the watched user's own messages.
    - **`schedule`** — a 5-field cron expression + IANA timezone. Fires the quest at the scheduled time.
    - **`email`** — a Gmail search query string. Matches any email matching the query that arrived after the watermark.
    - **Other types** (e.g. `telegram_chat`) — see `yaas-triage/skills/yaas-ops/SKILL.md` for required fields.

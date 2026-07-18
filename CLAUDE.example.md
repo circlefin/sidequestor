@@ -85,6 +85,8 @@ Never read all four as a reflex. Each file read costs a model round-trip.
 
 **Slack watch types** (`slack_thread`, `slack_channel`, `slack_dm`): query with the appropriate MCP tool (`slack_read_thread`, `slack_read_channel`, `slack_search_public_and_private`).
 
+**Slack mention watch type** (`slack_mention`): fires on any new message that @mentions the entry's `user_id`, anywhere Slack search can see (global, not channel-scoped). The entry has no channel, so read `watch.json` for the entry's `last_checked_ts`, re-run `slack_search_public_and_private` with query `<@USER_ID> after:<date>`, keep only results newer than the watermark (skipping `[BOT]` authors and the watched user's own posts), then `slack_read_thread` on each hit before acting.
+
 **Email watch type** (`email`): read `watch.json` to get each entry's `query` and `last_checked_ts`. Then:
 1. `gws gmail users messages list --params '{"userId":"me","q":"<query> after:<YYYY/MM/DD>","maxResults":10}'`
 2. For each message ID, `gws gmail users messages get --params '{"userId":"me","id":"<id>","format":"full"}'`. Post-filter by `internalDate/1000 > last_checked_ts`.

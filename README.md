@@ -188,7 +188,7 @@ python3 yaas-triage/skills/yaas-quest-creation/new-quest.py '{
 
 See [`yaas-triage/skills/yaas-quest-creation/SKILL.md`](yaas-triage/skills/yaas-quest-creation/SKILL.md) for the full spec.
 
-Watch types: `slack_thread`, `slack_channel`, `slack_dm`, `schedule` (5-field cron + IANA TZ), `email` (Gmail search query).
+Watch types: `slack_thread`, `slack_channel`, `slack_dm`, `slack_mention` (any message @mentioning a user_id, global), `schedule` (5-field cron + IANA TZ), `email` (Gmail search query).
 
 ---
 

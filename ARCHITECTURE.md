@@ -35,6 +35,7 @@ macOS launchd (every 60s)
         │         ├─ slack_thread.py  → mcp-call.sh → Slack MCP API
         │         ├─ slack_channel.py → mcp-call.sh → Slack MCP API
         │         ├─ slack_dm.py      → mcp-call.sh → Slack MCP API
+        │         ├─ slack_mention.py → mcp-call.sh → Slack MCP API
         │         ├─ schedule.py      → cron-due.py (local computation)
         │         └─ email.py         → gws CLI → Gmail API
         ├─ global reaction sweep → checkers/reactions.py
@@ -252,6 +253,7 @@ All checkers live in `yaas-triage/checkers/<type>.py`. Interface contract:
 | `slack_thread.py` | `slack_read_thread` via `mcp-call.sh` | New replies since watermark |
 | `slack_channel.py` | `slack_read_channel` via `mcp-call.sh` | New top-level messages |
 | `slack_dm.py` | `slack_search_public_and_private` via `mcp-call.sh` | New DMs from user_id |
+| `slack_mention.py` | `slack_search_public_and_private` via `mcp-call.sh` | New messages @mentioning user_id (global) |
 | `schedule.py` | `cron-due.py` (local) | Cron expression fired since watermark |
 | `email.py` | `gws gmail users messages list/get` | Gmail query matched + `internalDate > since_ms` |
 | `reactions.py` | `slack_search_public_and_private` via `mcp-call.sh` | **Global sweep, not per-entry.** Called once with 4 args by triage.sh. |
