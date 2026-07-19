@@ -201,6 +201,8 @@ Append one line per action:
 {"ts":"<utc_iso>", "event":"<draft_posted|message_sent|executed|info_received|status_change|note|blocked>", "...":"..."}
 ```
 
+**Log the verbatim body on every outbound send.** For any `message_sent` / `reply_sent` / `dm_sent` / `executed`(slack or email) / `email_replied` event, include the exact text you sent as a `message_text` field on the timeline entry (alongside the usual `note` summary + `permalink` + `response_ts`). The dashboard surfaces the real message only when this field is present — a `note` summary alone shows in the full timeline but not in the Messages stream or the quest Conversation. This applies to Reactions Fast Path replies too. (Drafts routed through the approval queue already carry their body in `pending-approvals.json`, so a `draft_posted` with an `approval_id` needs no `message_text`.)
+
 If you **couldn't** complete an action (error, ambiguous situation, needed user input), log it as a `blocked` event in `timeline.ndjson` with details, and **stop without finishing the rest of the work**. Surface the blocker in the Output Contract under "Errors". Do NOT silently skip blocked work and exit clean — triage.sh interprets a clean exit as "everything handled" and will advance watermarks, burying the blocked activity.
 
 (Mechanism note: `claude -p` exits 0 whenever Claude completes its output normally, so you can't force a non-zero exit through prose. The best you can do is surface the failure clearly in the Output Contract — and avoid taking further actions that would suggest the dispatch was a success.)

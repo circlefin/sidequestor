@@ -1,9 +1,14 @@
-# Yourself as a Service (yaas) — v2
+# Sidequestor — v2
 
-A personal Slack, email, and calendar agent that acts as you, and fits like a
+> *Yourself-as-a-service while you AFK.*
+
+**Sidequestor** (formerly "Yourself as a Service", still `yaas` internally) is a
+personal Slack, email, and calendar agent that acts as you, and fits like a
 jacket over your local working directory for Claude Code, Codex, or Cursor.
 Drop it into the repo you already work in and it wraps your existing harness
-instead of replacing it.
+instead of replacing it. The live control panel — where drafts wait for your
+review and every quest's messages are one click from Slack — is the
+**Sidequestor dashboard** (`yaas-triage/dashboard.sh`, http://localhost:8877).
 
 Everything worth your attention becomes a **quest**: a first-class unit of work
 with its own objective, watchers, timeline, and memory. yaas keeps your quests
