@@ -37,6 +37,7 @@ import hmac
 import http.server
 import json
 import os
+import re
 import secrets
 import socketserver
 import sys
@@ -144,6 +145,128 @@ def _update_approval(approval_id: str, updates: dict, from_status: str = "pendin
             return item
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+
+
+# ── Slack deeplink + outbound-message normalization ───────────────────────────
+# Shared by build_messages() (the Messages tab) and build_quest_detail()'s
+# conversation list. Verbatim-only: a send is surfaced only when we can recover
+# the exact body — an inline message_text on the event, or a join to an approval
+# item by approval_id. Summary-only direct sends are counted but not listed.
+
+_OUTBOUND_EVENTS = {
+    "message_sent": "sent", "reply_sent": "sent", "dm_sent": "sent",
+    "executed": "sent", "draft_posted": "draft", "email_replied": "email",
+}
+_SENT_EVENTS = {"message_sent", "reply_sent", "dm_sent", "executed"}
+_MSG_ACTION_TYPES = ("slack_message", "email_reply")
+_ID_RE = re.compile(r"\b([CDG][A-Z0-9]{6,})\b")
+
+def _norm_channel(e: dict):
+    """Best-effort channel id from the timeline's inconsistent keys."""
+    for k in ("channel_id", "channel"):
+        v = e.get(k)
+        if isinstance(v, str) and v[:1] in ("C", "D", "G") and " " not in v:
+            return v
+    for k in ("channel", "target", "source"):  # free-text like "self-DM D0A0…"
+        v = e.get(k)
+        if isinstance(v, str):
+            m = _ID_RE.search(v)
+            if m:
+                return m.group(1)
+    return None
+
+def _slack_url(channel_id, ts=None, thread_ts=None, permalink=None,
+               host="circlefin.slack.com"):
+    """Prefer a stored permalink; else construct a deterministic Slack deeplink.
+    Host is a best-effort default (internal); a stored permalink always wins and
+    carries the correct host for external Slack Connect channels."""
+    if isinstance(permalink, str) and permalink.startswith("https://"):
+        return permalink
+    if not channel_id or not ts:
+        return None
+    url = f"https://{host}/archives/{channel_id}/p{str(ts).replace('.', '')}"
+    if thread_ts and thread_ts != ts:
+        url += f"?thread_ts={thread_ts}&cid={channel_id}"
+    return url
+
+def _approvals_index(data: dict) -> dict:
+    return {i.get("id"): i.get("message_text", "")
+            for i in data.get("items", []) if i.get("id")}
+
+def _clip(s, n):
+    return s[:n] + "…" if isinstance(s, str) and len(s) > n else (s or "")
+
+def _normalize_msg_event(e: dict, approvals_by_id: dict):
+    """Outbound timeline event → compact verbatim message record, or None."""
+    kind = _OUTBOUND_EVENTS.get(e.get("event"))
+    if kind is None:
+        return None
+    body = e.get("message_text")
+    if not body:
+        appr_id = e.get("approval_id")
+        if appr_id and appr_id in approvals_by_id:
+            body = approvals_by_id[appr_id]
+    if not body:
+        return None  # verbatim-only: skip summary-only sends
+    if e.get("event") == "executed" and e.get("action_type") == "email_reply":
+        kind = "email"
+    channel_id = _norm_channel(e)
+    ts = (e.get("response_ts") or e.get("msg_ts") or e.get("message_ts")
+          or e.get("thread_ts"))
+    permalink = (e.get("permalink") or e.get("dm_permalink")
+                 or e.get("thread_permalink"))
+    return {
+        "ts":           e.get("ts"),
+        "event":        e.get("event"),
+        "kind":         kind,
+        "channel_id":   channel_id,
+        "thread_ts":    e.get("thread_ts"),
+        "message_text": _clip(body, 2000),
+        "note":         _clip(e.get("note"), 300),
+        "slack_url":    _slack_url(channel_id, ts, e.get("thread_ts"), permalink),
+        "action_type":  e.get("action_type"),
+        "awaiting_send": False,
+    }
+
+def _approval_card(i: dict) -> dict:
+    """Project a pending-approval item into the shape the review card needs."""
+    t = i.get("target") or {}
+    return {
+        "id":             i.get("id"),
+        "quest_id":       i.get("quest_id"),
+        "quest_title":    i.get("quest_title", i.get("quest_id")),
+        "action_type":    i.get("action_type", "slack_message"),
+        "status":         i.get("status"),
+        "created_at":     i.get("created_at"),
+        "target":         t,
+        "message_text":   i.get("message_text", ""),
+        "context":        i.get("context", ""),
+        "risk_reason":    i.get("risk_reason", ""),
+        "review_note":    i.get("review_note", ""),
+        "review_history": i.get("review_history", []),
+        "worker_reply":   i.get("worker_reply", ""),
+        "slack_url":      _slack_url(t.get("channel_id"), t.get("thread_ts"),
+                                     t.get("thread_ts")),
+    }
+
+def _approval_draft_record(i: dict) -> dict:
+    """A pending message-type approval, shown as an awaiting-send draft."""
+    t = i.get("target") or {}
+    return {
+        "ts":           i.get("created_at"),
+        "event":        "draft_posted",
+        "kind":         "draft",
+        "channel_id":   t.get("channel_id"),
+        "thread_ts":    t.get("thread_ts"),
+        "message_text": _clip(i.get("message_text", ""), 2000),
+        "note":         "",
+        "slack_url":    _slack_url(t.get("channel_id"), t.get("thread_ts"),
+                                   t.get("thread_ts")),
+        "action_type":  i.get("action_type"),
+        "awaiting_send": True,
+        "quest_id":     i.get("quest_id"),
+        "quest_title":  i.get("quest_title", i.get("quest_id")),
+    }
 
 
 # ── Live run detector ──────────────────────────────────────────────────────
@@ -325,9 +448,78 @@ def build_dashboard() -> dict:
     }
 
 
+# ── Messages tab builder ─────────────────────────────────────────────────────
+# Deterministic between state changes (no timestamps) so the ETag/304 poll path
+# in the handler holds. Left pane = the review queue split into message-shaped
+# items (needs_you) and everything else (other_actions). Right rail =
+# recent_messages: verbatim-only sends across all active quests, plus pending
+# message-type approvals shown as awaiting-send drafts.
+
+def build_messages() -> dict:
+    active_dir = STATE_DIR / "quests" / "active"
+
+    appr_data  = _read_approvals() if APPROVALS_FILE.exists() else {"items": []}
+    appr_by_id = _approvals_index(appr_data)
+    pending    = [i for i in appr_data.get("items", [])
+                  if i.get("status") in ("pending_review", "needs_reply")]
+
+    needs_you, other_actions = [], []
+    for i in pending:
+        (needs_you if i.get("action_type", "slack_message") in _MSG_ACTION_TYPES
+         else other_actions).append(_approval_card(i))
+
+    recent, summary_only = [], 0
+    for quest_dir in sorted(active_dir.iterdir()) if active_dir.exists() else []:
+        if not quest_dir.is_dir():
+            continue
+        try:
+            meta = json.loads((quest_dir / "meta.json").read_text())
+        except Exception:
+            continue
+        title = meta.get("title", quest_dir.name)
+        tp = quest_dir / "timeline.ndjson"
+        if not tp.exists():
+            continue
+        try:
+            lines = [l for l in tp.read_text().splitlines() if l.strip()]
+        except Exception:
+            continue
+        for raw in reversed(lines[-60:]):
+            try:
+                e = json.loads(raw)
+            except Exception:
+                continue
+            if e.get("event") not in _OUTBOUND_EVENTS:
+                continue
+            rec = _normalize_msg_event(e, appr_by_id)
+            if rec is None:
+                if e.get("event") in _SENT_EVENTS:
+                    summary_only += 1
+                continue
+            rec["quest_id"], rec["quest_title"] = quest_dir.name, title
+            recent.append(rec)
+
+    for i in pending:  # awaiting-send drafts (message types only)
+        if i.get("action_type", "slack_message") in _MSG_ACTION_TYPES:
+            recent.append(_approval_draft_record(i))
+
+    recent.sort(key=lambda r: r.get("ts") or "", reverse=True)
+    recent = recent[:40]
+
+    return {
+        "needs_you":          needs_you,
+        "other_actions":      other_actions,
+        "recent_messages":    recent,
+        "summary_only_count": summary_only,
+    }
+
+
 # ── Quest detail builder (lazy-fetched by the drawer) ────────────────────────
 
-_TIMELINE_KEYS = ("ts", "event", "note", "reason", "permalink", "by", "channel")
+_TIMELINE_KEYS = ("ts", "event", "note", "reason", "permalink", "by", "channel",
+                  "channel_id", "thread_ts", "response_ts", "msg_ts", "message_ts",
+                  "approval_id", "draft_id", "action_type", "to", "subject",
+                  "message_text")
 _TIMELINE_CAP  = 500
 
 def build_quest_detail(quest_id: str) -> dict | None:
@@ -361,7 +553,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
     except Exception:
         pass
 
-    timeline, total = [], 0
+    timeline, total, lines = [], 0, []
     timeline_path = quest_dir / "timeline.ndjson"
     if timeline_path.exists():
         try:
@@ -378,9 +570,35 @@ def build_quest_detail(quest_id: str) -> dict | None:
                 for k in ("note", "reason"):
                     if isinstance(entry.get(k), str) and len(entry[k]) > 300:
                         entry[k] = entry[k][:300] + "…"
+                if isinstance(entry.get("message_text"), str) and len(entry["message_text"]) > 2000:
+                    entry["message_text"] = entry["message_text"][:2000] + "…"
                 timeline.append(entry)
         except Exception:
             pass
+
+    # conversation: verbatim-only outbound messages for THIS quest (newest-first)
+    # + this quest's pending/reviewed message-type approvals as awaiting-send
+    # drafts. Same recoverable-body filter as build_messages(); the full timeline
+    # above still lists every event (including summary-only ones).
+    appr_data  = _read_approvals() if APPROVALS_FILE.exists() else {"items": []}
+    appr_by_id = _approvals_index(appr_data)
+    conversation = []
+    for raw in reversed(lines[-_TIMELINE_CAP:]):
+        try:
+            e = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(e, dict) or e.get("event") not in _OUTBOUND_EVENTS:
+            continue
+        rec = _normalize_msg_event(e, appr_by_id)
+        if rec:
+            conversation.append(rec)
+    for i in appr_data.get("items", []):
+        if (i.get("quest_id") == quest_id
+                and i.get("status") in ("pending_review", "needs_reply", "reviewed")
+                and i.get("action_type", "slack_message") in _MSG_ACTION_TYPES):
+            conversation.append(_approval_draft_record(i))
+    conversation.sort(key=lambda r: r.get("ts") or "", reverse=True)
 
     return {
         "id":             quest_id,
@@ -389,6 +607,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
         "watches":        watches,
         "timeline":       timeline,
         "timeline_total": total,
+        "conversation":   conversation,
     }
 
 
@@ -577,6 +796,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/dashboard":
             self._send_json_etag(build_dashboard)
+            return
+
+        if path == "/api/messages":
+            self._send_json_etag(build_messages)
             return
 
         if path == "/api/history":
