@@ -1,6 +1,6 @@
 # Sidequestor — v2
 
-> *Yourself-as-a-service while you AFK.*
+> *Yourself-as-a-service, while you AFK.*
 
 **Sidequestor** (formerly "Yourself as a Service", still `yaas` internally) is a
 personal Slack, email, and calendar agent that acts as you, and fits like a
