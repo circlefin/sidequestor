@@ -77,7 +77,10 @@ def main():
     except Exception:
         body = r.stdout.strip()
         if "ratelimited" in body:
-            print("0|")
+            # Transient: rate limits clear on their own. Never treat as clean.
+            # a "0" here advances the watermark past unseen mentions (silent
+            # burial). Report error so the quest stays dirty + watermark held.
+            print("error|slack ratelimited (transient); preserving watermark")
         else:
             print(f"error|non-json response: {body[:80]}")
         return

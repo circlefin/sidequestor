@@ -201,7 +201,16 @@ Append one line per action:
 {"ts":"<utc_iso>", "event":"<draft_posted|message_sent|executed|info_received|status_change|note|blocked>", "...":"..."}
 ```
 
-**Log the verbatim body on every outbound send.** For any `message_sent` / `reply_sent` / `dm_sent` / `executed`(slack or email) / `email_replied` event, include the exact text you sent as a `message_text` field on the timeline entry (alongside the usual `note` summary + `permalink` + `response_ts`). The dashboard surfaces the real message only when this field is present — a `note` summary alone shows in the full timeline but not in the Messages stream or the quest Conversation. This applies to Reactions Fast Path replies too. (Drafts routed through the approval queue already carry their body in `pending-approvals.json`, so a `draft_posted` with an `approval_id` needs no `message_text`.)
+**Send Slack messages through `slack-send.py` so the body is logged automatically.** For any quest send or draft, use the helper instead of calling `slack_send_message` / `slack_send_message_draft` (native or via `mcp-call.sh`) and then logging separately:
+
+```bash
+python3 yaas-triage/slack-send.py '{"quest_id":"<qid>","channel_id":"C...","message":"<verbatim body>","thread_ts":"<parent ts, optional>","note":"<short summary>"}'
+# add "draft": true to save a draft instead of sending; "event":"..." to override the default (message_sent / draft_posted)
+```
+
+It sends (or drafts), then appends a timeline entry carrying the exact `message_text`, `response_ts`, `permalink`, and your `note` in one step, and prints `{"response_ts":...,"permalink":...}` for the follow-up `watch.json` entry (§3a). If the send fails nothing is logged. This makes body-capture structural rather than something you have to remember.
+
+**The underlying rule (why the helper matters):** the dashboard surfaces a message only when its timeline event carries a `message_text` field. A `note` summary alone shows in the full timeline but not in the Messages stream or the quest Conversation. If you ever log a send by hand (any `message_sent` / `reply_sent` / `dm_sent` / `executed`(slack or email) / `email_replied` event), you MUST include the exact text as `message_text` alongside `note` + `permalink` + `response_ts`. This applies to Reactions Fast Path replies too. (Drafts routed through the approval queue already carry their body in `pending-approvals.json`, so a `draft_posted` with an `approval_id` needs no `message_text`.)
 
 If you **couldn't** complete an action (error, ambiguous situation, needed user input), log it as a `blocked` event in `timeline.ndjson` with details, and **stop without finishing the rest of the work**. Surface the blocker in the Output Contract under "Errors". Do NOT silently skip blocked work and exit clean — triage.sh interprets a clean exit as "everything handled" and will advance watermarks, burying the blocked activity.
 
