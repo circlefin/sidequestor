@@ -126,9 +126,14 @@ def _read_approvals() -> dict:
 
 _CONFLICT = object()  # sentinel: item exists but wrong status for this transition
 
-def _update_approval(approval_id: str, updates: dict, from_status: str = "pending_review") -> dict | None | object:
+def _update_approval(approval_id: str, updates: dict, from_status=("pending_review", "needs_reply")) -> dict | None | object:
     """Read-modify-write with exclusive lock.
-    Returns the updated item, None if not found, or _CONFLICT if status mismatch."""
+    Returns the updated item, None if not found, or _CONFLICT if status mismatch.
+    `from_status` is a str or a collection of allowed current statuses — the
+    review queue surfaces both `pending_review` and `needs_reply` items, so the
+    reviewer must be able to act on either (a needs_reply item is one the worker
+    hasn't revised yet; the reviewer's explicit action still wins)."""
+    allowed = {from_status} if isinstance(from_status, str) else set(from_status)
     with open(APPROVALS_FILE, "r+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
@@ -136,7 +141,7 @@ def _update_approval(approval_id: str, updates: dict, from_status: str = "pendin
             item = next((i for i in data.get("items", []) if i.get("id") == approval_id), None)
             if item is None:
                 return None
-            if item.get("status") != from_status:
+            if item.get("status") not in allowed:
                 return _CONFLICT
             item.update(updates)
             f.seek(0)
