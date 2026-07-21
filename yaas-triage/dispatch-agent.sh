@@ -37,6 +37,7 @@
 #   REPO_ROOT                    repo working dir (default: parent of script dir)
 #   YAAS_WORKER_PERMISSION_MODE  claude --permission-mode (default: acceptEdits)
 #   YAAS_CLAUDE_MODEL            default: opus
+#   YAAS_CLAUDE_EFFORT           claude --effort (low|medium|high|...); unset → omit flag
 #   YAAS_CODEX_MODEL             default: "" → codex uses ~/.codex/config.toml model
 #   YAAS_CURSOR_MODEL            default: "" → cursor uses its default (auto)
 
@@ -55,7 +56,9 @@ export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 case "$BACKEND" in
   claude)
     MODEL="${YAAS_CLAUDE_MODEL:-opus}"
+    EFFORT="${YAAS_CLAUDE_EFFORT:-}"
     exec claude --model "$MODEL" \
+      ${EFFORT:+--effort "$EFFORT"} \
       --permission-mode "${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}" \
       --mcp-config "$SCRIPT_DIR/worker.mcp.json" \
       --strict-mcp-config \
