@@ -133,7 +133,7 @@ If you don't have a reply TS (e.g., draft save), use the parent `thread_ts` as `
 
 ### 3b. Execute your own commitments before exiting (general rule — all quests AND reactions)
 
-This rule binds every outbound reply you compose, including Reactions Fast Path replies (§ Reactions) — "general rule" means the dispatch target doesn't matter. A `:claudeloading:` reply that says "will rerun X and confirm" owes the rerun in that same tick.
+This rule binds every outbound reply you compose, including Reactions Fast Path replies (§ Reactions) — "general rule" means the dispatch target doesn't matter. A `:claude-intensifies:` reply that says "will rerun X and confirm" owes the rerun in that same tick.
 
 If your reply contains a forward-looking commitment ("I'll raise it in X", "let me ping Y", "I'm going to loop in Z"), execute it in the same tick before you exit. `watch.json` only watches inbound signals: messages, reactions, scheduled cron, email. A commitment that lives only as text inside a Slack message has no trigger for triage to fire on, so the next tick will not resurrect it. The user should not have to ping you to do something you just said you would do.
 
@@ -232,9 +232,28 @@ Reactions are their own dispatch target, **handled independently from quests**. 
 
 | Reaction | Behavior | State file |
 |---|---|---|
-| `:claudeloading:` | Research the thread, reply in-thread with `slack_send_message` + `thread_ts`. | `state/claudeloading_replied.json` |
-| `:writing_hand:` | Research, create a draft via `slack_send_message_draft` (never send). If draft fails with `mcp_externally_shared_channel_restricted`, save the draft to the actual target thread (with `channel_id` + `thread_ts`), then DM the user only the permalink to that thread — not the draft text. They'll open the thread, edit the draft in the compose box, and send it themselves. | `state/writing_hand_replied.json` |
-| `:floppy_disk:` | Save context silently to `state/context-memory/` (see § Context memory). Do not reply. | `state/floppy_disk_saved.json` |
+| `:claude-intensifies:` | The user's "process this" trigger. Research the thread, reply in-thread with `slack_send_message` + `thread_ts`. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/claude_intensifies_replied.json` |
+| `:writing_hand:` | Research, create a draft via `slack_send_message_draft` (never send). Drive the reaction lifecycle as you go (see § Reaction lifecycle). If draft fails with `mcp_externally_shared_channel_restricted`, save the draft to the actual target thread (with `channel_id` + `thread_ts`), then DM the user only the permalink to that thread — not the draft text. They'll open the thread, edit the draft in the compose box, and send it themselves. | `state/writing_hand_replied.json` |
+| `:floppy_disk:` | Save context silently to `state/context-memory/` (see § Context memory). Do not reply. No lifecycle (one-shot, no emoji swaps). | `state/floppy_disk_saved.json` |
+| `:incoming_envelope:` | Adopt the message into its owning quest: find the active quest watching this channel/thread, append a `slack_thread` watch on it, log to that quest's `timeline.ndjson`. Do not reply. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/incoming_envelope_adopted.json` |
+
+### Reaction lifecycle (action reactions)
+
+Every reaction where you **take action** carries a visible three-state lifecycle on the message: `:claude-intensifies:` (reply), `:writing_hand:` (draft), and `:incoming_envelope:` (adopt into a quest). **Each transition unchecks the previous reaction and adds the next one** — never leave two lifecycle emojis on the message at once. `:floppy_disk:` is the sole exception: it saves silently and has no lifecycle.
+
+1. **Marked for processing** — the user applies the trigger reaction. This is what the checker detects; it is the only lifecycle reaction the user adds.
+2. **Processing** — the moment you pick the message up (before doing the work), swap it: remove the trigger reaction, add `:claudeloading:`.
+   ```bash
+   ./yaas-triage/slack-react.sh remove <channel_id> <msg_ts> <trigger_emoji>   # claude-intensifies | writing_hand | incoming_envelope
+   ./yaas-triage/slack-react.sh add    <channel_id> <msg_ts> claudeloading
+   ```
+3. **Done actioning** — once the action is complete (reply sent / draft posted / message adopted) and every in-tick commitment is done, swap again: remove `:claudeloading:`, add `:cool-claude:`.
+   ```bash
+   ./yaas-triage/slack-react.sh remove <channel_id> <msg_ts> claudeloading
+   ./yaas-triage/slack-react.sh add    <channel_id> <msg_ts> cool-claude
+   ```
+
+The Slack MCP surface has no remove-reaction tool, so removals go through `slack-react.sh` (Slack Web API, same user token). If the action genuinely can't complete this tick (blocked, needs a quest; or `:incoming_envelope:` found no owning quest and got skipped), leave it at `:claudeloading:` — do NOT advance to `:cool-claude:`, since that signals completion.
 
 ### Minimum run loop
 
@@ -243,19 +262,24 @@ For the `reactions` target, execute exactly these steps:
 1. **Read `state/triage/pending_reactions.json`** — shape `{ "<emoji>": ["<msg_ts>", ...] }`.
 2. **For each `(emoji, msg_ts)` pair:**
    a. `slack_read_thread` to get the message + thread context.
-   b. Act per the table above.
-   c. **Commitment check (§ 3b applies here).** Before sending, scan your draft reply for commitment phrases ("I'll", "will rerun", "will confirm", "let me"). If the thread asks you to DO something, do the work first and reply once with the result — never reply with a promise and exit. Verify capability (available tools, credentials in `.env`) before deciding you can't. If the action genuinely cannot complete in-tick, spawn a quest (§ New quests from reactions) before exiting so the promise has a trigger — a commitment tracked nowhere never resurfaces.
-   d. **Append `msg_ts`** to the emoji's state file. This is how we avoid re-processing.
+   b. **For action reactions, mark processing first:** swap the trigger reaction to `:claudeloading:` (§ Reaction lifecycle) before doing the work. `:floppy_disk:` has no lifecycle swap.
+   c. Act per the table above.
+   d. **Commitment check (§ 3b applies here).** Before sending, scan your draft reply for commitment phrases ("I'll", "will rerun", "will confirm", "let me"). If the thread asks you to DO something, do the work first and reply once with the result — never reply with a promise and exit. Verify capability (available tools, credentials in `.env`) before deciding you can't. If the action genuinely cannot complete in-tick, spawn a quest (§ New quests from reactions) before exiting so the promise has a trigger — a commitment tracked nowhere never resurfaces.
+   e. **For action reactions, mark done:** once the action is complete and every in-tick commitment is done, swap `:claudeloading:` → `:cool-claude:` (§ Reaction lifecycle). If blocked / spun into a quest / skipped, leave it at `:claudeloading:`.
+   f. **Append `msg_ts`** to the emoji's state file. This is how we avoid re-processing.
 3. **Exit 0** when all entries are processed. Triage deletes `pending_reactions.json`.
 
 ### State file schemas
 
 ```json
-// claudeloading_replied.json, floppy_disk_saved.json
+// claude_intensifies_replied.json, floppy_disk_saved.json
 { "replied_timestamps": ["1774393839.892619", ...] }    // or "saved_timestamps"
 
 // writing_hand_replied.json (adds skipped_notes for consciously-declined)
 { "replied_timestamps": [...], "skipped_notes": { "1768811362.124979": "why I chose not to reply" } }
+
+// incoming_envelope_adopted.json (adds skipped_notes for no-quest-match / declined)
+{ "adopted_timestamps": [...], "skipped_notes": { "1768811362.124979": "no active quest watches this channel" } }
 ```
 
 ### Skips and failures
@@ -280,7 +304,7 @@ Rules: one message may feed multiple files; append, never overwrite; kebab-case 
 
 ### New quests from reactions
 
-Only create a new quest if the thread genuinely needs ongoing tracking beyond the single reply/draft. Most `:claudeloading:` / `:writing_hand:` uses are one-shot (answer the question, done) and should NOT spawn a quest.
+Only create a new quest if the thread genuinely needs ongoing tracking beyond the single reply/draft. Most `:claude-intensifies:` / `:writing_hand:` uses are one-shot (answer the question, done) and should NOT spawn a quest.
 
 Spawn a quest only when:
 - The reply itself opens a task (e.g., "I'll research X and come back") — quest tracks the follow-up thread for the return reply.
