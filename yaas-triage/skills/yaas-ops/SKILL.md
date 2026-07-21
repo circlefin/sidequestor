@@ -48,7 +48,7 @@ state/
 │   ├── completed/            ← finished quests (kept for audit)
 │   └── archived/             ← cancelled or stale
 ├── run-log.ndjson            ← append-only log of every triage tick + dispatch
-├── claudeloading_replied.json ← processed :claudeloading: timestamps
+├── claude_intensifies_replied.json ← processed :claude-intensifies: timestamps
 ├── writing_hand_replied.json  ← processed :writing_hand: + skipped notes
 ├── floppy_disk_saved.json     ← processed :floppy_disk: timestamps
 └── context-memory/           ← :floppy_disk: saves (people/, topics/)
@@ -95,7 +95,7 @@ Environment variables available to all checkers (exported by triage.sh after sou
 
 ### The reactions sweep
 
-`checkers/reactions.py` is special — it doesn't follow the per-entry interface. It runs once per triage tick (called directly by triage.sh with 4 positional args) and sweeps Slack globally for `:claudeloading:`, `:writing_hand:`, `:floppy_disk:` reactions across a 60-day window. Diffs against `state/*_replied.json` / `state/*_saved.json`. New reactions → writes `state/triage/pending_reactions.json`.
+`checkers/reactions.py` is special — it doesn't follow the per-entry interface. It runs once per triage tick (called directly by triage.sh with 4 positional args) and sweeps Slack globally for `:claude-intensifies:`, `:writing_hand:`, `:floppy_disk:` reactions across a 60-day window. Diffs against `state/*_replied.json` / `state/*_saved.json`. New reactions → writes `state/triage/pending_reactions.json`.
 
 ### Watermark lag
 

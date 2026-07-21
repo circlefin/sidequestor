@@ -1,11 +1,11 @@
 ---
 name: yaas-answering-quality
-description: Quality rules for composing bot replies in Slack threads and channels — research the asker/channel/partnership context first, multiple hypotheses for debugging questions, search prior Slack threads before answering tooling questions, follow up on answered threads within 48 hours, hedge confidence appropriately, and handle vague or suspiciously simple questions by clarifying or scoping the interpretation. Load whenever the worker is about to post a reply in #ai-questions, a `:claudeloading:` thread, a `:writing_hand:` draft, or any other public/private channel Q&A. Does not apply to partner-facing DMs on quest-driven outreach — those follow the quest's own tone.
+description: Quality rules for composing bot replies in Slack threads and channels — research the asker/channel/partnership context first, multiple hypotheses for debugging questions, search prior Slack threads before answering tooling questions, follow up on answered threads within 48 hours, hedge confidence appropriately, and handle vague or suspiciously simple questions by clarifying or scoping the interpretation. Load whenever the worker is about to post a reply in #ai-questions, a `:claude-intensifies:` thread, a `:writing_hand:` draft, or any other public/private channel Q&A. Does not apply to partner-facing DMs on quest-driven outreach — those follow the quest's own tone.
 ---
 
 # Answering Quality Rules
 
-Applies whenever the bot composes a reply in any Slack channel (#ai-questions, `:claudeloading:` threads, `:writing_hand:` drafts, any public or private channel Q&A).
+Applies whenever the bot composes a reply in any Slack channel (#ai-questions, `:claude-intensifies:` threads, `:writing_hand:` drafts, any public or private channel Q&A).
 
 ## 0. Know the room before you answer
 
@@ -34,7 +34,7 @@ For questions about internal tools (n8n, Claude Code setup, Slack integrations, 
 
 ## 3. Follow up on threads where you answered
 
-Each run, check threads where the bot previously posted an answer (tracked in `state/claudeloading_replied.json` and `state/writing_hand_replied.json`, last 48 hours):
+Each run, check threads where the bot previously posted an answer (tracked in `state/claude_intensifies_replied.json` and `state/writing_hand_replied.json`, last 48 hours):
 
 - If someone replied to your answer with a follow-up question or more use-case details, respond. Don't leave them hanging.
 - If a domain expert corrected your answer in the same thread, do NOT argue or re-explain. Acknowledge the correction gracefully: *"Good catch — [expert]'s answer is the right one here."*

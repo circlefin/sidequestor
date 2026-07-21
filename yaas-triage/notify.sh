@@ -23,7 +23,7 @@
 #
 # Scans:
 #   - active quest timeline.ndjson  for message_sent / draft_posted / executed
-#   - claudeloading_replied.json    for new reaction replies
+#   - claude_intensifies_replied.json  for new reaction replies
 #   - writing_hand_replied.json     for new draft reactions
 
 set -euo pipefail
@@ -93,7 +93,7 @@ for timeline in active_dir.glob("*/timeline.ndjson"):
 
 # ── Reaction state files ──────────────────────────────────────────────────────
 REACTION_FILES = {
-    "claudeloading_replied.json": ("replied_timestamps", "replied to :claudeloading:"),
+    "claude_intensifies_replied.json": ("replied_timestamps", "replied to :claude-intensifies:"),
     "writing_hand_replied.json":  ("replied_timestamps", "drafted reply for :writing_hand:"),
 }
 for fname, (key, label) in REACTION_FILES.items():

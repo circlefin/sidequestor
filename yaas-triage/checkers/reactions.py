@@ -16,7 +16,7 @@
 # limitations under the License.
 
 """
-checkers/reactions.py — scan Slack for new :claudeloading:, :writing_hand:, :floppy_disk:,
+checkers/reactions.py — scan Slack for new :claude-intensifies:, :writing_hand:, :floppy_disk:,
 :incoming_envelope: reactions applied by the user since the 60-day cutoff. Diffs against
 processed-set state files. Writes state/triage/pending_reactions.json if anything is new.
 
@@ -52,7 +52,7 @@ def main():
     state_dir = os.path.join(repo_root, "state")
 
     emoji_specs = [
-        ("claudeloading",     "claudeloading_replied.json",     "replied_timestamps"),
+        ("claude-intensifies", "claude_intensifies_replied.json", "replied_timestamps"),
         ("writing_hand",      "writing_hand_replied.json",      "replied_timestamps"),
         ("floppy_disk",       "floppy_disk_saved.json",         "saved_timestamps"),
         ("incoming_envelope", "incoming_envelope_adopted.json", "adopted_timestamps"),

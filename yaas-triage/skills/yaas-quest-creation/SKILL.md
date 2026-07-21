@@ -55,7 +55,7 @@ Ask the user for, in order:
    verbatim and NOT validated, so a typo like `filter_keyword` (singular) is silently
    written and silently ignored — spell them exactly.
 
-   **Note:** reactions (`:claudeloading:`, `:writing_hand:`, `:floppy_disk:`) are tracked globally by triage.sh and are NOT a per-quest watch input. Do not include them in `watches[]`.
+   **Note:** reactions (`:claude-intensifies:`, `:writing_hand:`, `:floppy_disk:`) are tracked globally by triage.sh and are NOT a per-quest watch input. Do not include them in `watches[]`.
 3. **Priority** — high / normal / low. Default to normal if unspecified.
 4. **Context** — ask the user to paste or describe what this quest is about. This becomes the body of `context.md`. If they already gave context earlier in the conversation, use that; don't re-ask.
 

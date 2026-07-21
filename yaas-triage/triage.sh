@@ -250,7 +250,7 @@ DIRTY_COUNT=${#DIRTY_QUESTS[@]}
 CLEAN_COUNT=${#CLEAN_QUESTS[@]}
 
 # ── Global reaction sweep ──────────────────────────────────────────────────
-# Checks :claudeloading:, :writing_hand:, :floppy_disk: reactions applied by
+# Checks :claude-intensifies:, :writing_hand:, :floppy_disk: reactions applied by
 # the user. Uses a rolling 60-day window (Slack's after: applies to message
 # post time, so we set it wide enough to catch reactions added to recent-ish
 # messages). Diffs against global state files in state/*_replied|saved.json —
@@ -379,7 +379,7 @@ PYEOF
 fi
 
 # ── Prune reaction state files (keep newest 1000 timestamps) ─────────────────
-for _state in "$REPO_ROOT/state/claudeloading_replied.json" \
+for _state in "$REPO_ROOT/state/claude_intensifies_replied.json" \
               "$REPO_ROOT/state/writing_hand_replied.json" \
               "$REPO_ROOT/state/floppy_disk_saved.json" \
               "$REPO_ROOT/state/incoming_envelope_adopted.json"; do
