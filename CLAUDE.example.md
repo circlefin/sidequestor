@@ -247,13 +247,13 @@ Every reaction where you **take action** carries a visible three-state lifecycle
    ./yaas-triage/slack-react.sh remove <channel_id> <msg_ts> <trigger_emoji>   # claude-intensifies | writing_hand | incoming_envelope
    ./yaas-triage/slack-react.sh add    <channel_id> <msg_ts> claudeloading
    ```
-3. **Done actioning** — once the action is complete (reply sent / draft posted / message adopted) and every in-tick commitment is done, swap again: remove `:claudeloading:`, add `:cool-claude:`.
+3. **Done actioning** — once the action is complete (reply sent / draft posted / message adopted) and every in-tick commitment is done, swap again: remove `:claudeloading:`, add `:updatedone:`.
    ```bash
    ./yaas-triage/slack-react.sh remove <channel_id> <msg_ts> claudeloading
-   ./yaas-triage/slack-react.sh add    <channel_id> <msg_ts> cool-claude
+   ./yaas-triage/slack-react.sh add    <channel_id> <msg_ts> updatedone
    ```
 
-The Slack MCP surface has no remove-reaction tool, so removals go through `slack-react.sh` (Slack Web API, same user token). If the action genuinely can't complete this tick (blocked, needs a quest; or `:incoming_envelope:` found no owning quest and got skipped), leave it at `:claudeloading:` — do NOT advance to `:cool-claude:`, since that signals completion.
+The Slack MCP surface has no remove-reaction tool, so removals go through `slack-react.sh` (Slack Web API, same user token). If the action genuinely can't complete this tick (blocked, needs a quest; or `:incoming_envelope:` found no owning quest and got skipped), leave it at `:claudeloading:` — do NOT advance to `:updatedone:`, since that signals completion.
 
 ### Minimum run loop
 
@@ -265,7 +265,7 @@ For the `reactions` target, execute exactly these steps:
    b. **For action reactions, mark processing first:** swap the trigger reaction to `:claudeloading:` (§ Reaction lifecycle) before doing the work. `:floppy_disk:` has no lifecycle swap.
    c. Act per the table above.
    d. **Commitment check (§ 3b applies here).** Before sending, scan your draft reply for commitment phrases ("I'll", "will rerun", "will confirm", "let me"). If the thread asks you to DO something, do the work first and reply once with the result — never reply with a promise and exit. Verify capability (available tools, credentials in `.env`) before deciding you can't. If the action genuinely cannot complete in-tick, spawn a quest (§ New quests from reactions) before exiting so the promise has a trigger — a commitment tracked nowhere never resurfaces.
-   e. **For action reactions, mark done:** once the action is complete and every in-tick commitment is done, swap `:claudeloading:` → `:cool-claude:` (§ Reaction lifecycle). If blocked / spun into a quest / skipped, leave it at `:claudeloading:`.
+   e. **For action reactions, mark done:** once the action is complete and every in-tick commitment is done, swap `:claudeloading:` → `:updatedone:` (§ Reaction lifecycle). If blocked / spun into a quest / skipped, leave it at `:claudeloading:`.
    f. **Append `msg_ts`** to the emoji's state file. This is how we avoid re-processing.
 3. **Exit 0** when all entries are processed. Triage deletes `pending_reactions.json`.
 
