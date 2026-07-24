@@ -202,6 +202,17 @@ check_quest() {
     parsed=$(python3 "$checker" "$entry" 2>/dev/null || echo "error|checker failed to execute")
     new_count="${parsed%%|*}"
     preview="${parsed#*|}"
+    if [ "$new_count" = "ratelimited" ]; then
+      # Transient Slack rate-limit — NOT dirty. Marking dirty here would burn a
+      # full Opus dispatch that finds nothing, and the rate-limit is usually
+      # self-inflicted by checker volume, so dispatching makes it worse. The
+      # checker already held its watermark; skip this quest for this tick and
+      # let it retry next tick once the tier recovers. (Real incident
+      # 2026-07-24: ratelimited checks read as `error`→dirty and re-fired the
+      # same 6 quests every 60s for ~13.5h, burning >$1k with zero output.)
+      echo -e "${qid}\tskip\t[$type] $preview"
+      return 0
+    fi
     if [ "$new_count" = "error" ]; then
       echo -e "${qid}\tdirty\t[$type] error — $preview"
       return 0
@@ -236,10 +247,17 @@ wait
 # ── Analyze ─────────────────────────────────────────────────────────────────
 DIRTY_QUESTS=()
 CLEAN_QUESTS=()
+SKIPPED_QUESTS=()
 while IFS=$'\t' read -r qid status reason; do
   if [ "$status" = "dirty" ]; then
     DIRTY_QUESTS+=("$qid")
     log "DIRTY: $qid — $reason"
+  elif [ "$status" = "skip" ]; then
+    # Transient rate-limit (see check_quest). Neither dispatched nor watermark-
+    # advanced: it stays out of CLEAN_QUESTS so the watermark is held, and out
+    # of DIRTY_QUESTS so no Opus dispatch fires. Retries next tick.
+    SKIPPED_QUESTS+=("$qid")
+    log "SKIP: $qid — $reason"
   else
     CLEAN_QUESTS+=("$qid")
     vlog "CLEAN: $qid — $reason"
@@ -248,6 +266,7 @@ done < "$TMP_RESULTS"
 
 DIRTY_COUNT=${#DIRTY_QUESTS[@]}
 CLEAN_COUNT=${#CLEAN_QUESTS[@]}
+SKIPPED_COUNT=${#SKIPPED_QUESTS[@]}
 
 # ── Global reaction sweep ──────────────────────────────────────────────────
 # Checks :claude-intensifies:, :writing_hand:, :floppy_disk: reactions applied by
@@ -295,6 +314,7 @@ d['runs_total']     = d.get('runs_total', 0) + 1
 d['quests_checked'] = $QUEST_COUNT
 d['quests_dirty']   = $DIRTY_COUNT
 d['quests_clean']   = $CLEAN_COUNT
+d['quests_skipped'] = $SKIPPED_COUNT
 if $DIRTY_COUNT == 0:
     d['runs_idle'] = d.get('runs_idle', 0) + 1
 else:
@@ -407,9 +427,9 @@ fi
 
 # ── Decide ──────────────────────────────────────────────────────────────────
 if [ "$DIRTY_COUNT" = "0" ] && [ "$REACTIONS_DIRTY" = "0" ]; then
-  echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_idle\",\"quests_checked\":$QUEST_COUNT}" >> "$RUN_LOG"
-  log "IDLE — $QUEST_COUNT quest(s) checked, 0 dirty, 0 new reactions. Watermarks advanced."
-  slog "Run OK — idle. $QUEST_COUNT quest(s) swept, 0 activity."
+  echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_idle\",\"quests_checked\":$QUEST_COUNT,\"quests_skipped\":$SKIPPED_COUNT}" >> "$RUN_LOG"
+  log "IDLE — $QUEST_COUNT quest(s) checked, 0 dirty, $SKIPPED_COUNT rate-limit skip(s), 0 new reactions. Watermarks advanced (skipped quests held)."
+  slog "Run OK — idle. $QUEST_COUNT quest(s) swept, 0 activity, $SKIPPED_COUNT rate-limit skip(s)."
   exit 0
 fi
 

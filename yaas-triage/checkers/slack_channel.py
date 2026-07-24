@@ -60,10 +60,14 @@ def main():
         if "channel_not_found" in body:
             print("0|")
         elif "ratelimited" in body:
-            # Transient: rate limits clear on their own. Never treat as clean.
-            # a "0" here advances the watermark past unseen messages (silent
-            # burial). Report error so the quest stays dirty + watermark held.
-            print("error|slack ratelimited (transient); preserving watermark")
+            # Transient: rate limits clear on their own. Never treat as clean
+            # (a "0" advances the watermark past unseen messages — silent
+            # burial), but never treat as `error` either — `error` marks the
+            # quest dirty and burns a full Opus dispatch that finds nothing,
+            # and the rate-limit was likely caused by the checker volume in the
+            # first place. Distinct `ratelimited` outcome: triage skips the
+            # quest this tick and holds the watermark. Retries next tick.
+            print("ratelimited|slack ratelimited (transient); skipping tick, watermark held")
         else:
             print(f"error|non-json response: {body[:80]}")
         return
