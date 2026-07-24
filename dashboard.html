@@ -160,6 +160,46 @@ input.field-error { border-color:var(--amber); }
 .btn-cancel:hover:not(:disabled) { border-color:var(--text3); color:var(--text); }
 .rc-next { margin-left:auto; background:var(--surface); color:var(--accent); border:1px solid #c9b8ea; }
 .rc-next:hover { background:var(--accent-soft); }
+/* open items — grouped open loops */
+.oi-count { font-family:var(--mono); font-size:10.5px; color:var(--text3); font-weight:400; margin-left:8px; }
+.oi-group { margin-bottom:14px; }
+.oi-group-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.oi-badge { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; padding:2px 9px; border-radius:20px; }
+.oi-n { font-family:var(--mono); font-size:10.5px; color:var(--text3); }
+.oi-blocked { background:#fdf3e1; color:var(--amber); border:1px solid #f1dcb6; }
+.oi-review { background:#e8f1fb; color:var(--blue); border:1px solid #cfe1f5; }
+.oi-draft { background:#fdf3e1; color:var(--amber); border:1px solid #f1dcb6; }
+.oi-wait { background:#f2ebfc; color:var(--violet); border:1px solid #e2d3f8; }
+.oi-promise { background:#fdeff0; color:var(--red); border:1px solid #f6d3dc; }
+.oi-row { display:flex; align-items:center; gap:9px; padding:8px 12px; border:1px solid var(--border); border-left-width:3px; border-radius:7px; background:var(--surface); font-size:12.5px; margin-bottom:5px; cursor:pointer; }
+.oi-row:hover { background:var(--surface2); }
+.oi-row.r-blocked { border-left-color:var(--amber); }
+.oi-row.r-review { border-left-color:var(--blue); }
+.oi-row.r-draft { border-left-color:var(--amber); }
+.oi-row.r-wait { border-left-color:var(--violet); }
+.oi-row.r-promise { border-left-color:var(--red); }
+.oi-qtitle { font-weight:600; }
+.oi-reason { color:var(--text2); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.oi-age { font-family:var(--mono); font-size:10.5px; color:var(--text3); margin-left:auto; white-space:nowrap; }
+.oi-overdue { color:var(--red); font-weight:600; }
+.oi-more { font-size:11px; color:var(--text3); padding:4px 12px 2px; }
+.oi-row .deeplink.icon-only { flex:none; }
+.rc-revising { background:#fdf3e1; border:1px solid #f1dcb6; color:var(--amber); border-radius:7px; padding:8px 11px; font-size:12px; margin-bottom:10px; }
+.rc-revising-note { display:block; margin-top:3px; color:var(--text2); }
+.review-card.is-revising { opacity:.92; }
+/* per-quest open items panel */
+.qv-openitems { border:1px solid var(--border); border-radius:9px; background:var(--surface); padding:11px 12px; margin-bottom:14px; }
+.qv-oi-label { font-family:var(--mono); font-size:10.5px; color:var(--text3); margin-bottom:9px; text-transform:uppercase; letter-spacing:.04em; display:flex; align-items:center; gap:8px; }
+.qv-oi-label .oi-count { margin-left:auto; }
+/* per-quest manual prompt */
+.qv-prompt { border:1px solid var(--border); border-radius:9px; background:var(--surface2); padding:11px 12px; margin-bottom:14px; }
+.qv-prompt-label { font-family:var(--mono); font-size:10.5px; color:var(--text3); margin-bottom:7px; text-transform:uppercase; letter-spacing:.04em; }
+.qv-prompt-text { width:100%; box-sizing:border-box; resize:vertical; font-family:inherit; font-size:12.5px; padding:8px 10px; border:1px solid var(--border2); border-radius:7px; background:var(--surface); color:var(--text); }
+.qv-prompt-text:focus { outline:none; border-color:var(--accent); }
+.qv-prompt-row { display:flex; align-items:center; gap:10px; margin-top:8px; }
+.qv-prompt-status { font-size:11.5px; color:var(--text2); flex:1; }
+.qv-prompt-status.err { color:var(--red); }
+.qv-prompt-row .btn-review { margin-left:auto; }
 .card-done { opacity:.3; pointer-events:none; transition:opacity .4s; }
 .rc-revisions { background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:11px 14px; margin-bottom:14px; font-size:12.5px; line-height:1.55; }
 .rc-rev-line { color:var(--text2); margin-top:6px; } .rc-rev-line:first-child { margin-top:0; }
@@ -503,7 +543,20 @@ function renderReviewQueue(items){
   const want=new Set(reviewOrder);
   have.forEach(id=>{ if(!want.has(id)) cont.querySelector(`[data-appr-id="${CSS.escape(id)}"]`)?.remove(); });
   const byId={}; items.forEach(i=>byId[i.id]=i);
-  reviewOrder.forEach(id=>{ if(!have.has(id)){ const div=document.createElement('div'); div.className='review-slide'; div.dataset.apprId=id; div.innerHTML=buildCard(byId[id]); cont.appendChild(div); } });
+  reviewOrder.forEach(id=>{
+    const it=byId[id];
+    const sig=cardSig(it);
+    if(!have.has(id)){
+      const div=document.createElement('div'); div.className='review-slide'; div.dataset.apprId=id; div.dataset.sig=sig; div.innerHTML=buildCard(it); cont.appendChild(div);
+    } else {
+      // Reuse the existing card (keeps in-progress edits) UNLESS the server-side
+      // data changed — status flip (e.g. revise → needs_reply → worker answered)
+      // or a revised draft. Then rebuild so the new state shows and any stuck
+      // "Submitting…"/disabled/faded state is cleared.
+      const el=cont.querySelector(`[data-appr-id="${CSS.escape(id)}"]`);
+      if(el && el.dataset.sig!==sig){ el.classList.remove('card-done'); el.dataset.sig=sig; el.innerHTML=buildCard(it); }
+    }
+  });
   reviewOrder.forEach(id=>{ const el=cont.querySelector(`[data-appr-id="${CSS.escape(id)}"]`); if(el) cont.appendChild(el); }); // reorder, keeps inputs
   // pager
   pager.innerHTML=items.map((it,i)=>{
@@ -516,6 +569,9 @@ function renderReviewQueue(items){
   showSlide(reviewIndex);
 }
 function shortTitle(it){ return (it.quest_title||it.quest_id||'').replace(/^quest-/,'').replace(/-\d{4}-\d{2}-\d{2}$/,'').slice(0,32); }
+// Server-meaningful signature: rebuild a card only when one of these changes,
+// so local edits survive polls but worker/status updates always render.
+function cardSig(it){ return JSON.stringify([it.status,it.message_text,it.review_note,it.worker_reply,(it.review_history||[]).length]); }
 function showSlide(i){
   const n=reviewOrder.length; if(!n){ return; }
   reviewIndex=Math.max(0,Math.min(i,n-1));
@@ -550,8 +606,11 @@ function buildCard(item){
   const noteField=isMsg
     ? `<div class="rc-label" style="margin-bottom:6px">review note · instruction for the worker (required to submit for revision)</div><input type="text" data-field="review_note" placeholder='e.g. "make it more polite"  ·  "loop in a teammate too"'>`
     : `<div class="rc-label" style="margin-bottom:6px">revision prompt · tell the worker what to change (required to submit for revision)</div><textarea class="note-field" data-field="review_note" placeholder="what should the worker change?"></textarea>`;
-  return `<div class="review-card rc-${esc(at)}" data-appr-id="${esc(item.id)}">
+  const revising=item.status==='needs_reply';
+  const banner=revising?`<div class="rc-revising">⏳ submitted for revision — the worker will revise and re-surface this for another review. ${item.review_note?`<span class="rc-revising-note">asked: ${esc(item.review_note)}</span>`:''}</div>`:'';
+  return `<div class="review-card rc-${esc(at)}${revising?' is-revising':''}" data-appr-id="${esc(item.id)}">
     <div class="rc-header"><div><div class="rc-title">${esc(item.quest_title||item.quest_id)}</div>${item.risk_reason?`<div class="rc-risk">${esc(item.risk_reason)}</div>`:''}</div>${agoSpan(item.created_at,'rc-age')}</div>
+    ${banner}
     ${targetRow}
     ${ctx}
     ${revisionsBlock(item)}
@@ -600,6 +659,34 @@ function renderQuests(quests){
 function renderFeed(feed){
   if(!changed('feed',feed)) return;
   document.getElementById('activity-feed').innerHTML=feed.map(a=>`<div class="feed-item"><div class="feed-time">${feedTime(a.ts)}</div><div><div class="feed-top">${badge(a.event)}<span class="feed-quest">${esc(a.quest_title)}</span></div>${a.note?`<div class="feed-note">${esc(a.note)}</div>`:''}</div></div>`).join('')||'<div class="empty">no recent activity</div>';
+}
+
+// ── Per-quest open items (rendered inside the quest detail view): what THIS
+//    quest is still waiting on — blocked reason, tracked threads, items awaiting
+//    your review, and promised-but-unfulfilled commitments. Derived from the
+//    quest's watch.json + timeline + approvals; no tokens. ──
+function oiRow(inner,cls){ return `<div class="oi-row ${cls}">${inner}</div>`; }
+function oiThreadRow(t){
+  const ro=t.read_only?'<span class="tag tag-mode">read-only</span>':'';
+  const link=t.slack_url?deeplink(t.slack_url,false):(t.query?`<span class="oi-query">${esc(t.query)}</span>`:'');
+  const age=t.last_checked_ts?`<span class="oi-age">${agoEpoch(t.last_checked_ts)}</span>`:'';
+  return oiRow(`${badge(t.type||'watch')}${ro}<span class="oi-reason">${esc(t.reason||'(no reason)')}</span>${age}${link}`,'r-wait');
+}
+function fireTime(ts){ const f=parseFloat(ts); if(!isFinite(f)||f<=0) return ''; const d=new Date(f*1000),now=Date.now(); const past=d.getTime()<now; const s=d.toLocaleDateString(undefined,{month:'short',day:'numeric'}); return `<span class="oi-age${past?' oi-overdue':''}">${past?'due ':'fires '}${esc(s)}</span>`; }
+function renderQuestOpenItems(oi){
+  if(!oi) return '';
+  const threads=oi.threads||[], sched=oi.scheduled||[], review=oi.review||[], commits=oi.commitments||[], blocked=oi.blocked;
+  const total=oi.threads_total||threads.length;
+  const n=(blocked?1:0)+total+sched.length+review.length+commits.length;
+  let body='';
+  if(blocked) body+=oiRow(`<span class="oi-badge oi-blocked">blocked</span><span class="oi-reason">${esc(blocked.reason||'(no reason logged)')}</span>${blocked.ts?`<span class="oi-age" data-ts="${esc(blocked.ts)}">${ago(blocked.ts)}</span>`:''}`,'r-blocked');
+  review.forEach(r=>{ body+=oiRow(`<span class="oi-badge oi-review">${esc(r.status)}</span><span class="oi-reason">${esc(r.message_text||r.action_type||'awaiting your review')}</span>`,'r-review'); });
+  commits.forEach(c=>{ body+=oiRow(`<span class="oi-badge oi-promise">promised</span><span class="oi-reason">${esc(c.text||c.note||'')}</span>${c.ts?`<span class="oi-age" data-ts="${esc(c.ts)}">${ago(c.ts)}</span>`:''}`,'r-promise'); });
+  sched.forEach(s=>{ body+=oiRow(`<span class="oi-badge oi-promise">follow-up</span><span class="oi-reason">${esc(s.reason||'(scheduled)')}</span>${fireTime(s.next_fire_ts)}`,'r-promise'); });
+  threads.forEach(t=>{ body+=oiThreadRow(t); });
+  if(total>threads.length) body+=`<div class="oi-more">+ ${total-threads.length} older tracked thread${total-threads.length>1?'s':''} (see watches below)</div>`;
+  if(!n) body='<div class="empty">nothing open — this quest is idle or fully handled</div>';
+  return `<div class="qv-openitems"><div class="qv-oi-label">open items <span class="oi-count">${n} open</span></div>${body}</div>`;
 }
 
 // ── Briefs ──
@@ -657,6 +744,15 @@ function renderQuestView(d){
         <div class="quest-tags">${tags}</div>
       </div>
       <div id="qv-pending"></div>
+      ${renderQuestOpenItems(d.open_items)}
+      <div class="qv-prompt">
+        <div class="qv-prompt-label">run this quest with a new instruction</div>
+        <textarea id="qv-prompt-text" class="qv-prompt-text" rows="2" placeholder="e.g. Draft a reply asking for the settlement timeline, then wait for their answer."></textarea>
+        <div class="qv-prompt-row">
+          <span id="qv-prompt-status" class="qv-prompt-status"></span>
+          <button class="btn btn-review" data-action="run-prompt" data-quest-id="${esc(d.id)}">Run</button>
+        </div>
+      </div>
       <details class="fold"><summary><span class="fold-caret">▸</span> context <span class="fold-count">${d.context_md?'':'empty'}</span></summary><div class="fold-body">${d.context_md?`<div class="drawer-context">${mdToHtml(d.context_md)}</div>`:'<div class="empty">no context</div>'}</div></details>
       <details class="fold"><summary><span class="fold-caret">▸</span> full timeline <span class="fold-count">${d.timeline_total} entries</span></summary><div class="fold-body">${d.timeline.length?d.timeline.map(timelineRow).join(''):'<div class="empty">no timeline</div>'}${trunc}</div></details>
       <details class="fold"><summary><span class="fold-caret">▸</span> watches <span class="fold-count">${d.watches.length}</span></summary><div class="fold-body">${d.watches.length?d.watches.map(watchRow).join(''):'<div class="empty">no watches</div>'}</div></details>
@@ -724,8 +820,23 @@ document.addEventListener('click',e=>{
   if(['review','revise','cancel'].includes(el.dataset.action)){ submitReview(el.closest('.review-card'),el.dataset.action); return; }
   if(el.dataset.nav!==undefined){ showSlide(reviewIndex+(+el.dataset.nav)); return; }
   if(el.dataset.i!==undefined){ showSlide(+el.dataset.i); return; }
+  if(el.dataset.action==='run-prompt'){ runQuestPrompt(el,el.dataset.questId); return; }
   if(el.dataset.questId){ openQuest(el.dataset.questId); return; }
 });
+async function runQuestPrompt(btn,id){
+  const ta=document.getElementById('qv-prompt-text');
+  const st=document.getElementById('qv-prompt-status');
+  const instruction=(ta&&ta.value||'').trim();
+  if(!instruction){ ta&&ta.focus(); return; }
+  btn.disabled=true; ta.disabled=true; st.className='qv-prompt-status'; st.textContent='launching…';
+  try{
+    const r=await fetch(`/api/prompt/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction})});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok){ st.textContent='running — watch the live panel'; ta.value=''; lastDashEtag=null; setTimeout(()=>poll(),600); }
+    else { st.className='qv-prompt-status err'; st.textContent=(d.busy?'busy: ':'')+(d.error||('error '+r.status)); }
+  }catch{ st.className='qv-prompt-status err'; st.textContent='request failed'; }
+  finally{ btn.disabled=false; ta.disabled=false; }
+}
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){ if(livePanelOpen) closeLive(); else if(openQuestId) switchTab('quests'); return; }
   if(activeTab!=='messages'||openQuestId) return;

@@ -40,6 +40,7 @@ import os
 import re
 import secrets
 import socketserver
+import subprocess
 import sys
 import urllib.parse
 from datetime import datetime, timezone
@@ -53,7 +54,7 @@ APPROVALS_FILE = STATE_DIR / "pending-approvals.json"
 DASHBOARD_HTML = REPO_ROOT / "dashboard.html"
 PORT           = int(sys.argv[1]) if len(sys.argv) > 1 else 8877
 
-WORKER_TIMEOUT_S = 900   # mirrors WORKER_TIMEOUT in triage.sh — a log older than
+WORKER_TIMEOUT_S = 1800  # mirrors WORKER_TIMEOUT in triage.sh — a log older than
                          # this with no footer means the worker was killed, not running
 LIVE_TAIL_LINES  = 60   # panel wants the fuller transcript; pill only shows the target name
 
@@ -317,6 +318,141 @@ def build_live_run() -> dict:
         "targets":    targets,
         "started_at": started_at,
         "tail":       body[-LIVE_TAIL_LINES:],
+    }
+
+
+# ── Open-items builder ────────────────────────────────────────────────────────
+# A read-only, LLM-free rollup of the OPEN LOOPS across active quests — not the
+# raw watch list (most watches are passive monitors, not things awaiting action).
+# Each quest is classified into one primary state from its timeline.ndjson:
+#   blocked        — last event is a blocker the worker couldn't clear
+#   awaiting_reply — we sent something and nothing has come back since
+#   draft          — a draft is posted/queued and nothing sent after it
+#   (quests whose latest activity is inbound-and-handled, or pure monitors, are
+#    NOT listed — they are not open loops.)
+# Plus pending approvals (needs your review) and any persisted commitments the
+# worker flagged as promised-but-unfulfilled. Computed on each poll from
+# timeline.ndjson + pending-approvals.json + commitments file — no tokens.
+# Deterministic between state changes so the ETag/304 poll path holds.
+
+_OPEN_WATCH_TYPES = {"slack_thread", "slack_channel", "slack_dm", "slack_mention", "email"}
+_OUT_EVENTS = {"message_sent", "reply_sent", "dm_sent", "executed"}
+_IN_EVENTS  = {"info_received"}
+# Routine/no-loop events that never represent an open item on their own.
+_ROUTINE_EVENTS = {"created", "note", "status_change", "brief_written",
+                   "weekly_recap_posted", "weekly_recap_skipped", "dry_run",
+                   "schedule_changed"}
+COMMITMENTS_FILE = STATE_DIR / "open-commitments.json"
+
+def _event_link(e: dict):
+    ch = _norm_channel(e)
+    ts = (e.get("response_ts") or e.get("msg_ts") or e.get("message_ts")
+          or e.get("thread_ts"))
+    permalink = (e.get("permalink") or e.get("dm_permalink")
+                 or e.get("thread_permalink"))
+    return _slack_url(ch, ts, e.get("thread_ts"), permalink), ch
+
+def build_open_items() -> dict:
+    active_dir = STATE_DIR / "quests" / "active"
+    blocked, awaiting_reply, drafts = [], [], []
+
+    for quest_dir in sorted(active_dir.iterdir()) if active_dir.exists() else []:
+        if not quest_dir.is_dir():
+            continue
+        try:
+            meta = json.loads((quest_dir / "meta.json").read_text())
+        except Exception:
+            continue
+        if meta.get("status") in ("completed", "cancelled"):
+            continue
+        tp = quest_dir / "timeline.ndjson"
+        if not tp.exists():
+            continue
+        try:
+            evs = [json.loads(l) for l in tp.read_text().splitlines() if l.strip()]
+        except Exception:
+            continue
+        evs = [e for e in evs if isinstance(e, dict)]
+        if not evs:
+            continue
+
+        base = {"id": quest_dir.name, "title": meta.get("title", quest_dir.name),
+                "priority": meta.get("priority", "normal")}
+
+        # Positional scan (newest = highest index). last_* = index of newest of type.
+        # nonblocked = newest event of ANY type except "blocked" — a later note/
+        # recap/action means the worker recovered (matches isBlockedNow in the
+        # frontend), so a block only counts if nothing came after it.
+        last = {"blocked": -1, "out": -1, "in": -1, "draft": -1,
+                "material": -1, "nonblocked": -1}
+        for idx, e in enumerate(evs):
+            ev = e.get("event")
+            if ev == "blocked":            last["blocked"] = idx
+            else:                          last["nonblocked"] = idx
+            if ev in _OUT_EVENTS:          last["out"] = idx;   last["material"] = idx
+            elif ev in _IN_EVENTS:         last["in"] = idx;    last["material"] = idx
+            elif ev == "draft_posted":     last["draft"] = idx; last["material"] = idx
+            elif ev not in _ROUTINE_EVENTS and ev != "blocked": last["material"] = idx
+
+        # Blocked wins: a blocker with nothing (not even a note) logged after it.
+        if last["blocked"] >= 0 and last["blocked"] > last["nonblocked"]:
+            be = evs[last["blocked"]]
+            url, _ = _event_link(be)
+            blocked.append({**base, "ts": be.get("ts"),
+                            "reason": _clip(be.get("reason") or be.get("note") or "", 200),
+                            "slack_url": url})
+            continue
+        # Draft queued and nothing sent after it → awaiting your send.
+        if last["draft"] > last["out"] and last["draft"] >= last["in"]:
+            de = evs[last["draft"]]
+            url, _ = _event_link(de)
+            drafts.append({**base, "ts": de.get("ts"),
+                           "reason": _clip(de.get("note") or "", 200), "slack_url": url})
+            continue
+        # We sent something and nothing has come back since → waiting on them.
+        if last["out"] >= 0 and last["out"] > last["in"]:
+            oe = evs[last["out"]]
+            url, _ = _event_link(oe)
+            awaiting_reply.append({**base, "ts": oe.get("ts"),
+                                   "reason": _clip(oe.get("note") or "", 200), "slack_url": url})
+
+    # Pending approvals — things waiting on YOUR review/decision.
+    review = []
+    if APPROVALS_FILE.exists():
+        try:
+            for i in _read_approvals().get("items", []):
+                if i.get("status") not in ("pending_review", "needs_reply"):
+                    continue
+                t = i.get("target") or {}
+                review.append({
+                    "id": i.get("id"), "quest_id": i.get("quest_id"),
+                    "title": i.get("quest_title", i.get("quest_id")),
+                    "status": i.get("status"),
+                    "action_type": i.get("action_type", "slack_message"),
+                    "slack_url": _slack_url(t.get("channel_id"), t.get("thread_ts"),
+                                            t.get("thread_ts")),
+                })
+        except Exception:
+            pass
+
+    # Commitments the worker flagged as promised-but-unfulfilled (if the worker
+    # persists them; empty until that plumbing exists).
+    commitments = []
+    if COMMITMENTS_FILE.exists():
+        try:
+            data = json.loads(COMMITMENTS_FILE.read_text())
+            commitments = data.get("items", []) if isinstance(data, dict) else []
+        except Exception:
+            pass
+
+    return {
+        "blocked":        blocked,
+        "awaiting_reply": awaiting_reply,
+        "drafts":         drafts,
+        "review":         review,
+        "commitments":    commitments,
+        "total":          len(blocked) + len(awaiting_reply) + len(drafts)
+                          + len(review) + len(commitments),
     }
 
 
@@ -605,6 +741,90 @@ def build_quest_detail(quest_id: str) -> dict | None:
             conversation.append(_approval_draft_record(i))
     conversation.sort(key=lambda r: r.get("ts") or "", reverse=True)
 
+    # ── Per-quest open items: the durable "what is THIS quest still waiting on"
+    #    summary. Open threads come from watch.json (each watch = a thread/inbox
+    #    the bot is actively tracking, with its own reason + link); blocked +
+    #    review + commitments mirror the aggregate build_open_items categories,
+    #    scoped to this quest. Small per quest, so listing every watch here is
+    #    the right granularity (unlike the noisy 100+ aggregate view).
+    def _as_float(x):
+        try:    return float(x)
+        except (TypeError, ValueError): return 0.0
+
+    open_threads, scheduled = [], []
+    for e in watches:
+        wtype = e.get("type")
+        if wtype in _OPEN_WATCH_TYPES:
+            ch, tts = e.get("channel_id"), e.get("thread_ts")
+            open_threads.append({
+                "type":       wtype,
+                "reason":     _clip(e.get("reason", ""), 240),
+                "read_only":  e.get("watch_mode") == "read_only",
+                "slack_url":  _slack_url(ch, tts, tts) if wtype != "email" else None,
+                "query":      e.get("query") if wtype == "email" else None,
+                "last_checked_ts": e.get("last_checked_ts"),
+            })
+        elif wtype == "schedule":
+            # A scheduled follow-up = something the bot will do / GM promised at
+            # a future time. These are the durable "promised, not done" items.
+            scheduled.append({
+                "reason":       _clip(e.get("reason", ""), 240),
+                "next_fire_ts": e.get("next_fire_ts"),
+                "cron":         e.get("cron"),
+            })
+    # watch.json only ever appends, so a busy quest accumulates many long-since-
+    # answered threads. Surface the most recently touched ones (they are the ones
+    # still likely live) and report how many older ones are hidden.
+    open_threads.sort(key=lambda t: _as_float(t.get("last_checked_ts")), reverse=True)
+    threads_total = len(open_threads)
+    open_threads = open_threads[:15]
+    scheduled.sort(key=lambda s: _as_float(s.get("next_fire_ts")))
+
+    # Blocked: last blocked event with nothing logged after it (matches the
+    # aggregate builder's recovery semantics).
+    blocked_now = None
+    li_block = li_other = -1
+    for idx, raw in enumerate(lines):
+        try:
+            ev = json.loads(raw).get("event")
+        except Exception:
+            continue
+        if ev == "blocked": li_block = idx
+        else:              li_other = idx
+    if li_block >= 0 and li_block > li_other:
+        try:
+            be = json.loads(lines[li_block])
+            blocked_now = {"ts": be.get("ts"),
+                           "reason": _clip(be.get("reason") or be.get("note") or "", 240)}
+        except Exception:
+            blocked_now = None
+
+    review = [
+        {"id": i.get("id"), "status": i.get("status"),
+         "action_type": i.get("action_type", "slack_message"),
+         "message_text": _clip(i.get("message_text", ""), 240)}
+        for i in appr_data.get("items", [])
+        if i.get("quest_id") == quest_id and i.get("status") in ("pending_review", "needs_reply")
+    ]
+
+    commitments = []
+    if COMMITMENTS_FILE.exists():
+        try:
+            cdata = json.loads(COMMITMENTS_FILE.read_text())
+            commitments = [c for c in (cdata.get("items", []) if isinstance(cdata, dict) else [])
+                           if c.get("quest_id") == quest_id]
+        except Exception:
+            pass
+
+    open_items = {
+        "blocked":       blocked_now,
+        "threads":       open_threads,
+        "threads_total": threads_total,
+        "scheduled":     scheduled,
+        "review":        review,
+        "commitments":   commitments,
+    }
+
     return {
         "id":             quest_id,
         "meta":           meta,
@@ -613,6 +833,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
         "timeline":       timeline,
         "timeline_total": total,
         "conversation":   conversation,
+        "open_items":     open_items,
     }
 
 
@@ -860,7 +1081,54 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._handle_review(parts[2], parts[1], payload)
             return
 
+        # Manual quest dispatch: ["api", "prompt", "<quest_id>"]
+        if len(parts) == 3 and parts[0] == "api" and parts[1] == "prompt":
+            self._handle_prompt(urllib.parse.unquote(parts[2]), payload)
+            return
+
         self.send_error(404)
+
+    def _handle_prompt(self, quest_id: str, payload: dict):
+        """Fire a dashboard-initiated worker run against one quest with a
+        free-text instruction. Spawns manual-dispatch.sh detached; it shares
+        triage's lock (busy → exit 75) and streams into worker-latest.log, which
+        the dashboard's live panel already renders. Returns immediately — the
+        run is watched live, not awaited here."""
+        instruction = (payload.get("instruction") or "").strip()
+        if not instruction:
+            self._send_json({"error": "instruction is required"}, 400)
+            return
+        if len(instruction) > 4000:
+            self._send_json({"error": "instruction too long (max 4000 chars)"}, 400)
+            return
+        # Guard obvious bad ids here too; manual-dispatch.sh re-validates against
+        # the actual folder and exits 2 if the quest is unknown.
+        if "/" in quest_id or quest_id in ("", ".", ".."):
+            self._send_json({"error": "invalid quest id"}, 400)
+            return
+        if not (STATE_DIR / "quests" / "active" / quest_id).is_dir():
+            self._send_json({"error": "quest not found"}, 404)
+            return
+
+        # If a worker is already running (triage tick or a prior manual run), the
+        # shared lock would bounce us — report busy instead of silently queueing.
+        if build_live_run().get("running"):
+            self._send_json({"error": "a worker is already running — try again shortly", "busy": True}, 409)
+            return
+
+        script = SCRIPT_DIR / "manual-dispatch.sh"
+        try:
+            # Detached: don't hold the HTTP connection open for a multi-minute
+            # Opus run. Progress is observed via /api/dashboard live_run.
+            subprocess.Popen(
+                ["bash", str(script), quest_id, instruction],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True, cwd=str(REPO_ROOT),
+            )
+        except Exception as e:
+            self._send_json({"error": f"failed to launch dispatch: {e}"}, 500)
+            return
+        self._send_json({"ok": True, "quest_id": quest_id, "launched": True})
 
     def _handle_review(self, approval_id: str, action: str, payload: dict):
         if not APPROVALS_FILE.exists():

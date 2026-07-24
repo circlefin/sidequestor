@@ -477,7 +477,10 @@ log "Worker log → $WORKER_LOG (raw: $WORKER_NDJSON)"
 
 WORKER_START=$(date +%s)
 WORKER_START_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)  # boundary for post-run blocked-event scan
-WORKER_TIMEOUT=900  # 15 min; normal workers finish in <3 min
+WORKER_TIMEOUT=1800  # 30 min; normal workers finish in <3 min, but a live
+                     # sandbox retest (on-chain sends + payment propagation) can
+                     # run long — 900s was killing those mid-run (exit 124),
+                     # re-dispatching, and never completing (livelock).
 WORKER_PERMISSION_MODE="${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}"
 
 # Recursive process-tree killer — needed to terminate claude's background subprocesses
