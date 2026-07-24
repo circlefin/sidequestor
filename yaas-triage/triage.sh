@@ -227,11 +227,18 @@ check_quest() {
   echo -e "${qid}\tclean\tall_checks_passed"
 }
 
-# Run quest checks in parallel (up to 8 at a time)
+# Run quest checks in parallel, a few quests at a time.
 TMP_RESULTS=$(mktemp)
 # (trap set earlier at post-lock — covers TMP_RESULTS via ${TMP_RESULTS:-})
 
-MAX_PARALLEL=8
+# MAX_PARALLEL caps how many quest checkers run at once, i.e. the peak number of
+# concurrent Slack API calls (each check_quest fires its calls sequentially, so
+# one in-flight call per running quest). This burst concurrency is what trips
+# Slack's rate-limit detection, so keep it low. 3 lanes clears the full ~18-quest
+# sweep in ~20-30s (bounded below by the biggest single quest's serial calls),
+# well inside the 60s tick. Was 8, which contributed to the 2026-07-24 storm.
+# Override with YAAS_TRIAGE_MAX_PARALLEL if the quest set grows.
+MAX_PARALLEL="${YAAS_TRIAGE_MAX_PARALLEL:-3}"
 pids=()
 for qd in "${QUEST_DIRS[@]}"; do
   check_quest "$qd" >> "$TMP_RESULTS" &
