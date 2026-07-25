@@ -758,7 +758,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
             ch, tts = e.get("channel_id"), e.get("thread_ts")
             open_threads.append({
                 "type":       wtype,
-                "reason":     _clip(e.get("reason", ""), 240),
+                "reason":     _clip(e.get("reason", ""), 2000),
                 "read_only":  e.get("watch_mode") == "read_only",
                 "slack_url":  _slack_url(ch, tts, tts) if wtype != "email" else None,
                 "query":      e.get("query") if wtype == "email" else None,
@@ -768,7 +768,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
             # A scheduled follow-up = something the bot will do / GM promised at
             # a future time. These are the durable "promised, not done" items.
             scheduled.append({
-                "reason":       _clip(e.get("reason", ""), 240),
+                "reason":       _clip(e.get("reason", ""), 2000),
                 "next_fire_ts": e.get("next_fire_ts"),
                 "cron":         e.get("cron"),
             })
@@ -795,14 +795,14 @@ def build_quest_detail(quest_id: str) -> dict | None:
         try:
             be = json.loads(lines[li_block])
             blocked_now = {"ts": be.get("ts"),
-                           "reason": _clip(be.get("reason") or be.get("note") or "", 240)}
+                           "reason": _clip(be.get("reason") or be.get("note") or "", 2000)}
         except Exception:
             blocked_now = None
 
     review = [
         {"id": i.get("id"), "status": i.get("status"),
          "action_type": i.get("action_type", "slack_message"),
-         "message_text": _clip(i.get("message_text", ""), 240)}
+         "message_text": _clip(i.get("message_text", ""), 2000)}
         for i in appr_data.get("items", [])
         if i.get("quest_id") == quest_id and i.get("status") in ("pending_review", "needs_reply")
     ]

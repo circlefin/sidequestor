@@ -418,6 +418,42 @@ PYEOF
   done
 fi
 
+# ── Retire fired one-shot schedule watches ──────────────────────────────────
+# A one-shot schedule (next_fire_ts, no cron) fires exactly once: schedule.py
+# gates on `last_checked_ts < next_fire_ts`, and triage advances the watermark
+# past next_fire_ts on the firing tick, so the entry can never fire again.
+# Nothing removed it, so every fired backstop stayed in watch.json forever and
+# surfaced as a permanent "scheduled" open item — one re-armed promise showing
+# as N duplicates (a conversion-limit backstop re-armed weekly showed as 5; a
+# sandbox-onboarding quest had 15). Drop one-shot schedules whose next_fire_ts
+# is already behind the watermark. Recurring cron schedules (have `cron`) are
+# never touched — they fire repeatedly by design.
+for qd in "${QUEST_DIRS[@]}"; do
+  watch="$qd/watch.json"
+  [ -f "$watch" ] || continue
+  _has=$(jq '[.watches[]? | select(.type == "schedule" and (has("cron") | not) and has("next_fire_ts"))] | length' "$watch" 2>/dev/null || echo 0)
+  [ "${_has:-0}" -gt 0 ] || continue
+  TMP=$(mktemp)
+  python3 - "$watch" "$TMP" <<'PYEOF' && mv "$TMP" "$watch" || { rm -f "$TMP"; true; }
+import json, sys
+watch_path, out_path = sys.argv[1], sys.argv[2]
+watch = json.load(open(watch_path))
+def fired(w):
+    if w.get("type") != "schedule" or "cron" in w or "next_fire_ts" not in w:
+        return False
+    try:
+        return float(w.get("last_checked_ts") or 0) >= float(w["next_fire_ts"])
+    except (TypeError, ValueError):
+        return False
+before = len(watch.get("watches", []))
+watch["watches"] = [w for w in watch.get("watches", []) if not fired(w)]
+after = len(watch["watches"])
+json.dump(watch, open(out_path, "w"), indent=2)
+if before != after:
+    print(f"Retired {before - after} fired one-shot schedule watch(es) from {watch_path}")
+PYEOF
+done
+
 # ── Prune reaction state files (keep newest 1000 timestamps) ─────────────────
 for _state in "$REPO_ROOT/state/claude_intensifies_replied.json" \
               "$REPO_ROOT/state/writing_hand_replied.json" \
