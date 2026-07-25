@@ -69,6 +69,10 @@ body { background:var(--bg); color:var(--text); font-family:var(--sans); font-si
 
 .cols { display:grid; grid-template-columns:2fr 1fr; gap:22px; align-items:start; }
 @media (max-width:920px) { .cols { grid-template-columns:1fr; } }
+/* grid items default to min-width:auto, which lets long nowrap content (open-item
+   reasons) blow the column past the viewport; min-width:0 lets them shrink so the
+   ellipsis truncation and click-to-expand both work. */
+.col-main, .col-side { min-width:0; }
 .col-side { position:sticky; top:16px; }
 
 .section { margin-top:24px; }
@@ -180,6 +184,8 @@ input.field-error { border-color:var(--amber); }
 .oi-row.r-promise { border-left-color:var(--red); }
 .oi-qtitle { font-weight:600; }
 .oi-reason { color:var(--text2); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.oi-row.expanded { align-items:flex-start; }
+.oi-row.expanded .oi-reason { white-space:pre-wrap; overflow:visible; text-overflow:clip; word-break:break-word; }
 .oi-age { font-family:var(--mono); font-size:10.5px; color:var(--text3); margin-left:auto; white-space:nowrap; }
 .oi-overdue { color:var(--red); font-weight:600; }
 .oi-more { font-size:11px; color:var(--text3); padding:4px 12px 2px; }
@@ -822,6 +828,13 @@ document.addEventListener('click',e=>{
   if(el.dataset.i!==undefined){ showSlide(+el.dataset.i); return; }
   if(el.dataset.action==='run-prompt'){ runQuestPrompt(el,el.dataset.questId); return; }
   if(el.dataset.questId){ openQuest(el.dataset.questId); return; }
+});
+// Click an open-item row to expand its full (otherwise truncated) reason text.
+// Ignore clicks on links inside the row so deeplinks still open Slack.
+document.addEventListener('click',e=>{
+  if(e.target.closest('a')) return;
+  const row=e.target.closest('.oi-row');
+  if(row) row.classList.toggle('expanded');
 });
 async function runQuestPrompt(btn,id){
   const ta=document.getElementById('qv-prompt-text');

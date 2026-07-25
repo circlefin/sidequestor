@@ -186,17 +186,31 @@ check_quest() {
     return 0
   fi
 
-  local watch_count
-  watch_count=$(jq '.watches // [] | length' "$watch")
-  local i=0
-  while [ "$i" -lt "$watch_count" ]; do
+  # Evaluate non-Slack watches (approval/schedule/email/cron) BEFORE Slack ones.
+  # Those checkers read local state and never hit Slack, so they can never be
+  # rate-limited. A `ratelimited` Slack watch returns `skip` and short-circuits
+  # this function (return 0) — so if a Slack watch sits earlier in watches[]
+  # than a `reviewed` approval or a due `schedule`, the rate-limit skip shadows
+  # the local dirty signal and the quest never dispatches. Ordering local
+  # checkers first guarantees a local dirty signal always wins over a Slack
+  # rate-limit skip. (Incident 2026-07-25: an approved draft sat unexecuted
+  # for hours because the quest's first Slack watch rate-limited every tick,
+  # short-circuiting before the approval watch at the array tail was ever
+  # evaluated.)
+  local order
+  order=$(jq -r '
+    ([ .watches // [] | to_entries[] | select((.value.type // "") | startswith("slack_") | not) | .key ]
+     + [ .watches // [] | to_entries[] | select((.value.type // "") | startswith("slack_")) | .key ])
+    | .[]' "$watch")
+  local i
+  for i in $order; do
     local entry type checker parsed new_count preview
     entry=$(jq -c ".watches[$i]" "$watch")
     type=$(jq -r '.type // "unknown"' <<< "$entry")
     checker="$SCRIPT_DIR/checkers/$type.py"
     if [ ! -x "$checker" ]; then
       vlog "[$qid] no checker for type '$type', skipping"
-      i=$((i + 1)); continue
+      continue
     fi
     vlog "[$qid] checking type=$type"
     parsed=$(python3 "$checker" "$entry" 2>/dev/null || echo "error|checker failed to execute")
@@ -221,7 +235,6 @@ check_quest() {
       echo -e "${qid}\tdirty\t[$type] $new_count new — \"$preview\""
       return 0
     fi
-    i=$((i + 1))
   done
 
   echo -e "${qid}\tclean\tall_checks_passed"
