@@ -19,15 +19,15 @@
 # Web API. The Slack MCP surface exposes slack_add_reaction but NOT a remove
 # tool, so the reaction-lifecycle swaps (§ Reactions Fast Path) go through here.
 # Uses the same keychain xoxp token as mcp-call.sh, so the reaction owner is
-# always Guangmian's own user — which is required for reactions.remove (you can
+# always the operator's own user — which is required for reactions.remove (you can
 # only remove your own reaction).
 #
 # Usage:
 #   ./slack-react.sh <add|remove> <channel_id> <message_ts> <emoji>
 #
 # Example:
-#   ./slack-react.sh remove D0A0LMEFWBY 1784590105.979059 claude-intensifies
-#   ./slack-react.sh add    D0A0LMEFWBY 1784590105.979059 claudeloading
+#   ./slack-react.sh remove C0123456789 1700000000.123456 claude-intensifies
+#   ./slack-react.sh add    C0123456789 1700000000.123456 claudeloading
 #
 # emoji is the name WITHOUT colons (e.g. claudeloading, updatedone).
 #

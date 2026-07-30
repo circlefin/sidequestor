@@ -15,7 +15,7 @@ Notes:
   - Query is the raw mention token `<@USER_ID>`; Slack search indexes mentions, so this
     surfaces messages that @mention the user across channels (verified 2026-07-19).
   - Skips [BOT] authors and the watched user's own messages, so the bot posting *as*
-    the user (guangmian.md) can never re-trigger this watch.
+    the watched user can never re-trigger this watch.
 """
 import sys
 import os

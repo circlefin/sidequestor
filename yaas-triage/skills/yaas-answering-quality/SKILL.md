@@ -5,7 +5,7 @@ description: Quality rules for composing bot replies in Slack threads and channe
 
 # Answering Quality Rules
 
-Applies whenever the bot composes a reply in any Slack channel (#ai-questions, `:claude-intensifies:` threads, `:writing_hand:` drafts, any public or private channel Q&A) **and to partner-facing quest replies** — the composition rules below (especially #6-#8) are what make a reply read as Guangmian rather than as a machine. Voice/register defaults live in CLAUDE.md § Tone; this skill owns answer quality.
+Applies whenever the bot composes a reply in any Slack channel (#ai-questions, `:claude-intensifies:` threads, `:writing_hand:` drafts, any public or private channel Q&A) **and to partner-facing quest replies** — the composition rules below (especially #6-#8) are what make a reply read as the operator rather than as a machine. Voice/register defaults live in CLAUDE.md § Tone; this skill owns answer quality.
 
 ## 0. Know the room before you answer
 
@@ -54,7 +54,7 @@ Each run, check threads where the bot previously posted an answer (tracked in `s
 
 ## 6. Close by passing the ball back
 
-End with a specific next step for the other person, not a generic open offer. A concrete question or instruction ("could you confirm the `Content-Type` header on that request?", "which Diameter ID is this?") moves the thread forward; "point me at the partner and I'll confirm" / "happy to help scope" is passive filler that puts nothing back on them. If there genuinely is no next step, a short close is fine — don't manufacture an offer.
+End with a specific next step for the other person, not a generic open offer. A concrete question or instruction ("could you confirm the `Content-Type` header on that request?", "which customer ID is this?") moves the thread forward; "point me at the partner and I'll confirm" / "happy to help scope" is passive filler that puts nothing back on them. If there genuinely is no next step, a short close is fine — don't manufacture an offer.
 
 ## 7. Catch the adjacent thing
 

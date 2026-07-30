@@ -39,7 +39,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 V2_GIT_DIR="$REPO_ROOT/.git-yaas-v2"
-V2_URL="https://github.com/guangmian-kung_crcl/yourself-as-a-service-v2.git"
+V2_URL="${YAAS_V2_REMOTE:?set YAAS_V2_REMOTE to your public mirror git URL}"
 
 GIT() { git --git-dir="$V2_GIT_DIR" --work-tree="$REPO_ROOT" "$@"; }
 

@@ -51,7 +51,7 @@ Ask the user for, in order:
    the quest is "watch channel X for person Y saying Z" — e.g. a command prefix
    (`filter_keywords: ["/add-josh-safely"]`), a person's posts on a topic, or an alerting
    keyword set. Without them the worker wakes on every channel message and pays a model
-   round-trip just to reject it. Reference: `quest-rina-office-lunch-order-alerts`.
+   round-trip just to reject it. Reference: any quest of the form `watch channel X for person Y saying Z`.
 
    Two cautions: (a) substring match means `filter_keywords: ["/cmd"]` also matches a
    message that merely mentions `/cmd` mid-sentence, so if you need a true prefix, re-check
