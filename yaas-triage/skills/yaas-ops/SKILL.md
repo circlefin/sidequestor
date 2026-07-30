@@ -24,10 +24,13 @@ yaas-triage/
 ├── checkers/                 ← one script per watch type (plugin directory)
 │   ├── slack_thread.py · slack_channel.py · slack_dm.py
 │   ├── schedule.py · email.py
+│   ├── jira.py               ← Jira issues via ../jira-call.sh (no MCP needed)
+│   ├── github_pr.py          ← PR activity via `gh search prs`
 │   ├── reactions.py          ← global reaction sweep (not per-quest)
 │   ├── slack_utils.py        ← shared parse_slack_messages()
 │   ├── cron-due.py           ← cron evaluation logic (used by schedule.py)
-│   └── email.lag             ← watermark lag in seconds for email type (120)
+│   └── *.lag                 ← per-type watermark lag in seconds:
+│                               email 120 · slack_mention 90 · github_pr 30 · jira 15
 ├── setup/                    ← one-time install
 │   ├── setup.sh              ← first-time Slack OAuth + keychain + optional launchd install
 │   ├── install-launchd.sh    ← install / reload / uninstall the launchd job
@@ -101,7 +104,9 @@ Environment variables available to all checkers (exported by triage.sh after sou
 
 If a channel type has indexing latency (e.g. Gmail's search index takes ~60s to reflect new mail), create a companion file `checkers/<type>.lag` containing the lag in integer seconds. triage.sh reads these at startup and subtracts the lag when advancing watermarks, so clean ticks never claim "I've seen everything up to now" when the source hasn't indexed it yet.
 
-Currently: `email.lag = 120`. All other types have no `.lag` file (lag = 0).
+Currently: `email.lag = 120` (Gmail's index is slow), `slack_mention.lag = 90`, `github_pr.lag = 30` (GitHub's search index is eventually consistent), `jira.lag = 15`. Types with no `.lag` file get lag = 0.
+
+Keep the lag as small as the source allows. Every second of lag widens the window in which an already-seen change gets re-reported, and each re-report costs a full dispatch that finds nothing. Note `*.lag` is gitignored, so a fresh clone starts at lag 0 for every type; recreate them from the values above.
 
 ### watch.json schema
 
@@ -113,10 +118,14 @@ Currently: `email.lag = 120`. All other types have no `.lag` file (lag = 0).
     {"type": "slack_dm",      "user_id": "U...",    "last_checked_ts": "0", "reason": "..."},
     {"type": "slack_mention", "user_id": "U...",    "last_checked_ts": "0", "reason": "..."},
     {"type": "schedule",      "cron": "0 9 * * 1", "tz": "Asia/Singapore", "last_checked_ts": "0", "reason": "..."},
-    {"type": "email",         "query": "from:partner@company.com subject:Re:", "last_checked_ts": "0", "reason": "..."}
+    {"type": "email",         "query": "from:partner@company.com subject:Re:", "last_checked_ts": "0", "reason": "..."},
+    {"type": "jira",          "jql": "labels=my-label", "last_checked_ts": "0", "reason": "..."},
+    {"type": "github_pr",     "repo": "owner/repo", "last_checked_ts": "0", "reason": "..."}
   ]
 }
 ```
+
+`jira` needs the REST bridge (`yaas-triage/jira-call.sh`, Basic-auth API token in Keychain `jira-api-token`/`yaas`) because the Atlassian MCP is interactive-OAuth only and is absent in headless dispatch. `github_pr` accepts optional `search` (extra GitHub qualifiers) and `limit` (default 100) — read the warning in `checkers/github_pr.py`'s docstring before adding a `search`, since repeated qualifiers AND rather than OR and can silently match nothing.
 
 `last_checked_ts` is always a Unix epoch float string. triage.sh is the sole owner of this field — the worker must never modify existing entries (it may only append new ones).
 

@@ -93,6 +93,19 @@ Never read all four as a reflex. Each file read costs a model round-trip.
 
 **Schedule watch type** (`watches[]` with `"type": "schedule"`): the cron fired. No content to fetch — act based on what the quest says to do at that scheduled time.
 
+**Jira watch type** (`jira`): fires when an issue in the entry's `jql` set changed (status transition, new comment, any field edit — Jira bumps `updated` on all of them). An interactive Atlassian MCP is typically NOT exposed in headless dispatch, so do not reach for `searchJiraIssues`; it returns `tool_not_found` there. Use the REST bridge:
+1. `yaas-triage/jira-call.sh GET '/rest/api/3/search/jql?jql=<url-encoded>&fields=status,summary,updated&maxResults=100'` — re-read the set and diff it against what the quest last recorded.
+2. `yaas-triage/jira-call.sh GET '/rest/api/3/issue/<KEY>/comment'` — read new comments when the change was a reply rather than a transition. A reviewer question needs an answer (draft to the approval queue unless the quest sets `allow_send`).
+
+Post a comment with `POST /rest/api/3/issue/<KEY>/comment` only when the quest authorizes it. The checker already confirmed something moved; your job is to identify what and act.
+
+**GitHub PR watch type** (`github_pr`): fires when a PR in the entry's `repo` changed (new PR, new commit, review, comment, or merge). Note that a PR review comment does NOT bump the linked Jira issue, which is why this watch exists alongside `jira`. Use `gh`:
+- `gh pr view <n> --repo <repo> --json number,title,state,updatedAt,comments,reviews` — activity on one PR.
+- `gh pr diff <n> --repo <repo>` — what actually changed, when reviewing a fix.
+- `gh search prs --repo <repo> --sort updated --order desc --limit 20 --json number,title,state,updatedAt` — re-locate what moved.
+
+The watch is usually repo-wide, so it fires on PRs unrelated to the quest. **If the changed PR is out of scope, log nothing and exit** — do not investigate it, comment on it, or add a watch for it. `gh` may have no write access in dispatch (`git push` returning 403), so anything needing a push goes to the approval queue or a DM to the user.
+
 ### 3. Act
 
 Based on the quest's `context.md`, the watch type that fired, and the new content, decide:
@@ -387,6 +400,8 @@ Add your personal sections here:
 - References to your domain-specific skills (e.g., `skills/<your-area>/SKILL.md`)
 - Personal channel/contact lookup tables
 - Tone-of-voice norms (e.g., for `#your-team` channel, and for email replies — see below)
+
+**ELI5 by default (all Slack messages).** Explain like the reader is smart but new to the topic. Plain words over jargon, short sentences, a concrete analogy when a concept is abstract, and unpack any acronym or domain-specific term the first time it appears. This governs *how you explain*, not *how much you say*: keep register-matching (mirror the incoming message's length and formality) and every other tone rule intact. A two-word operational DM still gets a two-word reply, just phrased plainly. The ELI5 lens matters most when explaining a mechanism, a decision, or a technical answer: make it land for a non-expert without dumbing down the facts.
 
 **Email reply tone.** Write as if composing an actual email — proper greeting ("Hi [name],"), full prose sentences, and a sign-off when the context warrants it. Never reply to an email in bullet-point Slack style. Match the register of the incoming message: casual for casual, formal for formal.
 

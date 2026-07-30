@@ -40,6 +40,16 @@ Watch entry fields by type:
   slack_mention: user_id, reason   (fires on any message that @mentions user_id, anywhere)
   schedule:      cron (5-field), tz (IANA), reason  [optional: id]
   email:         query (Gmail search string), reason
+  jira:          jql (JQL string, e.g. "labels=my-label"), reason
+                 Fires when any issue in the set changes (status, comment, any edit).
+                 Reads via yaas-triage/jira-call.sh; needs the Keychain API token.
+                 Do NOT put ORDER BY in the jql: it disables the checker's early
+                 stop and makes every tick page to the cap.
+  github_pr:     repo ("owner/name"), reason  [optional: search, limit]
+                 Fires on any PR update in the repo (new PR, commit, review,
+                 comment, merge). `search` adds GitHub qualifiers, but read the
+                 warning in checkers/github_pr.py first: repeated qualifiers AND
+                 rather than OR, so a bad one silently matches nothing forever.
 
 Optional bash-layer filters (slack_channel + slack_thread only) — set these to avoid
 waking the worker on irrelevant messages; triage.sh applies them before any dispatch:
@@ -84,10 +94,22 @@ REQUIRED_FIELDS = {
     "slack_mention": ["user_id"],
     "schedule":      ["cron", "tz"],
     "email":         ["query"],
+    "jira":          ["jql"],
+    "github_pr":     ["repo"],
+    # Runtime-only: the worker appends these itself when it queues a manual-review
+    # item (§3d). Registered so the type system matches checkers/, not because a
+    # new quest should normally scaffold one (no approval exists at creation time).
+    "approval":      ["approval_id"],
 }
+
+# Every type here must have an executable checkers/<type>.py, or triage silently
+# skips the watch forever ("no checker for type X" is only a vlog line). Keep this
+# set in sync with the checkers directory; validate_watches rejects anything else.
+KNOWN_TYPES = set(REQUIRED_FIELDS)
 
 # Canonical field order for each type (for readable output)
 FIELD_ORDER = ["type", "channel_id", "thread_ts", "user_id", "cron", "tz", "id", "query",
+               "jql", "repo", "search", "limit",
                "last_checked_ts", "filter_user_ids", "filter_keywords", "reason"]
 
 
@@ -144,6 +166,14 @@ def validate_watches(watches):
         t = w.get("type")
         if not t:
             die(f"watches[{i}] missing 'type'")
+        if t not in KNOWN_TYPES:
+            # Without this guard an unknown/typo'd type scaffolds fine, then triage
+            # finds no checkers/<type>.py and skips it silently on every tick, so the
+            # quest looks healthy while that watch never fires once.
+            die(f"watches[{i}] has unknown type {t!r}. "
+                f"Known types: {', '.join(sorted(KNOWN_TYPES))}. "
+                f"If this is a new type, add checkers/{t}.py first, then register it "
+                f"in REQUIRED_FIELDS here.")
         if not w.get("reason"):
             die(f"watches[{i}] (type={t!r}) missing 'reason'")
         for field in REQUIRED_FIELDS.get(t, []):
