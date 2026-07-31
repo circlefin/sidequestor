@@ -61,6 +61,9 @@ download.html
 # partner-publish working cache (per-repo clones for 3-way merge)
 solution-proposals/.partner-publish-cache/
 
+# Editor / pre-edit backups (dashboard.html.bak, dashboard-server.py.bak, ...)
+*.bak
+
 # Stray runtime lag/state artifacts
 *.lag
 # ...except the per-checker watermark lag map, which is config, not an artifact.
