@@ -69,6 +69,25 @@ BODY_JSON="${3:-}"
 
 # No defaults on purpose: a hardcoded account/host would be wrong for anyone else
 # and would leak an identity into this file. Both come from .env (see header).
+#
+# Source .env ourselves when the caller hasn't. triage.sh sources it before a
+# headless dispatch, so Mode A always had these; an interactive Bash call gets a
+# fresh shell that doesn't, which made the script look unconfigured when it was
+# not. Reading it here means the same invocation works in both modes.
+if [ -z "${JIRA_BASE_URL:-}" ] || [ -z "${JIRA_EMAIL:-}" ]; then
+  _ENV_FILE="$(cd "$(dirname "$0")/.." && pwd)/.env"
+  if [ -f "$_ENV_FILE" ]; then
+    # Only pull the two Jira vars; avoids sourcing the whole file (and any
+    # shell-unsafe lines in it) just to read a hostname and an email.
+    _v=$(grep -E '^[[:space:]]*JIRA_BASE_URL=' "$_ENV_FILE" | tail -1 | cut -d= -f2-)
+    [ -n "$_v" ] && JIRA_BASE_URL="${JIRA_BASE_URL:-$(printf '%s' "$_v" | tr -d '"'"'"'')}"
+    _v=$(grep -E '^[[:space:]]*JIRA_EMAIL=' "$_ENV_FILE" | tail -1 | cut -d= -f2-)
+    [ -n "$_v" ] && JIRA_EMAIL="${JIRA_EMAIL:-$(printf '%s' "$_v" | tr -d '"'"'"'')}"
+    unset _v
+  fi
+  unset _ENV_FILE
+fi
+
 BASE_URL="${JIRA_BASE_URL:-}"
 EMAIL="${JIRA_EMAIL:-}"
 if [ -z "$BASE_URL" ] || [ -z "$EMAIL" ]; then
