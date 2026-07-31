@@ -22,7 +22,9 @@ Input:  watch entry JSON as argv[1]
         {"type":"email","query":"from:...","last_checked_ts":"1234.567","reason":"..."}
 
 Output: count|preview   (preview = "From — Subject" of newest new message)
-        error|reason    (on gws failure — triage treats this as dirty/retry)
+        ratelimited|r   (transient Gmail 429/5xx/quota/timeout — triage SKIPS the
+                        tick rather than dispatching; watermark is held)
+        error|reason    (hard failure — triage treats this as dirty/retry)
 
 Env:    GWS_BIN   path to gws CLI (falls back to /opt/homebrew/bin/gws)
 
@@ -42,12 +44,62 @@ from datetime import datetime, timezone, timedelta
 
 GWS = os.environ.get("GWS_BIN", "/opt/homebrew/bin/gws")
 
+# gws prints the Google API error envelope to STDOUT as
+# {"error":{"code":429,"message":...,"reason":...}} and exits 1, so classify on
+# the HTTP code rather than string-matching stderr. These mean "try again
+# later", not "this is broken".
+TRANSIENT_CODES = {429, 500, 502, 503, 504}
+# Gmail returns 403 for quota exhaustion, which IS retryable — unlike a 403 for
+# insufficient scope, which is not. Split on `reason`.
+TRANSIENT_REASONS = {
+    "ratelimitexceeded", "userratelimitexceeded", "quotaexceeded",
+    "backenderror", "internalerror", "serviceunavailable",
+}
+# Network-layer failures never produce an error envelope; match on the text.
+TRANSIENT_MARKERS = (
+    "timeout", "timed out", "deadline exceeded", "connection reset",
+    "tls handshake", "temporary failure", "no such host", "eof",
+    "connection refused", "network is unreachable",
+)
+
+
+class Transient(Exception):
+    """Retryable upstream condition — skip the tick, don't dispatch."""
+
 
 def gws_run(*args, timeout=20):
-    r = subprocess.run([GWS] + list(args), capture_output=True, text=True, timeout=timeout)
-    if r.returncode != 0 or not r.stdout.strip():
-        raise RuntimeError(f"gws {' '.join(args[:3])} failed (exit {r.returncode})")
-    return json.loads(r.stdout)
+    label = f"gws {' '.join(args[:3])}"
+    try:
+        r = subprocess.run([GWS] + list(args), capture_output=True, text=True,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise Transient(f"{label} timed out after {timeout}s")
+
+    out = r.stdout.strip()
+    if r.returncode == 0 and out:
+        return json.loads(out)
+
+    # Prefer the structured error envelope on stdout; fall back to stderr text.
+    err = None
+    if out:
+        try:
+            err = (json.loads(out) or {}).get("error")
+        except json.JSONDecodeError:
+            pass
+
+    if isinstance(err, dict):
+        code = err.get("code")
+        reason = str(err.get("reason", "")).lower()
+        detail = f"{label}: {code} {err.get('message', '')}".strip()
+        if code in TRANSIENT_CODES or reason in TRANSIENT_REASONS:
+            raise Transient(detail)
+        raise RuntimeError(detail)
+
+    blob = f"{out} {r.stderr or ''}".lower()
+    detail = f"{label} failed (exit {r.returncode})"
+    if any(m in blob for m in TRANSIENT_MARKERS):
+        raise Transient(detail)
+    raise RuntimeError(detail)
 
 
 def main():
@@ -60,12 +112,8 @@ def main():
     since_date = since_dt.strftime("%Y/%m/%d")
     full_query = f"{query} after:{since_date}"
 
-    try:
-        d = gws_run("gmail", "users", "messages", "list",
-                    "--params", json.dumps({"userId": "me", "q": full_query, "maxResults": 10}))
-    except RuntimeError as e:
-        print(f"error|{e}")
-        return
+    d = gws_run("gmail", "users", "messages", "list",
+                "--params", json.dumps({"userId": "me", "q": full_query, "maxResults": 10}))
 
     msgs = d.get("messages", [])
     if not msgs:
@@ -86,6 +134,12 @@ def main():
                     "from": hdrs.get("From", "")[:40],
                     "subject": hdrs.get("Subject", "")[:50],
                 })
+        except Transient:
+            # Must NOT be swallowed. Skipping a message here undercounts, and an
+            # undercount to zero prints "0|" -> clean tick -> triage advances the
+            # watermark past a message nobody ever read. Losing the email is
+            # worse than losing the tick, so surface it and let triage hold.
+            raise
         except Exception:
             pass
 
@@ -100,5 +154,8 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except Transient as e:
+        # Not dirty: skip the tick. Watermark is held, so nothing is lost.
+        print(f"ratelimited|{e}")
     except Exception as e:
         print(f"error|{e}")

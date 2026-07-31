@@ -63,3 +63,7 @@ solution-proposals/.partner-publish-cache/
 
 # Stray runtime lag/state artifacts
 *.lag
+# ...except the per-checker watermark lag map, which is config, not an artifact.
+# triage.sh reads checkers/<type>.lag to hold a clean tick's watermark back by
+# that many seconds. Without them a fresh clone gets zero lag on every checker.
+!yaas-triage/checkers/*.lag
