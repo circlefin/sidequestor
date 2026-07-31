@@ -104,7 +104,11 @@ Post a comment with `POST /rest/api/3/issue/<KEY>/comment` only when the quest a
 - `gh pr diff <n> --repo <repo>` — what actually changed, when reviewing a fix.
 - `gh search prs --repo <repo> --sort updated --order desc --limit 20 --json number,title,state,updatedAt` — re-locate what moved.
 
-The watch is usually repo-wide, so it fires on PRs unrelated to the quest. **If the changed PR is out of scope, log nothing and exit** — do not investigate it, comment on it, or add a watch for it. `gh` may have no write access in dispatch (`git push` returning 403), so anything needing a push goes to the approval queue or a DM to the user.
+The watch is usually repo-wide, so it fires on PRs unrelated to the quest. **If the changed PR is out of scope, log nothing and exit** — do not investigate it, comment on it, or add a watch for it.
+
+**`gh` write access is per-action, not all-or-nothing. Probe before declaring a block.** Run `gh api repos/<owner>/<repo> -q .permissions` and read the actual grant. With `pull: true, push: false`, all of these still work: PR comments (`gh api repos/<r>/issues/<n>/comments -X POST`), replies to inline review comments (`.../pulls/<n>/comments/<id>/replies`), new inline review comments including a ` ```suggestion ` block (`.../pulls/<n>/comments` with `commit_id`, `path`, `line`, `side`), and submitting a review (`.../pulls/<n>/reviews`). Only pushing a commit or branch returns `403`.
+
+So a reviewer question, a correction, or a one-line fix is **never** blocked by `push: false` — answer it in-tick per §3b, using a suggestion block when the fix is a line or two so the author can commit it. Only a genuine multi-line or multi-file code change needs the approval queue or a DM. Never write "no gh write access" as a blanket reason without having run the permissions probe; a wrong capability assumption strands a reviewer for days. The same applies to any bridged service: try the REST bridge before concluding the service is unreachable because its MCP server is absent.
 
 ### 3. Act
 
