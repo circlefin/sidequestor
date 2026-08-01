@@ -229,6 +229,16 @@ It sends (or drafts), then appends a timeline entry carrying the exact `message_
 
 **The underlying rule (why the helper matters):** the dashboard surfaces a message only when its timeline event carries a `message_text` field. A `note` summary alone shows in the full timeline but not in the Messages stream or the quest Conversation. If you ever log a send by hand (any `message_sent` / `reply_sent` / `dm_sent` / `executed`(slack or email) / `email_replied` event), you MUST include the exact text as `message_text` alongside `note` + `permalink` + `response_ts`. This applies to Reactions Fast Path replies too. (Drafts routed through the approval queue already carry their body in `pending-approvals.json`, so a `draft_posted` with an `approval_id` needs no `message_text`.)
 
+**Non-Slack replies need their own link fields.** The dashboard renders an "open in <surface>" chip next to every logged reply, and it builds that link from what you log. So when a reply lands somewhere other than Slack, log the identifiers:
+
+- **Jira comment** → `"jira":"DEVDOCS-1234"` plus `"jira_comment_id":"<id from the POST response>"`.
+- **GitHub PR comment / review** → `"repo":"crcl-main/circle-docs"`, `"pr":738`, and the comment id (`github_comment_id` for an issue comment, `review_comment_id` for an inline one), or simply the `html_url` that the `gh api` call returned.
+- **Gmail reply** → `"gmail_thread_id"` plus `"sent_id"` (the id of the message you sent).
+- Any surface at all: a logged `url` / `comment_url` / `html_url`, or the first entry of a `links` array, always wins over reconstruction, so when the API hands you a URL, log it.
+
+When closing an approval whose action was a Jira/GitHub/Gmail post, pass that URL to `approval-helper.py done <id> <url>` instead of a Slack ts: it is stored as `result_url` and becomes the history link.
+
+
 If you **couldn't** complete an action (error, ambiguous situation, needed user input), log it as a `blocked` event in `timeline.ndjson` with details, and **stop without finishing the rest of the work**. Surface the blocker in the Output Contract under "Errors". Do NOT silently skip blocked work and exit clean — triage.sh interprets a clean exit as "everything handled" and will advance watermarks, burying the blocked activity.
 
 (Mechanism note: `claude -p` exits 0 whenever Claude completes its output normally, so you can't force a non-zero exit through prose. The best you can do is surface the failure clearly in the Output Contract — and avoid taking further actions that would suggest the dispatch was a success.)

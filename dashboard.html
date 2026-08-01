@@ -109,6 +109,14 @@ body { background:var(--bg); color:var(--text); font-family:var(--sans); font-si
 .deeplink svg { width:11px; height:11px; stroke:currentColor; fill:none; }
 .deeplink.icon-only { padding:3px; }
 .deeplink.icon-only svg { width:13px; height:13px; }
+/* one tint per surface so Slack / Jira / GitHub / Gmail replies read apart */
+.deeplink.k-jira { color:#2563c9; border-color:#cfdcf7; background:#eef2fd; }
+.deeplink.k-jira:hover { background:#e2eafc; border-color:#aec2f0; }
+.deeplink.k-github { color:#3b3f46; border-color:#d8dade; background:#f2f3f5; }
+.deeplink.k-github:hover { background:#e8eaed; border-color:#bfc3ca; }
+.deeplink.k-email { color:#a8402f; border-color:#f0d3cd; background:#fdf0ee; }
+.deeplink.k-email:hover { background:#fbe4e0; border-color:#e6b5ab; }
+.deeplink.k-link { color:var(--text2); border-color:#dcdee2; background:#f4f5f7; }
 
 /* ── review carousel ── */
 .stage-head { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
@@ -421,6 +429,19 @@ details.fold[open] .fold-caret { transform:rotate(90deg); }
 <script>
 const POLL_MS = 2000;
 const SLK = '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M10 13a5 5 0 007 0l3-3a5 5 0 00-7-7l-1 1"/><path d="M14 11a5 5 0 00-7 0l-3 3a5 5 0 007 7l1-1"/></svg>';
+// A reply is not always Slack: the worker also posts Jira comments, GitHub PR
+// comments and Gmail replies. One icon + label per surface, keyed by link_kind.
+const ICON_JIRA   = '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M12 3l8 8-8 8-8-8z"/><path d="M12 9l4 4-4 4-4-4z" fill="currentColor" stroke="none"/></svg>';
+const ICON_GITHUB = '<svg viewBox="0 0 24 24" stroke-width="2"><circle cx="7" cy="5" r="2.4"/><circle cx="7" cy="19" r="2.4"/><circle cx="17" cy="8" r="2.4"/><path d="M7 7.4v9.2"/><path d="M17 10.4v1.6a3 3 0 01-3 3H9.4"/></svg>';
+const ICON_MAIL   = '<svg viewBox="0 0 24 24" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 7l8.5 6 8.5-6"/></svg>';
+const ICON_LINK   = '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M14 5h5v5"/><path d="M19 5l-8 8"/><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4"/></svg>';
+const SURFACES = {
+  slack:  {icon:SLK,        label:'Slack',  title:'open in Slack'},
+  jira:   {icon:ICON_JIRA,  label:'Jira',   title:'open in Jira'},
+  github: {icon:ICON_GITHUB,label:'GitHub', title:'open on GitHub'},
+  email:  {icon:ICON_MAIL,  label:'Gmail',  title:'open in Gmail'},
+  link:   {icon:ICON_LINK,  label:'Open',   title:'open link'},
+};
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function safeUrl(u){ try{ const p=new URL(u,location.href); return ['https:','mailto:','slack:'].includes(p.protocol)?u:''; }catch{ return ''; } }
@@ -508,12 +529,14 @@ function kindBadge(rec){
   if(rec.kind==='email') return '<span class="badge b-email">email</span>';
   return '<span class="badge b-sent">sent</span>';
 }
-function deeplink(url,iconOnly){ const s=url?safeUrl(url):''; if(!s) return ''; return `<a class="deeplink${iconOnly?' icon-only':''}" href="${esc(s)}" target="_blank" rel="noopener" title="open in Slack">${SLK}${iconOnly?'':'Slack'}</a>`; }
+function deeplink(url,iconOnly,kind){ const s=url?safeUrl(url):''; if(!s) return ''; const sf=SURFACES[kind]||SURFACES.slack; return `<a class="deeplink k-${esc(kind||'slack')}${iconOnly?' icon-only':''}" href="${esc(s)}" target="_blank" rel="noopener" title="${esc(sf.title)}">${sf.icon}${iconOnly?'':esc(sf.label)}</a>`; }
+// Any record from the server: prefer the generic link, fall back to slack_url.
+function recLink(rec,iconOnly){ if(!rec) return ''; const u=rec.link_url||rec.slack_url; return deeplink(u,iconOnly,rec.link_kind||(u?'slack':null)); }
 
 function railItem(rec,showQuest){
   const txt=rec.message_text||rec.note||'';
   const chan=rec.channel_id?`<span class="side-chan">${esc(rec.channel_id)}</span>`:'';
-  const foot=(rec.awaiting_send?`<span class="await-pill">⏳ awaiting send</span>`:'')+deeplink(rec.slack_url,true);
+  const foot=(rec.awaiting_send?`<span class="await-pill">⏳ awaiting send</span>`:'')+recLink(rec,true);
   return `<div class="side-item" ${rec.quest_id?`data-quest-id="${esc(rec.quest_id)}"`:''}>
     ${showQuest&&rec.quest_title?`<div class="side-quest">${esc(rec.quest_title)}</div>`:''}
     <div class="side-top">${kindBadge(rec)}${chan}<span class="side-time">${feedTime(rec.ts)}</span></div>
@@ -599,7 +622,7 @@ function buildCard(item){
   const isMsg=(at==='slack_message'||at==='email_reply');
   const t=item.target||{};
   const chan=at==='email_reply'?`to: ${esc(t.to||'')}`:(at==='slack_message'?`${esc(t.channel_id||'')}${t.thread_ts?' · thread':' · new thread'}`:esc(t.path||t.channel_id||''));
-  const targetRow=`<div class="rc-target"><span class="rc-atype at-${esc(at)}">${esc(at)}</span><span class="rc-chan">${chan}</span>${isMsg?deeplink(item.slack_url,false):''}</div>`;
+  const targetRow=`<div class="rc-target"><span class="rc-atype at-${esc(at)}">${esc(at)}</span><span class="rc-chan">${chan}</span>${recLink(item,false)}</div>`;
   const ctx=item.context?`<div class="rc-label">context</div><div class="rc-context">${esc(item.context)}</div>`:'';
   let bodyBlock;
   if(isMsg){
@@ -674,7 +697,7 @@ function renderFeed(feed){
 function oiRow(inner,cls){ return `<div class="oi-row ${cls}">${inner}</div>`; }
 function oiThreadRow(t){
   const ro=t.read_only?'<span class="tag tag-mode">read-only</span>':'';
-  const link=t.slack_url?deeplink(t.slack_url,false):(t.query?`<span class="oi-query">${esc(t.query)}</span>`:'');
+  const link=(t.link_url||t.slack_url)?recLink(t,false):(t.query?`<span class="oi-query">${esc(t.query)}</span>`:'');
   const age=t.last_checked_ts?`<span class="oi-age">${agoEpoch(t.last_checked_ts)}</span>`:'';
   return oiRow(`${badge(t.type||'watch')}${ro}<span class="oi-reason">${esc(t.reason||'(no reason)')}</span>${age}${link}`,'r-wait');
 }
@@ -732,7 +755,7 @@ function watchRow(w){
   return `<div class="watch-item">${badge(w.type||'watch')}${mode}<span class="watch-reason">${esc(w.reason||w.query||w.approval_id||'')}</span><span class="watch-meta">${esc(meta)}</span></div>`;
 }
 function timelineRow(e){
-  const url=e.permalink?safeUrl(e.permalink):''; const link=url?`<a class="tl-link" href="${esc(url)}" target="_blank" rel="noopener">open ↗</a>`:'';
+  const link=recLink(e,false);
   const text=e.message_text||e.note||e.reason||'';
   return `<div class="feed-item"><div class="feed-time">${feedTime(e.ts)}</div><div><div class="feed-top">${badge(e.event||'?')}${link}</div>${text?`<div class="feed-note">${esc(text)}</div>`:''}</div></div>`;
 }
@@ -780,7 +803,7 @@ function histCard(i){
   const msg=i.message_text||''; const long=msg.length>350||msg.split('\n').length>4;
   const msgHtml=!msg?'':long?`<details class="hist-msg"><summary>message</summary><div class="rc-context" style="margin-top:6px">${esc(msg)}</div></details>`:`<div class="rc-context" style="margin-top:8px">${esc(msg)}</div>`;
   const trail=TRAIL.filter(([k])=>i[k]).map(([k,l])=>`${l} ${feedTime(i[k])}`).join('  ·  ');
-  return `<div class="hist-card"><div class="hist-head">${histStatusBadge(i.status)}<span class="hist-title">${esc(i.quest_title||i.quest_id||'')}</span>${i.human_edited?'<span class="tag tag-draft">edited</span>':''}${agoSpan(i.created_at,'rc-age')}</div>${msgHtml}${i.review_note?`<div class="hist-line"><span class="hist-k">review note</span>${esc(i.review_note)}</div>`:''}<div class="hist-trail">${esc(trail)}</div></div>`;
+  return `<div class="hist-card"><div class="hist-head">${histStatusBadge(i.status)}<span class="hist-title">${esc(i.quest_title||i.quest_id||'')}</span>${i.human_edited?'<span class="tag tag-draft">edited</span>':''}${recLink(i,false)}${agoSpan(i.created_at,'rc-age')}</div>${msgHtml}${i.review_note?`<div class="hist-line"><span class="hist-k">review note</span>${esc(i.review_note)}</div>`:''}<div class="hist-trail">${esc(trail)}</div></div>`;
 }
 function runRow(r){
   let res,err=false;

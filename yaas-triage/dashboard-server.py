@@ -165,14 +165,18 @@ _OUTBOUND_EVENTS = {
 }
 _SENT_EVENTS = {"message_sent", "reply_sent", "dm_sent", "executed"}
 _MSG_ACTION_TYPES = ("slack_message", "email_reply")
-_ID_RE = re.compile(r"\b([CDG][A-Z0-9]{6,})\b")
+# Slack channel/DM/group id: C/D/G + at least 7 alnum, and always >=1 digit.
+# The digit requirement is what keeps a Jira project key (DEVDOCS-1098) out.
+_ID_RE = re.compile(r"\b([CDG](?=[A-Z0-9]*\d)[A-Z0-9]{6,})\b")
 
 def _norm_channel(e: dict):
     """Best-effort channel id from the timeline's inconsistent keys."""
     for k in ("channel_id", "channel"):
         v = e.get(k)
-        if isinstance(v, str) and v[:1] in ("C", "D", "G") and " " not in v:
-            return v
+        # Full-match the Slack id shape: a Jira key like DEVDOCS-1098 also starts
+        # with D and has no space, and used to be mistaken for a DM channel.
+        if isinstance(v, str) and _ID_RE.fullmatch(v.strip()):
+            return v.strip()
     for k in ("channel", "target", "source"):  # free-text like "self-DM D0A0…"
         v = e.get(k)
         if isinstance(v, str):
@@ -181,6 +185,8 @@ def _norm_channel(e: dict):
                 return m.group(1)
     return None
 
+_TS_RE = re.compile(r"\d{10}\.\d{3,}|\d{16,}")
+
 def _slack_url(channel_id, ts=None, thread_ts=None, permalink=None,
                host="circlefin.slack.com"):
     """Prefer a stored permalink; else construct a deterministic Slack deeplink.
@@ -188,12 +194,171 @@ def _slack_url(channel_id, ts=None, thread_ts=None, permalink=None,
     carries the correct host for external Slack Connect channels."""
     if isinstance(permalink, str) and permalink.startswith("https://"):
         return permalink
-    if not channel_id or not ts:
-        return None
+    if not channel_id or not _TS_RE.fullmatch(str(ts or "")):
+        return None  # e.g. ts == "draft_saved": there is no message to point at
     url = f"https://{host}/archives/{channel_id}/p{str(ts).replace('.', '')}"
     if thread_ts and thread_ts != ts:
         url += f"?thread_ts={thread_ts}&cid={channel_id}"
     return url
+
+# ── Cross-surface deeplinks (Slack / Jira / GitHub / Gmail) ──────────────────
+# A reply is not always a Slack message: the worker also posts Jira comments,
+# GitHub PR comments/reviews and Gmail replies. Each of those has a canonical
+# web URL we can rebuild from the identifiers the worker logs, so every outbound
+# record in the UI can carry an "open in <surface>" link, not just Slack ones.
+#
+# Precedence: an explicitly logged URL always wins (it is what the API actually
+# returned); otherwise reconstruct from ids. Kind drives the icon/label in the
+# frontend, so classify by host when we only have a URL.
+
+JIRA_HOST   = "circlepay.atlassian.net"
+GMAIL_USER  = 0  # the /u/<n>/ slot for the work account in the browser profile
+_JIRA_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
+_URL_FIELDS  = ("permalink", "dm_permalink", "thread_permalink", "message_url",
+                "comment_url", "issue_url", "pr_url", "html_url", "ticket_url",
+                "url")
+
+def _kind_from_url(url: str) -> str:
+    u = url.lower()
+    if "slack.com" in u:            return "slack"
+    if "atlassian.net" in u:        return "jira"
+    if "github.com" in u:           return "github"
+    if "mail.google.com" in u:      return "email"
+    return "link"
+
+def _first_str(e: dict, keys) -> str | None:
+    for k in keys:
+        v = e.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        if isinstance(v, int):
+            return str(v)
+    return None
+
+def _first_list_url(e: dict):
+    """Some events log a list instead of a single field ("links": [...]). Take the
+    first https URL in it. Deliberately narrow: a generic scan of every string
+    value would happily return an attached Google Doc as if it were the reply."""
+    for k in ("links", "urls", "permalinks"):
+        v = e.get(k)
+        if isinstance(v, list):
+            for x in v:
+                if isinstance(x, str) and x.startswith("https://"):
+                    return x
+    return None
+
+def _jira_url(e: dict):
+    """Jira issue (optionally focused on the comment we posted)."""
+    raw = _first_str(e, ("jira", "jira_issue", "issue", "issue_key", "target"))
+    if not raw:
+        return None
+    m = next((x for x in _JIRA_KEY_RE.finditer(raw)
+              if not x.group(1).startswith("DN-")), None)  # DN-### is not Jira
+    if not m:
+        return None
+    url = f"https://{JIRA_HOST}/browse/{m.group(1)}"
+    cid = _first_str(e, ("jira_comment_id", "comment_id"))
+    if cid and cid.isdigit():
+        url += (f"?focusedCommentId={cid}"
+                "&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel"
+                f"#comment-{cid}")
+    return url
+
+def _github_url(e: dict):
+    """GitHub PR (optionally the exact comment), from repo + pr number."""
+    repo = _first_str(e, ("repo", "github_repo"))
+    pr   = _first_str(e, ("pr", "pr_number", "pull_request", "github_pr"))
+    if not repo or "/" not in repo or not pr or not str(pr).isdigit():
+        return None
+    url = f"https://github.com/{repo}/pull/{pr}"
+    rc = _first_str(e, ("review_comment_id",))
+    ic = _first_str(e, ("github_comment_id", "issue_comment_id"))
+    if rc and rc.isdigit():
+        url += f"#discussion_r{rc}"
+    elif ic and ic.isdigit():
+        url += f"#issuecomment-{ic}"
+    return url
+
+def _gmail_url(e: dict):
+    """Gmail message/thread. Prefer the id of the reply we actually sent."""
+    mid = _first_str(e, ("sent_id", "gmail_sent_id", "gmail_message_id", "gmail_id",
+                         "gmail_thread_id", "email_thread_id", "thread_id",
+                         "message_id", "gmail_preview_id"))
+    if not mid or not re.fullmatch(r"[0-9a-f]{8,}", mid):
+        return None
+    return f"https://mail.google.com/mail/u/{GMAIL_USER}/#all/{mid}"
+
+def _ext_link(e: dict) -> tuple[str | None, str | None]:
+    """(url, kind) for any timeline event / approval target. kind ∈
+    slack | jira | github | email | link."""
+    if not isinstance(e, dict):
+        return None, None
+    url = _first_str(e, _URL_FIELDS)
+    if not url or not url.startswith("https://"):
+        url = _first_list_url(e)
+    if url and url.startswith("https://"):
+        return url, _kind_from_url(url)
+    at = e.get("action_type") or ""
+    # Prefer the surface the action itself names; absent that, a channel id means
+    # Slack, so try it first rather than latching onto a stray id field.
+    order = (["slack", "jira", "github", "email"] if _norm_channel(e)
+             else ["jira", "github", "email", "slack"])
+    if "email" in at:
+        order = ["email", "jira", "github", "slack"]
+    elif "jira" in at:
+        order = ["jira", "github", "email", "slack"]
+    elif "github" in at or at == "pr_comment":
+        order = ["github", "jira", "email", "slack"]
+    elif "slack" in at:
+        order = ["slack", "jira", "github", "email"]
+    for kind in order:
+        if kind == "jira":
+            u = _jira_url(e)
+        elif kind == "github":
+            u = _github_url(e)
+        elif kind == "email":
+            u = _gmail_url(e)
+        else:
+            ch = _norm_channel(e)
+            ts = _first_str(e, ("response_ts", "msg_ts", "message_ts", "thread_ts"))
+            u = _slack_url(ch, ts, e.get("thread_ts"))
+        if u:
+            return u, kind
+    return None, None
+
+def _watch_link(w: dict, wtype: str, ch, tts) -> tuple[str | None, str | None]:
+    """A watch entry points at a surface, not a single reply: a Slack thread, a
+    Jira JQL set, a repo's PRs, or a Gmail query (no stable URL)."""
+    if wtype == "jira":
+        u = _jira_url(w)
+        if u:
+            return u, "jira"
+        jql = w.get("jql")
+        if isinstance(jql, str) and jql.strip():
+            return (f"https://{JIRA_HOST}/issues/?jql="
+                    + urllib.parse.quote(jql.strip()), "jira")
+        return None, None
+    if wtype == "github_pr":
+        u = _github_url(w)
+        if u:
+            return u, "github"
+        repo = _first_str(w, ("repo", "github_repo"))
+        return ((f"https://github.com/{repo}/pulls", "github")
+                if repo and "/" in repo else (None, None))
+    if wtype == "email":
+        return None, None
+    url = _slack_url(ch, tts, tts)
+    if not url and ch:  # channel/DM watch: no thread ts, so link the channel
+        url = f"https://circlefin.slack.com/archives/{ch}"
+    return (url, "slack") if url else (None, None)
+
+def _link_fields(e: dict) -> dict:
+    """The two keys every record hands the frontend, plus the legacy slack_url
+    (kept so older cached clients keep working)."""
+    url, kind = _ext_link(e)
+    return {"link_url": url, "link_kind": kind,
+            "slack_url": url if kind == "slack" else None}
+
 
 def _approvals_index(data: dict) -> dict:
     return {i.get("id"): i.get("message_text", "")
@@ -217,10 +382,6 @@ def _normalize_msg_event(e: dict, approvals_by_id: dict):
     if e.get("event") == "executed" and e.get("action_type") == "email_reply":
         kind = "email"
     channel_id = _norm_channel(e)
-    ts = (e.get("response_ts") or e.get("msg_ts") or e.get("message_ts")
-          or e.get("thread_ts"))
-    permalink = (e.get("permalink") or e.get("dm_permalink")
-                 or e.get("thread_permalink"))
     return {
         "ts":           e.get("ts"),
         "event":        e.get("event"),
@@ -229,10 +390,50 @@ def _normalize_msg_event(e: dict, approvals_by_id: dict):
         "thread_ts":    e.get("thread_ts"),
         "message_text": _clip(body, 2000),
         "note":         _clip(e.get("note"), 300),
-        "slack_url":    _slack_url(channel_id, ts, e.get("thread_ts"), permalink),
+        **_link_fields(e),
         "action_type":  e.get("action_type"),
         "awaiting_send": False,
     }
+
+def _approval_target_link(i: dict) -> dict:
+    """Link fields for an approval item. The target dict carries the surface ids
+    (channel/thread for Slack, email_thread_id for Gmail, an issue key or PR for
+    Jira/GitHub), so resolve against target merged with the item's action_type."""
+    t = dict(i.get("target") or {})
+    # An executed item also carries what the send returned (a permalink, a Jira
+    # comment id, a Gmail message id) at the top level, so merge those in and the
+    # history row links to the actual reply, not just the surface.
+    for k in ("result_url", "permalink", "jira_comment_id", "comment_id",
+              "github_comment_id", "review_comment_id", "repo", "pr",
+              "gmail_message_id", "sent_id", "response_ts"):
+        v = i.get(k)
+        if v not in (None, ""):
+            t[k] = v
+    t.setdefault("action_type", i.get("action_type"))
+    if isinstance(t.get("thread_ts"), str):
+        t.setdefault("response_ts", t["thread_ts"])
+    out = _link_fields(t)
+    if out["link_url"] or i.get("action_type") in _MSG_ACTION_TYPES:
+        return out
+    # Legacy / loosely-logged non-message items (a Jira comment queued as a
+    # remote_request) name the issue only in the prose. Fall back to the first
+    # issue key found there, with the recorded comment id as the anchor.
+    for field in ("context", "risk_reason", "message_text"):
+        v = i.get(field)
+        if not isinstance(v, str):
+            continue
+        # DN-### is Guangmian's private Dragnet register, not a Jira issue.
+        mk = next((x for x in _JIRA_KEY_RE.finditer(v)
+                   if not x.group(1).startswith("DN-")), None)
+        if mk:
+            cid = _first_str(i, ("jira_comment_id", "comment_id", "response_ts"))
+            probe = {"jira": mk.group(1)}
+            if cid and cid.isdigit() and len(cid) <= 9:  # a ts has a dot/17 digits
+                probe["jira_comment_id"] = cid
+            u = _jira_url(probe)
+            if u:
+                return {"link_url": u, "link_kind": "jira", "slack_url": None}
+    return out
 
 def _approval_card(i: dict) -> dict:
     """Project a pending-approval item into the shape the review card needs."""
@@ -251,8 +452,7 @@ def _approval_card(i: dict) -> dict:
         "review_note":    i.get("review_note", ""),
         "review_history": i.get("review_history", []),
         "worker_reply":   i.get("worker_reply", ""),
-        "slack_url":      _slack_url(t.get("channel_id"), t.get("thread_ts"),
-                                     t.get("thread_ts")),
+        **_approval_target_link(i),
     }
 
 def _approval_draft_record(i: dict) -> dict:
@@ -266,8 +466,7 @@ def _approval_draft_record(i: dict) -> dict:
         "thread_ts":    t.get("thread_ts"),
         "message_text": _clip(i.get("message_text", ""), 2000),
         "note":         "",
-        "slack_url":    _slack_url(t.get("channel_id"), t.get("thread_ts"),
-                                   t.get("thread_ts")),
+        **_approval_target_link(i),
         "action_type":  i.get("action_type"),
         "awaiting_send": True,
         "quest_id":     i.get("quest_id"),
@@ -345,12 +544,8 @@ _ROUTINE_EVENTS = {"created", "note", "status_change", "brief_written",
 COMMITMENTS_FILE = STATE_DIR / "open-commitments.json"
 
 def _event_link(e: dict):
-    ch = _norm_channel(e)
-    ts = (e.get("response_ts") or e.get("msg_ts") or e.get("message_ts")
-          or e.get("thread_ts"))
-    permalink = (e.get("permalink") or e.get("dm_permalink")
-                 or e.get("thread_permalink"))
-    return _slack_url(ch, ts, e.get("thread_ts"), permalink), ch
+    url, kind = _ext_link(e)
+    return url, kind, _norm_channel(e)
 
 def build_open_items() -> dict:
     active_dir = STATE_DIR / "quests" / "active"
@@ -397,24 +592,26 @@ def build_open_items() -> dict:
         # Blocked wins: a blocker with nothing (not even a note) logged after it.
         if last["blocked"] >= 0 and last["blocked"] > last["nonblocked"]:
             be = evs[last["blocked"]]
-            url, _ = _event_link(be)
+            url, kind, _ = _event_link(be)
             blocked.append({**base, "ts": be.get("ts"),
                             "reason": _clip(be.get("reason") or be.get("note") or "", 200),
-                            "slack_url": url})
+                            "slack_url": url, "link_url": url, "link_kind": kind})
             continue
         # Draft queued and nothing sent after it → awaiting your send.
         if last["draft"] > last["out"] and last["draft"] >= last["in"]:
             de = evs[last["draft"]]
-            url, _ = _event_link(de)
+            url, kind, _ = _event_link(de)
             drafts.append({**base, "ts": de.get("ts"),
-                           "reason": _clip(de.get("note") or "", 200), "slack_url": url})
+                           "reason": _clip(de.get("note") or "", 200),
+                           "slack_url": url, "link_url": url, "link_kind": kind})
             continue
         # We sent something and nothing has come back since → waiting on them.
         if last["out"] >= 0 and last["out"] > last["in"]:
             oe = evs[last["out"]]
-            url, _ = _event_link(oe)
+            url, kind, _ = _event_link(oe)
             awaiting_reply.append({**base, "ts": oe.get("ts"),
-                                   "reason": _clip(oe.get("note") or "", 200), "slack_url": url})
+                                   "reason": _clip(oe.get("note") or "", 200),
+                                   "slack_url": url, "link_url": url, "link_kind": kind})
 
     # Pending approvals — things waiting on YOUR review/decision.
     review = []
@@ -429,8 +626,7 @@ def build_open_items() -> dict:
                     "title": i.get("quest_title", i.get("quest_id")),
                     "status": i.get("status"),
                     "action_type": i.get("action_type", "slack_message"),
-                    "slack_url": _slack_url(t.get("channel_id"), t.get("thread_ts"),
-                                            t.get("thread_ts")),
+                    **_approval_target_link(i),
                 })
         except Exception:
             pass
@@ -708,6 +904,9 @@ def build_quest_detail(quest_id: str) -> dict | None:
                 if not isinstance(e, dict):
                     continue
                 entry = {k: e[k] for k in _TIMELINE_KEYS if k in e}
+                # Resolve the link from the FULL event (ids live outside
+                # _TIMELINE_KEYS) so Jira/GitHub/Gmail replies link out too.
+                entry.update(_link_fields(e))
                 for k in ("note", "reason"):
                     if isinstance(entry.get(k), str) and len(entry[k]) > 300:
                         entry[k] = entry[k][:300] + "…"
@@ -756,11 +955,14 @@ def build_quest_detail(quest_id: str) -> dict | None:
         wtype = e.get("type")
         if wtype in _OPEN_WATCH_TYPES:
             ch, tts = e.get("channel_id"), e.get("thread_ts")
+            url, kind = _watch_link(e, wtype, ch, tts)
             open_threads.append({
                 "type":       wtype,
                 "reason":     _clip(e.get("reason", ""), 2000),
                 "read_only":  e.get("watch_mode") == "read_only",
-                "slack_url":  _slack_url(ch, tts, tts) if wtype != "email" else None,
+                "slack_url":  url if kind == "slack" else None,
+                "link_url":   url,
+                "link_kind":  kind,
                 "query":      e.get("query") if wtype == "email" else None,
                 "last_checked_ts": e.get("last_checked_ts"),
             })
@@ -848,7 +1050,8 @@ def build_history() -> dict:
         try:
             data = _read_approvals()
             approvals = [
-                i for i in data.get("items", [])
+                {**i, **_approval_target_link(i)}
+                for i in data.get("items", [])
                 if isinstance(i, dict) and i.get("status") != "pending_review"
             ]
             approvals.sort(

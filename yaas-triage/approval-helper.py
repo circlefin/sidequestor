@@ -44,9 +44,11 @@ answer <id> <json>
     pending_review so the item re-surfaces on the dashboard for another review
     pass. Does NOT send. Prints "ok", or "skip:<status>" if not needs_reply.
 
-done <id> [response_ts]
-    Transition executing → executed. Optionally records response_ts.
-    Prints "ok" on success.
+done <id> [response_ts | result_url]
+    Transition executing → executed. Optionally records the Slack response_ts,
+    or — for a Jira comment / GitHub PR comment / Gmail reply — pass the URL of
+    the posted reply instead and it is stored as result_url so the dashboard can
+    link to it. Prints "ok" on success.
 """
 
 import fcntl
@@ -190,7 +192,13 @@ def cmd_done(approval_id: str, response_ts: str | None = None):
             item["status"]   = "executed"
             item["sent_at"]  = datetime.now(timezone.utc).isoformat()
             if response_ts:
-                item["response_ts"] = response_ts
+                # Non-Slack executions (Jira comment, GitHub PR comment, Gmail
+                # reply) have a URL, not a ts. Keep it as result_url so the
+                # dashboard can link straight to the posted reply.
+                if response_ts.startswith("https://"):
+                    item["result_url"] = response_ts
+                else:
+                    item["response_ts"] = response_ts
             _save_locked(f, data)
             print("ok")
         finally:
