@@ -54,6 +54,27 @@ APPROVALS_FILE = STATE_DIR / "pending-approvals.json"
 DASHBOARD_HTML = REPO_ROOT / "dashboard.html"
 PORT           = int(sys.argv[1]) if len(sys.argv) > 1 else 8877
 
+# Workspace-specific hosts. No hardcoded defaults: they belong to whoever runs
+# this, so they come from the gitignored repo-root .env (the same file triage.sh
+# sources). Without them, a reconstructed Slack/Jira link is simply omitted; a
+# stored permalink still works, because it carries its own host.
+def _dotenv(key: str, default: str = "") -> str:
+    v = os.environ.get(key)
+    if v:
+        return v.strip()
+    try:
+        for line in (REPO_ROOT / ".env").read_text().splitlines():
+            line = line.strip()
+            if line.startswith(f"{key}="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return default
+
+SLACK_HOST = _dotenv("SLACK_WORKSPACE_DOMAIN")            # e.g. acme.slack.com
+JIRA_HOST  = (_dotenv("JIRA_BASE_URL").replace("https://", "")
+                                      .replace("http://", "").rstrip("/"))
+
 WORKER_TIMEOUT_S = 1800  # mirrors WORKER_TIMEOUT in triage.sh — a log older than
                          # this with no footer means the worker was killed, not running
 LIVE_TAIL_LINES  = 60   # panel wants the fuller transcript; pill only shows the target name
@@ -166,14 +187,14 @@ _OUTBOUND_EVENTS = {
 _SENT_EVENTS = {"message_sent", "reply_sent", "dm_sent", "executed"}
 _MSG_ACTION_TYPES = ("slack_message", "email_reply")
 # Slack channel/DM/group id: C/D/G + at least 7 alnum, and always >=1 digit.
-# The digit requirement is what keeps a Jira project key (DEVDOCS-1098) out.
+# The digit requirement is what keeps a Jira project key (PROJ-1098) out.
 _ID_RE = re.compile(r"\b([CDG](?=[A-Z0-9]*\d)[A-Z0-9]{6,})\b")
 
 def _norm_channel(e: dict):
     """Best-effort channel id from the timeline's inconsistent keys."""
     for k in ("channel_id", "channel"):
         v = e.get(k)
-        # Full-match the Slack id shape: a Jira key like DEVDOCS-1098 also starts
+        # Full-match the Slack id shape: a Jira key like PROJ-1098 also starts
         # with D and has no space, and used to be mistaken for a DM channel.
         if isinstance(v, str) and _ID_RE.fullmatch(v.strip()):
             return v.strip()
@@ -188,13 +209,14 @@ def _norm_channel(e: dict):
 _TS_RE = re.compile(r"\d{10}\.\d{3,}|\d{16,}")
 
 def _slack_url(channel_id, ts=None, thread_ts=None, permalink=None,
-               host="circlefin.slack.com"):
+               host=None):
     """Prefer a stored permalink; else construct a deterministic Slack deeplink.
-    Host is a best-effort default (internal); a stored permalink always wins and
+    Host comes from SLACK_WORKSPACE_DOMAIN; a stored permalink always wins and
     carries the correct host for external Slack Connect channels."""
     if isinstance(permalink, str) and permalink.startswith("https://"):
         return permalink
-    if not channel_id or not _TS_RE.fullmatch(str(ts or "")):
+    host = host or SLACK_HOST
+    if not host or not channel_id or not _TS_RE.fullmatch(str(ts or "")):
         return None  # e.g. ts == "draft_saved": there is no message to point at
     url = f"https://{host}/archives/{channel_id}/p{str(ts).replace('.', '')}"
     if thread_ts and thread_ts != ts:
@@ -211,7 +233,6 @@ def _slack_url(channel_id, ts=None, thread_ts=None, permalink=None,
 # returned); otherwise reconstruct from ids. Kind drives the icon/label in the
 # frontend, so classify by host when we only have a URL.
 
-JIRA_HOST   = "circlepay.atlassian.net"
 GMAIL_USER  = 0  # the /u/<n>/ slot for the work account in the browser profile
 _JIRA_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
 _URL_FIELDS  = ("permalink", "dm_permalink", "thread_permalink", "message_url",
@@ -250,7 +271,7 @@ def _first_list_url(e: dict):
 def _jira_url(e: dict):
     """Jira issue (optionally focused on the comment we posted)."""
     raw = _first_str(e, ("jira", "jira_issue", "issue", "issue_key", "target"))
-    if not raw:
+    if not raw or not JIRA_HOST:  # no JIRA_BASE_URL configured: nothing to link to
         return None
     m = next((x for x in _JIRA_KEY_RE.finditer(raw)
               if not x.group(1).startswith("DN-")), None)  # DN-### is not Jira
@@ -334,7 +355,7 @@ def _watch_link(w: dict, wtype: str, ch, tts) -> tuple[str | None, str | None]:
         if u:
             return u, "jira"
         jql = w.get("jql")
-        if isinstance(jql, str) and jql.strip():
+        if JIRA_HOST and isinstance(jql, str) and jql.strip():
             return (f"https://{JIRA_HOST}/issues/?jql="
                     + urllib.parse.quote(jql.strip()), "jira")
         return None, None
@@ -349,7 +370,7 @@ def _watch_link(w: dict, wtype: str, ch, tts) -> tuple[str | None, str | None]:
         return None, None
     url = _slack_url(ch, tts, tts)
     if not url and ch:  # channel/DM watch: no thread ts, so link the channel
-        url = f"https://circlefin.slack.com/archives/{ch}"
+        url = f"https://{SLACK_HOST}/archives/{ch}" if SLACK_HOST else None
     return (url, "slack") if url else (None, None)
 
 def _link_fields(e: dict) -> dict:
@@ -422,7 +443,7 @@ def _approval_target_link(i: dict) -> dict:
         v = i.get(field)
         if not isinstance(v, str):
             continue
-        # DN-### is Guangmian's private Dragnet register, not a Jira issue.
+        # DN-### is a private local register prefix, not a real Jira project.
         mk = next((x for x in _JIRA_KEY_RE.finditer(v)
                    if not x.group(1).startswith("DN-")), None)
         if mk:

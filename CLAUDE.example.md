@@ -231,8 +231,8 @@ It sends (or drafts), then appends a timeline entry carrying the exact `message_
 
 **Non-Slack replies need their own link fields.** The dashboard renders an "open in <surface>" chip next to every logged reply, and it builds that link from what you log. So when a reply lands somewhere other than Slack, log the identifiers:
 
-- **Jira comment** → `"jira":"DEVDOCS-1234"` plus `"jira_comment_id":"<id from the POST response>"`.
-- **GitHub PR comment / review** → `"repo":"crcl-main/circle-docs"`, `"pr":738`, and the comment id (`github_comment_id` for an issue comment, `review_comment_id` for an inline one), or simply the `html_url` that the `gh api` call returned.
+- **Jira comment** → `"jira":"PROJ-1234"` plus `"jira_comment_id":"<id from the POST response>"`.
+- **GitHub PR comment / review** → `"repo":"<owner>/<repo>"`, `"pr":123`, and the comment id (`github_comment_id` for an issue comment, `review_comment_id` for an inline one), or simply the `html_url` that the `gh api` call returned.
 - **Gmail reply** → `"gmail_thread_id"` plus `"sent_id"` (the id of the message you sent).
 - Any surface at all: a logged `url` / `comment_url` / `html_url`, or the first entry of a `links` array, always wins over reconstruction, so when the API hands you a URL, log it.
 
