@@ -259,7 +259,7 @@ A typical install on 60s cron spends nothing on >95% of ticks and a few dollars 
 
 ## AI Safety
 
-YAAS v2 was designed with safety features and safeguards in observance of Circle's AI Safety rules ([reference link](<insert-link>)). Use, configure, and extend it with those principles in mind. Built-in defaults aligned with that posture:
+YAAS v2 was designed with safety features and safeguards in observance of Circle's AI Safety rules. Use, configure, and extend it with those principles in mind, alongside whatever AI-use policy applies where you run it. Built-in defaults aligned with that posture:
 
 - **Drafts by default.** New quests scaffold with `allow_send: false`. The worker drafts via `slack_send_message_draft` (or `gws gmail users drafts create`) until the user explicitly authorizes sending. See "drafts-only mode" behavior in the [Quest Activation Protocol](CLAUDE.example.md).
 - **Human-initiated reaction triggers.** The only path by which the worker sends without a quest's `allow_send: true` is the `:claudeloading:` reaction — and that requires a human to place the emoji on a specific message, which is itself the authorization.

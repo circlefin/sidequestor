@@ -17,7 +17,7 @@
 
 # jira-call.sh — call the Jira Cloud REST API directly, over Basic auth.
 #
-# The interactive Atlassian MCP (mcp__plugin_circle-mcp-atlassian_atlassian__*)
+# An interactive Atlassian MCP (however your org exposes it, often as a plugin)
 # is a Claude Code *plugin* authenticated by an interactive OAuth flow. It is not
 # listed in the repo .mcp.json, so the headless dispatch (triage.sh -> claude -p)
 # never receives it, and OAuth would not survive a launchd session anyway. This
