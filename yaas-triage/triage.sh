@@ -131,7 +131,7 @@ quest_has_recovery_evidence() {
   local qid="$1" source="$2"
   awk -F '\t' -v q="$qid" -v source="$source" '
     $1 == q && $2 == "source_recovered" && $4 == source { recovered=1 }
-    $1 == q && ($2 == "skip" || $2 == "error") { unsafe=1 }
+    $1 == q && ($2 == "skip" || $2 == "error" || $2 == "misconfig") { unsafe=1 }
     END { exit !(recovered && !unsafe) }
   ' "$TMP_RESULTS"
 }
@@ -311,13 +311,13 @@ check_quest() {
     esac
     case "${watch_id_core:-}" in *[!0-9a-f]*) invalid_watch_id=1 ;; esac
     if [ "$invalid_watch_id" = "1" ]; then
-      echo -e "${qid}\tskip\t-\t${type}\t[$type] invalid or missing watch_id; watermark held"
+      echo -e "${qid}\tmisconfig\t-\t${type}\t[$type] invalid or missing watch_id; watermark held"
       had_skip=1
       continue
     fi
     checker="$SCRIPT_DIR/checkers/$type.py"
     if [ ! -x "$checker" ]; then
-      echo -e "${qid}\tskip\t${watch_id}\t${type}\t[$type] no executable checker; watermark held"
+      echo -e "${qid}\tmisconfig\t${watch_id}\t${type}\t[$type] no executable checker; watermark held"
       had_skip=1
       continue
     fi
@@ -347,7 +347,7 @@ check_quest() {
     fi
     case "$new_count" in
       ''|*[!0-9]*)
-        echo -e "${qid}\tskip\t${watch_id}\t${type}\t[$type] malformed checker result; watermark held"
+        echo -e "${qid}\tmisconfig\t${watch_id}\t${type}\t[$type] malformed checker result; watermark held"
         had_skip=1
         continue
         ;;
@@ -412,6 +412,21 @@ while IFS=$'\t' read -r qid status watch_id watch_type reason; do
       SKIPPED_QUESTS+=("$qid")
     fi
     log "SKIP: $qid — $reason"
+  elif [ "$status" = "misconfig" ]; then
+    # NOT transient. An unknown watch type, an invalid watch_id, or a checker
+    # that returned garbage will fail identically on every future tick, and
+    # holding the watermark keeps the whole quest out of CLEAN_QUESTS forever
+    # (every other watch in it stops advancing too). A rate-limit SKIP line
+    # self-heals and is noise; this needs a human, so it also lands in the
+    # run-log where the dashboard can surface it.
+    if [[ " ${SKIPPED_QUESTS[*]-} " != *" $qid "* ]]; then
+      SKIPPED_QUESTS+=("$qid")
+    fi
+    log "MISCONFIG: $qid — $reason (will not self-heal; every watch in this quest is held)"
+    jq -nc --arg ts "$NOW_UTC" --arg quest "$qid" --arg watch_id "$watch_id" \
+      --arg type "$watch_type" --arg reason "$reason" \
+      '{ts:$ts,event:"gate_watch_misconfigured",quest:$quest,watch_id:$watch_id,type:$type,reason:$reason}' \
+      >> "$RUN_LOG" || log "RUN LOG WRITE FAILED: $qid misconfig not recorded"
   elif [ "$status" = "clean" ]; then
     CLEAN_QUESTS+=("$qid")
     vlog "CLEAN: $qid — $reason"
@@ -423,7 +438,8 @@ done < "$TMP_RESULTS"
 DIRTY_WATCHES_JSON=$(jq -sc '.' "$DIRTY_WATCHES_NDJSON")
 rm -f "$DIRTY_WATCHES_NDJSON"
 DIRTY_WATCHES_NDJSON=""
-WATCHES_SKIPPED_COUNT=$(awk -F '\t' '$2 == "skip" { count++ } END { print count + 0 }' "$TMP_RESULTS")
+WATCHES_SKIPPED_COUNT=$(awk -F '\t' '$2 == "skip" || $2 == "misconfig" { count++ } END { print count + 0 }' "$TMP_RESULTS")
+WATCHES_MISCONFIGURED_COUNT=$(awk -F '\t' '$2 == "misconfig" { count++ } END { print count + 0 }' "$TMP_RESULTS")
 
 # A quest can contain both dispatched dirty watches and rate-limited watches
 # whose watermarks must remain held. Count it as dirty (not also skipped) while
@@ -494,6 +510,7 @@ d['quests_dirty']   = $DIRTY_COUNT
 d['quests_clean']   = $CLEAN_COUNT
 d['quests_skipped'] = $SKIPPED_COUNT
 d['watches_skipped'] = $WATCHES_SKIPPED_COUNT
+d['watches_misconfigured'] = $WATCHES_MISCONFIGURED_COUNT
 if $DIRTY_COUNT == 0:
     d['runs_idle'] = d.get('runs_idle', 0) + 1
 else:
@@ -642,7 +659,7 @@ fi
 
 # ── Decide ──────────────────────────────────────────────────────────────────
 if [ "$DIRTY_COUNT" = "0" ] && [ "$REACTIONS_DIRTY" = "0" ]; then
-  echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_idle\",\"quests_checked\":$QUEST_COUNT,\"quests_skipped\":$SKIPPED_COUNT,\"watches_skipped\":$WATCHES_SKIPPED_COUNT}" >> "$RUN_LOG"
+  echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_idle\",\"quests_checked\":$QUEST_COUNT,\"quests_skipped\":$SKIPPED_COUNT,\"watches_skipped\":$WATCHES_SKIPPED_COUNT,\"watches_misconfigured\":$WATCHES_MISCONFIGURED_COUNT}" >> "$RUN_LOG"
   log "IDLE — $QUEST_COUNT quest(s) checked, 0 dirty, $SKIPPED_COUNT fully skipped quest(s), $WATCHES_SKIPPED_COUNT held watch(es), 0 new reactions. Watermarks advanced where safe."
   slog "Run OK — idle. $QUEST_COUNT quest(s) swept, 0 activity, $WATCHES_SKIPPED_COUNT held watch(es)."
   exit 0

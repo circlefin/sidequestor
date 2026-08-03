@@ -14,8 +14,9 @@ ERROR_QUEST="$ROOT/state/quests/active/quest-error-blocked"
 LOCAL_QUEST="$ROOT/state/quests/active/quest-local-only-blocked"
 RECOVERY_QUEST="$ROOT/state/quests/active/quest-dirty-recovery"
 CURRENT_BLOCK_QUEST="$ROOT/state/quests/active/quest-current-block"
+MISCONFIG_QUEST="$ROOT/state/quests/active/quest-misconfigured"
 
-mkdir -p "$TRIAGE/checkers" "$QUEST" "$BROKEN_QUEST" "$CLEAN_QUEST" "$BUSINESS_QUEST" "$ERROR_QUEST" "$LOCAL_QUEST" "$RECOVERY_QUEST" "$CURRENT_BLOCK_QUEST" "$ROOT/state/triage" "$ROOT/logs"
+mkdir -p "$TRIAGE/checkers" "$QUEST" "$BROKEN_QUEST" "$CLEAN_QUEST" "$BUSINESS_QUEST" "$ERROR_QUEST" "$LOCAL_QUEST" "$RECOVERY_QUEST" "$CURRENT_BLOCK_QUEST" "$MISCONFIG_QUEST" "$ROOT/state/triage" "$ROOT/logs"
 cp "$SCRIPT_DIR/triage.sh" "$SCRIPT_DIR/ensure-watch-ids.py" "$SCRIPT_DIR/worker-source-evidence.py" "$TRIAGE/"
 
 cat > "$QUEST/watch.json" <<'JSON'
@@ -66,6 +67,16 @@ JSON
 printf '{"id":"quest-current-block"}\n' > "$CURRENT_BLOCK_QUEST/meta.json"
 printf '# Current block quest\n' > "$CURRENT_BLOCK_QUEST/context.md"
 : > "$CURRENT_BLOCK_QUEST/timeline.ndjson"
+
+cat > "$MISCONFIG_QUEST/watch.json" <<'JSON'
+{"watches":[
+  {"type":"no_such_checker_fixture","last_checked_ts":"100","reason":"unknown watch type"},
+  {"type":"clean_fixture","last_checked_ts":"100","reason":"healthy sibling watch"}
+]}
+JSON
+printf '{"id":"quest-misconfigured"}\n' > "$MISCONFIG_QUEST/meta.json"
+printf '# Misconfigured quest\n' > "$MISCONFIG_QUEST/context.md"
+: > "$MISCONFIG_QUEST/timeline.ndjson"
 
 cat > "$TRIAGE/checkers/fixture.py" <<'PY'
 #!/usr/bin/env python3
@@ -153,8 +164,8 @@ printf '%s' "$PROMPT" | grep -F "\"watch_id\":\"$WATCH_ID_2\"" >/dev/null
 # One malformed quest does not prevent valid quests from dispatching.
 grep -F "SKIP: quest-broken" "$ROOT/logs/triage.log" >/dev/null
 [ "$(jq -r '.quests_dirty' "$ROOT/state/triage/last-run.json")" -eq 4 ]
-[ "$(jq -r '.quests_skipped' "$ROOT/state/triage/last-run.json")" -eq 1 ]
-[ "$(jq -r '.watches_skipped' "$ROOT/state/triage/last-run.json")" -eq 2 ]
+[ "$(jq -r '.quests_skipped' "$ROOT/state/triage/last-run.json")" -eq 2 ]  # quest-broken + quest-misconfigured
+[ "$(jq -r '.watches_skipped' "$ROOT/state/triage/last-run.json")" -eq 3 ]
 jq -e 'select(.event == "gate_quest_unreadable" and .quest == "quest-broken")' "$ROOT/state/run-log.ndjson" >/dev/null
 
 # Clean checker reads alone cannot prove that the worker's Slack path recovered.
@@ -188,6 +199,27 @@ cat > "$TMP_DIR/slack-error-body.ndjson" <<'JSON'
 JSON
 if python3 "$SCRIPT_DIR/worker-source-evidence.py" slack "$TMP_DIR/slack-error-body.ndjson"; then
   echo "Slack ok:false body was incorrectly accepted as recovery evidence" >&2
+  exit 1
+fi
+
+# A watch type with no checker is a permanent misconfiguration, not a transient
+# skip: it must be loud, recorded for the dashboard, and must not masquerade as
+# a rate limit that will self-heal.
+grep -F "MISCONFIG: quest-misconfigured" "$ROOT/logs/triage.log" >/dev/null
+! grep -F "SKIP: quest-misconfigured" "$ROOT/logs/triage.log" >/dev/null
+jq -e 'select(.event == "gate_watch_misconfigured" and .quest == "quest-misconfigured" and .type == "no_such_checker_fixture")' "$ROOT/state/run-log.ndjson" >/dev/null
+[ "$(jq -r '.watches_misconfigured' "$ROOT/state/triage/last-run.json")" -eq 1 ]
+# The healthy sibling watch is held too, which is why the event above must exist.
+[ "$(jq -r '.watches[1].last_checked_ts' "$MISCONFIG_QUEST/watch.json")" = "100" ]
+
+# Message content is not an envelope: a real read of a thread that discusses
+# rate limits or auth errors still counts as recovery evidence.
+cat > "$TMP_DIR/prose-worker.ndjson" <<'JSON'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"mcp__slack__slack_read_thread","input":{}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"Alice: the API returned ratelimited and invalid_auth all morning"}]}]}}
+JSON
+if ! python3 "$SCRIPT_DIR/worker-source-evidence.py" slack "$TMP_DIR/prose-worker.ndjson"; then
+  echo "a successful Slack read was rejected because of its message content" >&2
   exit 1
 fi
 
