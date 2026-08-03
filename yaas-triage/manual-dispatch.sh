@@ -99,7 +99,8 @@ INSTR_JSON=$(printf '%s' "$INSTRUCTION" | python3 -c 'import json,sys; print(jso
 echo "{\"ts\":\"$NOW_UTC\",\"event\":\"manual_dispatch\",\"quest\":\"$QUEST_ID\",\"instruction\":$INSTR_JSON}" >> "$RUN_LOG"
 
 WORKER_TIMEOUT=1800  # keep in sync with triage.sh WORKER_TIMEOUT
-WORKER_PERMISSION_MODE="${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}"
+CLAUDE_PERMISSION_MODE="${YAAS_CLAUDE_PERMISSION_MODE:-${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}}"
+CODEX_PERMISSION_MODE="${YAAS_CODEX_PERMISSION_MODE:-workspace-write}"
 
 # The prompt keeps the worker in Mode A / Quest Activation Protocol so all the
 # tone, send-authorization, watch.json and logging rules apply, but leads with
@@ -116,7 +117,8 @@ _kill_tree() {
 _EXITFILE=$(mktemp)
 (
   YAAS_AGENT="$YAAS_AGENT" REPO_ROOT="$REPO_ROOT" \
-  YAAS_WORKER_PERMISSION_MODE="$WORKER_PERMISSION_MODE" \
+  YAAS_CLAUDE_PERMISSION_MODE="$CLAUDE_PERMISSION_MODE" \
+  YAAS_CODEX_PERMISSION_MODE="$CODEX_PERMISSION_MODE" \
     bash "$SCRIPT_DIR/dispatch-agent.sh" "$WORKER_PROMPT" \
     2> "${WORKER_NDJSON}.err" \
     | tee "$WORKER_NDJSON" \

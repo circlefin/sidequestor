@@ -35,7 +35,9 @@
 # Env:
 #   YAAS_AGENT                   backend (default: claude)
 #   REPO_ROOT                    repo working dir (default: parent of script dir)
-#   YAAS_WORKER_PERMISSION_MODE  claude --permission-mode (default: acceptEdits)
+#   YAAS_CLAUDE_PERMISSION_MODE  claude --permission-mode (default: acceptEdits)
+#   YAAS_CODEX_PERMISSION_MODE   workspace-write (default) or bypassPermissions
+#   YAAS_WORKER_PERMISSION_MODE  deprecated Claude fallback
 #   YAAS_CLAUDE_MODEL            default: opus
 #   YAAS_CLAUDE_EFFORT           claude --effort (low|medium|high|...); unset → omit flag
 #   YAAS_CODEX_MODEL             default: "" → codex uses ~/.codex/config.toml model
@@ -57,9 +59,10 @@ case "$BACKEND" in
   claude)
     MODEL="${YAAS_CLAUDE_MODEL:-opus}"
     EFFORT="${YAAS_CLAUDE_EFFORT:-}"
+    PERMISSION_MODE="${YAAS_CLAUDE_PERMISSION_MODE:-${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}}"
     exec claude --model "$MODEL" \
       ${EFFORT:+--effort "$EFFORT"} \
-      --permission-mode "${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}" \
+      --permission-mode "$PERMISSION_MODE" \
       --mcp-config "$SCRIPT_DIR/worker.mcp.json" \
       --strict-mcp-config \
       --tools "Read,Edit,Write,Bash,Glob,Grep,WebFetch,WebSearch" \
@@ -67,20 +70,32 @@ case "$BACKEND" in
       -p "$PROMPT"
     ;;
   codex)
-    # Bounded sandbox: writes limited to the workspace, network ON so the worker
-    # can shell out to mcp-call.sh (Slack). approval_policy=never removes the
-    # non-interactive approval prompt for shell commands. This deliberately does
-    # NOT use --dangerously-bypass; native side-effectful MCP tool calls will be
-    # cancelled under this posture — route sends through mcp-call.sh instead.
+    # The default bounded sandbox limits writes to the workspace and enables
+    # network access for mcp-call.sh. bypassPermissions opts into Codex's fully
+    # unsandboxed, no-approval mode and should only be used deliberately.
     # Disable Codex's native Slack plugin so there is exactly ONE Slack path:
     # the repo's mcp-call.sh (shell). This (a) avoids the native write-gate that
     # cancels side-effectful MCP calls under this bounded sandbox, and (b) keeps
     # the sender identity as "yourself-as-a-service" rather than the plugin's
     # "ChatGPT". Harmless if the plugin isn't installed.
-    set -- codex exec --json --skip-git-repo-check \
-      -s workspace-write \
-      -c approval_policy=never \
-      -c 'sandbox_workspace_write.network_access=true' \
+    PERMISSION_MODE="${YAAS_CODEX_PERMISSION_MODE:-workspace-write}"
+    set -- codex exec --json --skip-git-repo-check
+    case "$PERMISSION_MODE" in
+      workspace-write)
+        set -- "$@" \
+          -s workspace-write \
+          -c approval_policy=never \
+          -c 'sandbox_workspace_write.network_access=true'
+        ;;
+      bypassPermissions)
+        set -- "$@" --dangerously-bypass-approvals-and-sandbox
+        ;;
+      *)
+        echo "dispatch-agent.sh: invalid YAAS_CODEX_PERMISSION_MODE='$PERMISSION_MODE' (expected workspace-write or bypassPermissions)" >&2
+        exit 2
+        ;;
+    esac
+    set -- "$@" \
       -c 'plugins."slack@openai-curated".enabled=false' \
       -C "$REPO_ROOT"
     [ -n "${YAAS_CODEX_MODEL:-}" ] && set -- "$@" -m "$YAAS_CODEX_MODEL"

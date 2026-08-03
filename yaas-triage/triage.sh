@@ -32,8 +32,9 @@
 # Env:
 #   DRY_RUN=1     Skip worker dispatch even if activity is found.
 #   VERBOSE=1     Print per-quest check details to stderr.
-#   YAAS_WORKER_PERMISSION_MODE  Passed to claude --permission-mode (default:
+#   YAAS_CLAUDE_PERMISSION_MODE  Passed to claude --permission-mode (default:
 #                  acceptEdits). Set in repo-root .env.
+#   YAAS_CODEX_PERMISSION_MODE   workspace-write (default) or bypassPermissions.
 
 set -eu
 
@@ -118,6 +119,8 @@ echo "$$" > "$HOLDERFILE"
 # notify.sh uses its own watermark — fires nothing if there are no new events.
 _on_exit() {
   rm -f "${TMP_RESULTS:-}"
+  rm -f "${WATCH_ID_FAILURES:-}"
+  rm -f "${DIRTY_WATCHES_NDJSON:-}"
   bash "$SCRIPT_DIR/rotate-logs.sh"    2>>"$LOG_FILE" || true
   bash "$SCRIPT_DIR/notify.sh"         2>>"$LOG_FILE" || true
   bash "$SCRIPT_DIR/sync-yaas-v2.sh"   2>>"$LOG_FILE" || true
@@ -168,11 +171,27 @@ json.dump(d, open(p, 'w'), indent=2)
   exit 0
 fi
 
+# Every checker result carries the persistent ID of the exact watch that fired.
+# Older quest files predate watch_id, so migrate them once before parallel reads.
+# The helper writes atomically and is a no-op after all entries have IDs.
+WATCH_ID_FAILURES=$(mktemp)
+for qd in "${QUEST_DIRS[@]}"; do
+  qid=$(basename "$qd")
+  watch="$qd/watch.json"
+  [ -f "$watch" ] || continue
+  if ! python3 "$SCRIPT_DIR/ensure-watch-ids.py" "$qid" "$watch" 2>>"$LOG_FILE"; then
+    echo "$qid" >> "$WATCH_ID_FAILURES"
+    log "SKIP: $qid — invalid watch.json; watch IDs could not be ensured"
+    jq -nc --arg ts "$NOW_UTC" --arg quest "$qid" \
+      '{ts:$ts,event:"gate_quest_unreadable",quest:$quest,reason:"invalid watch.json; watch IDs could not be ensured"}' >> "$RUN_LOG"
+  fi
+done
+
 # ── For each quest, perform its watch.json checks in parallel ───────────────
 check_quest() {
-  # Prints "QUEST_ID\tclean|dirty\treason" to stdout. Runs sequentially within
-  # one quest (so its watch.json lookups are ordered), but multiple quests can
-  # run in parallel via `&`.
+  # Prints "QUEST_ID\tclean|dirty\tWATCH_ID\tWATCH_TYPE\treason" to stdout.
+  # Runs sequentially within one quest (so its watch.json lookups are ordered),
+  # but multiple quests can run in parallel via `&`.
   #
   # Dispatches to checkers/<type>.py for each entry in watches[]. Adding a new
   # channel type requires only dropping a new script in checkers/ — no changes
@@ -181,8 +200,13 @@ check_quest() {
   local qid; qid=$(basename "$quest_dir")
   local watch="$quest_dir/watch.json"
 
+  if grep -Fxq "$qid" "$WATCH_ID_FAILURES"; then
+    echo -e "${qid}\tskip\t-\t-\twatch_id migration failed; watermark held"
+    return 0
+  fi
+
   if [ ! -f "$watch" ]; then
-    echo -e "${qid}\tclean\tno_watch_file"
+    echo -e "${qid}\tclean\t-\t-\tno_watch_file"
     return 0
   fi
 
@@ -202,11 +226,31 @@ check_quest() {
     ([ .watches // [] | to_entries[] | select((.value.type // "") | startswith("slack_") | not) | .key ]
      + [ .watches // [] | to_entries[] | select((.value.type // "") | startswith("slack_")) | .key ])
     | .[]' "$watch")
-  local i
+  local i had_dirty=0 had_skip=0
   for i in $order; do
-    local entry type checker parsed new_count preview
+    local entry watch_id type checker parsed new_count preview
     entry=$(jq -c ".watches[$i]" "$watch")
+    watch_id=$(jq -r '.watch_id' <<< "$entry")
     type=$(jq -r '.type // "unknown"' <<< "$entry")
+    local watch_id_core watch_id_suffix invalid_watch_id=0
+    case "$watch_id" in
+      watch-????????????????)
+        watch_id_core=${watch_id#watch-}
+        ;;
+      watch-????????????????-*)
+        watch_id_core=${watch_id#watch-}
+        watch_id_suffix=${watch_id_core#????????????????-}
+        watch_id_core=${watch_id_core%%-*}
+        case "$watch_id_suffix" in ''|*[!0-9]*) invalid_watch_id=1 ;; esac
+        ;;
+      *) invalid_watch_id=1 ;;
+    esac
+    case "${watch_id_core:-}" in *[!0-9a-f]*) invalid_watch_id=1 ;; esac
+    if [ "$invalid_watch_id" = "1" ]; then
+      echo -e "${qid}\tskip\t-\t${type}\t[$type] invalid or missing watch_id; watermark held"
+      had_skip=1
+      continue
+    fi
     checker="$SCRIPT_DIR/checkers/$type.py"
     if [ ! -x "$checker" ]; then
       vlog "[$qid] no checker for type '$type', skipping"
@@ -224,20 +268,27 @@ check_quest() {
       # let it retry next tick once the tier recovers. (Real incident
       # 2026-07-24: ratelimited checks read as `error`→dirty and re-fired the
       # same 6 quests every 60s for ~13.5h, burning >$1k with zero output.)
-      echo -e "${qid}\tskip\t[$type] $preview"
-      return 0
+      echo -e "${qid}\tskip\t${watch_id}\t${type}\t[$type] $preview"
+      had_skip=1
+      # Slack watches are ordered after local watches. Once Slack rate-limits
+      # one request, further Slack calls in this quest only deepen the burst.
+      # Stop here; unexamined watches retain their old watermarks and retry.
+      break
     fi
     if [ "$new_count" = "error" ]; then
-      echo -e "${qid}\tdirty\t[$type] error — $preview"
-      return 0
+      echo -e "${qid}\tdirty\t${watch_id}\t${type}\t[$type] error — $preview"
+      had_dirty=1
+      continue
     fi
     if [ "${new_count:-0}" -gt 0 ]; then
-      echo -e "${qid}\tdirty\t[$type] $new_count new — \"$preview\""
-      return 0
+      echo -e "${qid}\tdirty\t${watch_id}\t${type}\t[$type] $new_count new — \"$preview\""
+      had_dirty=1
     fi
   done
 
-  echo -e "${qid}\tclean\tall_checks_passed"
+  if [ "$had_dirty" = "0" ] && [ "$had_skip" = "0" ]; then
+    echo -e "${qid}\tclean\t-\t-\tall_checks_passed"
+  fi
 }
 
 # Run quest checks in parallel, a few quests at a time.
@@ -268,21 +319,46 @@ wait
 DIRTY_QUESTS=()
 CLEAN_QUESTS=()
 SKIPPED_QUESTS=()
-while IFS=$'\t' read -r qid status reason; do
+DIRTY_WATCHES_NDJSON=$(mktemp)
+while IFS=$'\t' read -r qid status watch_id watch_type reason; do
   if [ "$status" = "dirty" ]; then
-    DIRTY_QUESTS+=("$qid")
+    if [[ " ${DIRTY_QUESTS[*]-} " != *" $qid "* ]]; then
+      DIRTY_QUESTS+=("$qid")
+    fi
+    jq -nc --arg quest_id "$qid" --arg watch_id "$watch_id" --arg type "$watch_type" \
+      '{quest_id:$quest_id,watch_id:$watch_id,type:$type}' >> "$DIRTY_WATCHES_NDJSON"
     log "DIRTY: $qid — $reason"
   elif [ "$status" = "skip" ]; then
     # Transient rate-limit (see check_quest). Neither dispatched nor watermark-
     # advanced: it stays out of CLEAN_QUESTS so the watermark is held, and out
     # of DIRTY_QUESTS so no Opus dispatch fires. Retries next tick.
-    SKIPPED_QUESTS+=("$qid")
+    if [[ " ${SKIPPED_QUESTS[*]-} " != *" $qid "* ]]; then
+      SKIPPED_QUESTS+=("$qid")
+    fi
     log "SKIP: $qid — $reason"
   else
     CLEAN_QUESTS+=("$qid")
     vlog "CLEAN: $qid — $reason"
   fi
 done < "$TMP_RESULTS"
+
+DIRTY_WATCHES_JSON=$(jq -sc '.' "$DIRTY_WATCHES_NDJSON")
+rm -f "$DIRTY_WATCHES_NDJSON"
+DIRTY_WATCHES_NDJSON=""
+WATCHES_SKIPPED_COUNT=$(awk -F '\t' '$2 == "skip" { count++ } END { print count + 0 }' "$TMP_RESULTS")
+
+# A quest can contain both dispatched dirty watches and rate-limited watches
+# whose watermarks must remain held. Count it as dirty (not also skipped) while
+# preserving the per-watch skip outcome for the commit logic below.
+if [ "${#DIRTY_QUESTS[@]}" -gt 0 ] && [ "${#SKIPPED_QUESTS[@]}" -gt 0 ]; then
+  FILTERED_SKIPPED=()
+  for qid in "${SKIPPED_QUESTS[@]}"; do
+    if [[ " ${DIRTY_QUESTS[*]} " != *" $qid "* ]]; then
+      FILTERED_SKIPPED+=("$qid")
+    fi
+  done
+  SKIPPED_QUESTS=("${FILTERED_SKIPPED[@]+"${FILTERED_SKIPPED[@]}"}")
+fi
 
 DIRTY_COUNT=${#DIRTY_QUESTS[@]}
 CLEAN_COUNT=${#CLEAN_QUESTS[@]}
@@ -313,10 +389,10 @@ else
 fi
 
 # ── Advance clean quest watermarks ──────────────────────────────────────────
-for qid in "${CLEAN_QUESTS[@]}"; do
+for qid in "${CLEAN_QUESTS[@]+"${CLEAN_QUESTS[@]}"}"; do
   watch="$QUESTS_DIR/$qid/watch.json"
   [ -f "$watch" ] || continue
-  TMP=$(mktemp)
+  TMP=$(mktemp "$(dirname "$watch")/.watch.XXXXXX")
   jq --arg now "$NOW_TS" --argjson lags "$LAG_MAP" '
     .watches //= [] |
     .watches[] |= (.last_checked_ts = (($now | tonumber) - ($lags[.type] // 0) | tostring))
@@ -335,6 +411,7 @@ d['quests_checked'] = $QUEST_COUNT
 d['quests_dirty']   = $DIRTY_COUNT
 d['quests_clean']   = $CLEAN_COUNT
 d['quests_skipped'] = $SKIPPED_COUNT
+d['watches_skipped'] = $WATCHES_SKIPPED_COUNT
 if $DIRTY_COUNT == 0:
     d['runs_idle'] = d.get('runs_idle', 0) + 1
 else:
@@ -483,9 +560,9 @@ fi
 
 # ── Decide ──────────────────────────────────────────────────────────────────
 if [ "$DIRTY_COUNT" = "0" ] && [ "$REACTIONS_DIRTY" = "0" ]; then
-  echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_idle\",\"quests_checked\":$QUEST_COUNT,\"quests_skipped\":$SKIPPED_COUNT}" >> "$RUN_LOG"
-  log "IDLE — $QUEST_COUNT quest(s) checked, 0 dirty, $SKIPPED_COUNT rate-limit skip(s), 0 new reactions. Watermarks advanced (skipped quests held)."
-  slog "Run OK — idle. $QUEST_COUNT quest(s) swept, 0 activity, $SKIPPED_COUNT rate-limit skip(s)."
+  echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_idle\",\"quests_checked\":$QUEST_COUNT,\"quests_skipped\":$SKIPPED_COUNT,\"watches_skipped\":$WATCHES_SKIPPED_COUNT}" >> "$RUN_LOG"
+  log "IDLE — $QUEST_COUNT quest(s) checked, 0 dirty, $SKIPPED_COUNT fully skipped quest(s), $WATCHES_SKIPPED_COUNT held watch(es), 0 new reactions. Watermarks advanced where safe."
+  slog "Run OK — idle. $QUEST_COUNT quest(s) swept, 0 activity, $WATCHES_SKIPPED_COUNT held watch(es)."
   exit 0
 fi
 
@@ -497,7 +574,7 @@ fi
 
 TARGETS_JSON=$(printf '%s\n' "${DISPATCH_TARGETS[@]}" | jq -R . | jq -sc .)
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_dirty_dry_run\",\"targets\":$TARGETS_JSON}" >> "$RUN_LOG"
+  echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_dirty_dry_run\",\"targets\":$TARGETS_JSON,\"dirty_watches\":$DIRTY_WATCHES_JSON}" >> "$RUN_LOG"
   log "DRY_RUN=1 — would dispatch for ${DISPATCH_TARGETS[*]}. Watermarks of dirty quests NOT advanced; pending reactions retained."
   slog "[DRY RUN] Would dispatch worker for: ${DISPATCH_TARGETS[*]}"
   exit 0
@@ -534,7 +611,7 @@ fi
 # in place, so the next triage tick re-surfaces the same activity.
 log "DISPATCH — invoking yaas worker (backend=$YAAS_AGENT) for: ${DISPATCH_TARGETS[*]}"
 TARGET_LIST=$(printf '%s\n' "${DISPATCH_TARGETS[@]}" | paste -sd',' -)
-echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_dispatch\",\"targets\":$TARGETS_JSON}" >> "$RUN_LOG"
+echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_dispatch\",\"targets\":$TARGETS_JSON,\"dirty_watches\":$DIRTY_WATCHES_JSON}" >> "$RUN_LOG"
 slog "Run OK — ${#DISPATCH_TARGETS[@]} dirty target(s): ${DISPATCH_TARGETS[*]}. Dispatching worker..."
 
 cd "$REPO_ROOT"
@@ -547,6 +624,7 @@ log "Worker log → $WORKER_LOG (raw: $WORKER_NDJSON)"
 {
   echo "=== Worker dispatch $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
   echo "Dirty targets: $TARGET_LIST"
+  echo "Dirty watches: $DIRTY_WATCHES_JSON"
   [ "$REACTIONS_DIRTY" = "1" ] && echo "Pending reactions: state/triage/pending_reactions.json"
   echo "========================================================"
 } > "$WORKER_LOG"
@@ -557,7 +635,8 @@ WORKER_TIMEOUT=1800  # 30 min; normal workers finish in <3 min, but a live
                      # sandbox retest (on-chain sends + payment propagation) can
                      # run long — 900s was killing those mid-run (exit 124),
                      # re-dispatching, and never completing (livelock).
-WORKER_PERMISSION_MODE="${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}"
+CLAUDE_PERMISSION_MODE="${YAAS_CLAUDE_PERMISSION_MODE:-${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}}"
+CODEX_PERMISSION_MODE="${YAAS_CODEX_PERMISSION_MODE:-workspace-write}"
 
 # Recursive process-tree killer — needed to terminate claude's background subprocesses
 # which keep pipe FDs open and prevent the pipeline from exiting cleanly.
@@ -575,7 +654,7 @@ _EXITFILE=$(mktemp)
 # The worker prompt. Backend-neutral: each agent loads its own rules file
 # (CLAUDE.md / AGENTS.md) from the repo root; this only names the dirty targets
 # and the run discipline.
-WORKER_PROMPT="Yaas worker dispatch: dirty targets: $TARGET_LIST. For each target, pick the matching path in your rules file: quest IDs → Quest Activation Protocol; 'reactions' → Reactions Fast Path (SELF-CONTAINED; do NOT read any quest folder). For quest IDs, read ONLY context.md first; read meta.json/watch.json/timeline.ndjson only when you actually need them to act. DO NOT modify existing watch.json entries — appending new watches[] entries per § 3a is the only allowed watch.json write. ACT SILENTLY: emit NO text between tool calls — no 'Reading X' or 'I need to check Y' narration. Batch independent reads/edits into a single turn using parallel tool_use blocks whenever possible. OUTPUT CONTRACT: emit the summary ONLY if something material happened (message sent, draft created, state changed, quest status changed). If nothing material happened — just exit with no text. When you do emit it, keep it under 8 lines."
+WORKER_PROMPT="Yaas worker dispatch: dirty targets: $TARGET_LIST. Exact dirty watches (JSON): $DIRTY_WATCHES_JSON. For every quest target, process each listed watch_id for that quest; select it directly from watch.json with jq --arg id WATCH_ID '.watches[] | select(.watch_id == \$id)' and query that watch's source. Do not scan or truncate watch.json to guess what fired. For each target, pick the matching path in your rules file: quest IDs → Quest Activation Protocol; 'reactions' → Reactions Fast Path (SELF-CONTAINED; do NOT read any quest folder). For quest IDs, read ONLY context.md first; read meta.json/watch.json/timeline.ndjson only when you actually need them to act. DO NOT modify existing watch.json entries — appending new watches[] entries per § 3a is the only allowed watch.json write. ACT SILENTLY: emit NO text between tool calls — no 'Reading X' or 'I need to check Y' narration. Batch independent reads/edits into a single turn using parallel tool_use blocks whenever possible. OUTPUT CONTRACT: emit the summary ONLY if something material happened (message sent, draft created, state changed, quest status changed). If nothing material happened — just exit with no text. When you do emit it, keep it under 8 lines."
 
 # Run pipeline inside a subshell so the watchdog can kill the whole tree via $_BGPID.
 # Pipeline: dispatch-agent.sh (YAAS_AGENT backend) → tee (raw ndjson) →
@@ -583,7 +662,8 @@ WORKER_PROMPT="Yaas worker dispatch: dirty targets: $TARGET_LIST. For each targe
 # and exits with the agent's exit code, so PIPESTATUS[0] is still the agent's.
 (
   YAAS_AGENT="$YAAS_AGENT" REPO_ROOT="$REPO_ROOT" \
-  YAAS_WORKER_PERMISSION_MODE="$WORKER_PERMISSION_MODE" \
+  YAAS_CLAUDE_PERMISSION_MODE="$CLAUDE_PERMISSION_MODE" \
+  YAAS_CODEX_PERMISSION_MODE="$CODEX_PERMISSION_MODE" \
     bash "$SCRIPT_DIR/dispatch-agent.sh" "$WORKER_PROMPT" \
     2> "${WORKER_NDJSON}.err" \
     | tee "$WORKER_NDJSON" \
@@ -723,12 +803,18 @@ PYEOF
       fi
     fi
 
-    TMP=$(mktemp)
-    jq --arg now "$NOW_TS" --argjson lags "$LAG_MAP" '
+    TMP=$(mktemp "$(dirname "$watch")/.watch.XXXXXX")
+    jq --arg now "$NOW_TS" --arg qid "$qid" --argjson lags "$LAG_MAP" --argjson dirty "$DIRTY_WATCHES_JSON" '
       .watches //= [] |
-      .watches[] |= (.last_checked_ts = (($now | tonumber) - ($lags[.type] // 0) | tostring))
+      .watches[] |= (
+        if .watch_id as $id | any($dirty[]; .quest_id == $qid and .watch_id == $id)
+        then .last_checked_ts = (($now | tonumber) - ($lags[.type] // 0) | tostring)
+        else .
+        end
+      )
     ' "$watch" > "$TMP" && mv "$TMP" "$watch"
-    log "Advanced watermark for dirty quest $qid (post-worker-success)"
+    _advanced=$(jq --arg qid "$qid" '[.[] | select(.quest_id == $qid)] | length' <<< "$DIRTY_WATCHES_JSON")
+    log "Advanced $_advanced dispatched watch watermark(s) for dirty quest $qid (post-worker-success)"
   done
   if [ -f "$PENDING_REACTIONS" ]; then
     rm -f "$PENDING_REACTIONS"

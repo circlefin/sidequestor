@@ -23,6 +23,7 @@ You're in one of two modes. Infer from context:
 
 - Triggered by `triage.sh` calling `claude --model opus -p "YaaS worker dispatch: dirty targets: ..."` (headless mode — no REPL)
 - The prompt includes a comma-separated list of dirty **targets**. A target is either a quest ID (e.g., `quest-my-quest-2026-04-28`) or the literal string `reactions`.
+- The prompt also includes `Exact dirty watches (JSON)`, with the persistent `watch_id` and `type` that triggered each quest. For every quest target, process every listed watch ID. Select each entry directly with `jq --arg id '<watch_id>' '.watches[] | select(.watch_id == $id)' state/quests/active/<quest_id>/watch.json`; never scan or truncate `watch.json` to guess what fired.
 - Target-specific protocol:
   - `reactions` → **Reactions Fast Path** (§ Reactions). Self-contained. Do NOT read any quest folder.
   - quest ID → **Quest Activation Protocol** (below). Read only what you need.
@@ -75,11 +76,11 @@ state/quests/active/<quest_id>/
 
 Read the other files **only when a specific decision requires them**:
 
-- **`watch.json`** — only if you need to know which watermarks were in effect (e.g., to compute the cutoff for re-querying Slack or Gmail). For email watches: look in `watches[]` for entries with `"type": "email"` to get each entry's `query` and `last_checked_ts`, then re-run `gws gmail users messages list` + `get` to fetch full content. For Slack watches, triage already handed you the sneak-peek preview — query Slack directly and trust the results.
+- **`watch.json`** — select every exact `watch_id` named in the dispatch prompt to get its source coordinates and watermark. For email watches, use that entry's `query` and `last_checked_ts`, then re-run `gws gmail users messages list` + `get` to fetch full content. For Slack watches, query the source named by the selected entry directly.
 - **`meta.json`** — only when you're about to send a message (check `allow_send`) or transition status.
 - **`timeline.ndjson`** — only when you need to check whether you already acted on this thread/message in a prior tick.
 
-Never read all four as a reflex. Each file read costs a model round-trip.
+Never read all four as a reflex. Each file read costs a model round-trip. After `context.md`, select and process every exact dirty watch named in the dispatch prompt.
 
 ### 2. Figure out what's actually new
 

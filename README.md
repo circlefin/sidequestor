@@ -111,7 +111,7 @@ This keeps one source of truth — edit `CLAUDE.md`, every harness sees the chan
 | Harness | CLI | MCP / tool config (yours to set up) | Notes |
 |---|---|---|---|
 | **Claude** | `claude` | `yaas-triage/worker.mcp.json` (Slack/Coda/Atlassian) | Default. Native Slack MCP. Full token+cost accounting. |
-| **Codex** | `codex` | `~/.codex/config.toml` | Runs bounded (`workspace-write`, `approval_policy=never`, network on) — **not** the `--dangerously-bypass` flag. The native Slack plugin is disabled at dispatch so all Slack goes through `mcp-call.sh` (uniform sender identity, and it sidesteps Codex's write-approval gate). |
+| **Codex** | `codex` | `~/.codex/config.toml` | Runs bounded by default (`workspace-write`, `approval_policy=never`, network on). Set `YAAS_CODEX_PERMISSION_MODE=bypassPermissions` to use `--dangerously-bypass-approvals-and-sandbox`. The native Slack plugin is disabled at dispatch so all Slack goes through `mcp-call.sh` with a uniform sender identity. |
 | **Cursor** | `cursor-agent` | `.cursor/mcp.json` | Runs with `--approve-mcps`. Slack goes through `mcp-call.sh` when no native Slack MCP is configured. |
 
 **How Slack works across harnesses.** Every harness reaches Slack through the same underlying `mcp.slack.com` endpoint. If a harness has a native Slack tool, it uses it; otherwise the worker calls `yaas-triage/mcp-call.sh` (a shell bridge using your Keychain token) with the *same* tool names and arguments. This is documented in the "Slack access" section of `CLAUDE.example.md`, so any harness knows to fall back to it. Sends routed through `mcp-call.sh` carry your consistent Slack app identity.
@@ -124,6 +124,9 @@ Each backend's model is overridable via `.env` (leave unset to use that CLI's ow
 YAAS_CLAUDE_MODEL=opus          # default: opus
 YAAS_CODEX_MODEL=               # default: ~/.codex/config.toml model
 YAAS_CURSOR_MODEL=              # default: cursor's "auto"
+
+YAAS_CLAUDE_PERMISSION_MODE=acceptEdits   # any Claude --permission-mode value
+YAAS_CODEX_PERMISSION_MODE=workspace-write # workspace-write or bypassPermissions
 ```
 
 > **Cost note.** Only the Claude path reports a dollar cost (`gate_dispatch_tokens` with `$`). Codex/Cursor report raw token counts only. Watch the reasoning-effort setting on Codex especially — a high-effort model can spend 1M+ input tokens on a single tick.

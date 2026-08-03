@@ -86,6 +86,19 @@ else
       warn "$var empty (Coda MCP disabled — fine if you don't use it)"
     fi
   done
+
+  CLAUDE_PERMISSION_MODE="${YAAS_CLAUDE_PERMISSION_MODE:-${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}}"
+  ok "YAAS_CLAUDE_PERMISSION_MODE=$CLAUDE_PERMISSION_MODE"
+
+  CODEX_PERMISSION_MODE="${YAAS_CODEX_PERMISSION_MODE:-workspace-write}"
+  case "$CODEX_PERMISSION_MODE" in
+    workspace-write|bypassPermissions)
+      ok "YAAS_CODEX_PERMISSION_MODE=$CODEX_PERMISSION_MODE"
+      ;;
+    *)
+      fail "YAAS_CODEX_PERMISSION_MODE=$CODEX_PERMISSION_MODE is invalid (expected workspace-write or bypassPermissions)"
+      ;;
+  esac
 fi
 
 # ── 3. CLAUDE.md ────────────────────────────────────────────────────────────
