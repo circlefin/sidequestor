@@ -74,6 +74,68 @@ log()  { printf '%s  %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG_
 slog() { printf '%s  %s\n' "$(TZ=Asia/Singapore date +%Y-%m-%dT%H:%M:%S+08:00)" "$*"; }
 vlog() { [ "${VERBOSE:-0}" = "1" ] && log "  $*" || true; }
 
+# Clear a stale dashboard blocker once triage has concrete evidence that the
+# quest recovered. A routine note is enough: all dashboard views already define
+# "blocked now" as a blocked event with no later non-blocked timeline event.
+mark_recovered_if_blocked() {
+  local qid="$1" recovered_source="$2" recovery_note="$3" recovery_run_start="$4"
+  local timeline="$QUESTS_DIR/$qid/timeline.ndjson"
+  [ -f "$timeline" ] || return 0
+  local last_record last_event blocker_ts blocker_kind blocker_text recoverable
+  last_record=$(tail -n 1 "$timeline" 2>/dev/null || true)
+  last_event=$(printf '%s' "$last_record" | jq -r '.event // empty' 2>/dev/null || true)
+  [ "$last_event" = "blocked" ] || return 0
+  blocker_ts=$(printf '%s' "$last_record" | jq -r '.ts // empty' 2>/dev/null || true)
+  # Never let evidence from this dispatch clear a blocker created during the
+  # same dispatch. Missing or malformed timestamps fail closed.
+  if ! python3 - "$blocker_ts" "$recovery_run_start" <<'PYEOF'
+import sys
+from datetime import datetime
+def parse(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+try:
+    older = parse(sys.argv[1]) < parse(sys.argv[2])
+except (IndexError, TypeError, ValueError):
+    older = False
+raise SystemExit(0 if older else 1)
+PYEOF
+  then
+    return 0
+  fi
+
+  # Structured kinds are authoritative for new events. The strict legacy regex
+  # handles old Slack MCP/tool outage records without matching business prose
+  # such as "partner unreachable on Slack Connect".
+  blocker_kind=$(printf '%s' "$last_record" | jq -r '.blocker_kind // empty' 2>/dev/null || true)
+  blocker_text=$(printf '%s' "$last_record" | jq -r '[.reason, .note] | map(select(type == "string")) | join(" ")' 2>/dev/null || true)
+  recoverable=$(jq -nr --arg kind "$blocker_kind" --arg text "$blocker_text" --arg source "$recovered_source" '
+    if $source != "slack" then false
+    elif $kind == "slack_tooling_outage" then true
+    else
+      ($text | ascii_downcase) as $t |
+      ($t | test("slack[_ *-]+(mcp|tools?)")) and
+      ($t | test("unavailable|outage|not (exposed|registered|authenticated|connected)|absent|no[ -]such[ -]tool|protocol|malformed|failed to connect|needs authentication"))
+    end')
+  [ "$recoverable" = "true" ] || return 0
+
+  if ! jq -nc --arg ts "$NOW_UTC" --arg note "$recovery_note" \
+    --arg source "$recovered_source" \
+    '{ts:$ts,event:"note",note:$note,recovered_from:"blocked",recovered_source:$source}' >> "$timeline"; then
+    log "RECOVERY WRITE FAILED: $qid — stale blocker left unchanged"
+    return 0
+  fi
+  log "RECOVERED: $qid — $recovery_note"
+}
+
+quest_has_recovery_evidence() {
+  local qid="$1" source="$2"
+  awk -F '\t' -v q="$qid" -v source="$source" '
+    $1 == q && $2 == "source_recovered" && $4 == source { recovered=1 }
+    $1 == q && ($2 == "skip" || $2 == "error") { unsafe=1 }
+    END { exit !(recovered && !unsafe) }
+  ' "$TMP_RESULTS"
+}
+
 # Cheap pre-dispatch Slack reachability probe via mcp-call.sh (curl + Keychain
 # token). Returns 0 if Slack answered, non-zero otherwise. This is the
 # backend-agnostic replacement for the Claude-only post-run .mcp_servers guard:
@@ -227,6 +289,8 @@ check_quest() {
      + [ .watches // [] | to_entries[] | select((.value.type // "") | startswith("slack_")) | .key ])
     | .[]' "$watch")
   local i had_dirty=0 had_skip=0
+  local slack_expected slack_succeeded=0
+  slack_expected=$(jq '[.watches[]? | select((.type // "") | startswith("slack_"))] | length' "$watch")
   for i in $order; do
     local entry watch_id type checker parsed new_count preview
     entry=$(jq -c ".watches[$i]" "$watch")
@@ -253,7 +317,8 @@ check_quest() {
     fi
     checker="$SCRIPT_DIR/checkers/$type.py"
     if [ ! -x "$checker" ]; then
-      vlog "[$qid] no checker for type '$type', skipping"
+      echo -e "${qid}\tskip\t${watch_id}\t${type}\t[$type] no executable checker; watermark held"
+      had_skip=1
       continue
     fi
     vlog "[$qid] checking type=$type"
@@ -276,16 +341,27 @@ check_quest() {
       break
     fi
     if [ "$new_count" = "error" ]; then
-      echo -e "${qid}\tdirty\t${watch_id}\t${type}\t[$type] error — $preview"
+      echo -e "${qid}\terror\t${watch_id}\t${type}\t[$type] error — $preview"
       had_dirty=1
       continue
     fi
+    case "$new_count" in
+      ''|*[!0-9]*)
+        echo -e "${qid}\tskip\t${watch_id}\t${type}\t[$type] malformed checker result; watermark held"
+        had_skip=1
+        continue
+        ;;
+    esac
+    case "$type" in slack_*) slack_succeeded=$((slack_succeeded + 1)) ;; esac
     if [ "${new_count:-0}" -gt 0 ]; then
       echo -e "${qid}\tdirty\t${watch_id}\t${type}\t[$type] $new_count new — \"$preview\""
       had_dirty=1
     fi
   done
 
+  if [ "$slack_expected" -gt 0 ] && [ "$slack_succeeded" -eq "$slack_expected" ]; then
+    echo -e "${qid}\tsource_recovered\t-\tslack\tall Slack watches checked successfully"
+  fi
   if [ "$had_dirty" = "0" ] && [ "$had_skip" = "0" ]; then
     echo -e "${qid}\tclean\t-\t-\tall_checks_passed"
   fi
@@ -321,12 +397,12 @@ CLEAN_QUESTS=()
 SKIPPED_QUESTS=()
 DIRTY_WATCHES_NDJSON=$(mktemp)
 while IFS=$'\t' read -r qid status watch_id watch_type reason; do
-  if [ "$status" = "dirty" ]; then
+  if [ "$status" = "dirty" ] || [ "$status" = "error" ]; then
     if [[ " ${DIRTY_QUESTS[*]-} " != *" $qid "* ]]; then
       DIRTY_QUESTS+=("$qid")
     fi
-    jq -nc --arg quest_id "$qid" --arg watch_id "$watch_id" --arg type "$watch_type" \
-      '{quest_id:$quest_id,watch_id:$watch_id,type:$type}' >> "$DIRTY_WATCHES_NDJSON"
+    jq -nc --arg quest_id "$qid" --arg watch_id "$watch_id" --arg type "$watch_type" --arg outcome "$status" \
+      '{quest_id:$quest_id,watch_id:$watch_id,type:$type,checker_outcome:$outcome}' >> "$DIRTY_WATCHES_NDJSON"
     log "DIRTY: $qid — $reason"
   elif [ "$status" = "skip" ]; then
     # Transient rate-limit (see check_quest). Neither dispatched nor watermark-
@@ -336,9 +412,11 @@ while IFS=$'\t' read -r qid status watch_id watch_type reason; do
       SKIPPED_QUESTS+=("$qid")
     fi
     log "SKIP: $qid — $reason"
-  else
+  elif [ "$status" = "clean" ]; then
     CLEAN_QUESTS+=("$qid")
     vlog "CLEAN: $qid — $reason"
+  elif [ "$status" = "source_recovered" ]; then
+    vlog "SOURCE OK: $qid — $watch_type — $reason"
   fi
 done < "$TMP_RESULTS"
 
@@ -393,10 +471,14 @@ for qid in "${CLEAN_QUESTS[@]+"${CLEAN_QUESTS[@]}"}"; do
   watch="$QUESTS_DIR/$qid/watch.json"
   [ -f "$watch" ] || continue
   TMP=$(mktemp "$(dirname "$watch")/.watch.XXXXXX")
-  jq --arg now "$NOW_TS" --argjson lags "$LAG_MAP" '
+  if ! jq --arg now "$NOW_TS" --argjson lags "$LAG_MAP" '
     .watches //= [] |
     .watches[] |= (.last_checked_ts = (($now | tonumber) - ($lags[.type] // 0) | tostring))
-  ' "$watch" > "$TMP" && mv "$TMP" "$watch"
+  ' "$watch" > "$TMP" || ! mv "$TMP" "$watch"; then
+    rm -f "$TMP"
+    log "WATCH WRITE FAILED: $qid — clean watermark not advanced"
+    continue
+  fi
   vlog "Advanced watermark for $qid"
 done
 
@@ -743,6 +825,15 @@ if [ "$EXIT" = "0" ] && [ -f "$WORKER_NDJSON" ]; then
   esac
 fi
 
+# Recovery of a worker-side Slack outage requires evidence from the worker's
+# own event stream. Triage's curl checkers are a different execution path and
+# cannot prove that native MCP/app/shell Slack access was available to the agent.
+WORKER_SLACK_READ_OK=0
+if [ "$EXIT" = "0" ] && python3 "$SCRIPT_DIR/worker-source-evidence.py" slack "$WORKER_NDJSON"; then
+  WORKER_SLACK_READ_OK=1
+  log "WORKER SOURCE OK: successful Slack read observed in worker event stream"
+fi
+
 # ── Extract token usage from the raw ndjson ──────────────────────────────────
 # Claude: extract-tokens.py parses its result event (tokens + $ cost) and writes
 # the gate_dispatch_tokens run-log entry. Codex/Cursor emit a different schema
@@ -804,7 +895,7 @@ PYEOF
     fi
 
     TMP=$(mktemp "$(dirname "$watch")/.watch.XXXXXX")
-    jq --arg now "$NOW_TS" --arg qid "$qid" --argjson lags "$LAG_MAP" --argjson dirty "$DIRTY_WATCHES_JSON" '
+    if ! jq --arg now "$NOW_TS" --arg qid "$qid" --argjson lags "$LAG_MAP" --argjson dirty "$DIRTY_WATCHES_JSON" '
       .watches //= [] |
       .watches[] |= (
         if .watch_id as $id | any($dirty[]; .quest_id == $qid and .watch_id == $id)
@@ -812,9 +903,16 @@ PYEOF
         else .
         end
       )
-    ' "$watch" > "$TMP" && mv "$TMP" "$watch"
+    ' "$watch" > "$TMP" || ! mv "$TMP" "$watch"; then
+      rm -f "$TMP"
+      log "WATCH WRITE FAILED: $qid — dispatched watch watermarks not advanced"
+      continue
+    fi
     _advanced=$(jq --arg qid "$qid" '[.[] | select(.quest_id == $qid)] | length' <<< "$DIRTY_WATCHES_JSON")
     log "Advanced $_advanced dispatched watch watermark(s) for dirty quest $qid (post-worker-success)"
+    if [ "$WORKER_SLACK_READ_OK" = "1" ] && quest_has_recovery_evidence "$qid" "slack"; then
+      mark_recovered_if_blocked "$qid" "slack" "Every Slack watch was readable and the worker completed a successful Slack read after the previous tooling outage." "$WORKER_START_UTC"
+    fi
   done
   if [ -f "$PENDING_REACTIONS" ]; then
     rm -f "$PENDING_REACTIONS"

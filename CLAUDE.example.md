@@ -242,6 +242,8 @@ When closing an approval whose action was a Jira/GitHub/Gmail post, pass that UR
 
 If you **couldn't** complete an action (error, ambiguous situation, needed user input), log it as a `blocked` event in `timeline.ndjson` with details, and **stop without finishing the rest of the work**. Surface the blocker in the Output Contract under "Errors". Do NOT silently skip blocked work and exit clean — triage.sh interprets a clean exit as "everything handled" and will advance watermarks, burying the blocked activity.
 
+When the blocker is specifically a Slack MCP/tool availability failure, include `"blocker_kind":"slack_tooling_outage"`. Do not use that kind for Slack Connect access, missing channels/invites, unreachable people, or other business dependencies. Triage may automatically clear this structured infrastructure blocker only after a later dispatch records a successful Slack read from inside the worker.
+
 (Mechanism note: `claude -p` exits 0 whenever Claude completes its output normally, so you can't force a non-zero exit through prose. The best you can do is surface the failure clearly in the Output Contract — and avoid taking further actions that would suggest the dispatch was a success.)
 
 ### 5. Move completed quests
