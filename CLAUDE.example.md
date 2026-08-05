@@ -194,11 +194,7 @@ APPR_ID=$(python3 yaas-triage/approval-helper.py write \
     "message_text":"...","context":"...","risk_reason":"..."}')
 ```
 
-If `APPR_ID` is non-empty, append an `approval` watch to `watch.json` (additive only) and log `draft_posted` with `"approval_id": "$APPR_ID"` to `timeline.ndjson`. Do NOT add a `slack_thread` watch — see §3a exception.
-
-```json
-{"type":"approval","approval_id":"<APPR_ID>","last_checked_ts":"<current epoch as string>"}
-```
+`write` **also arms the `approval` watch for you** — it appends `{"type":"approval","approval_id":...,"last_checked_ts":...}` to the quest's `watch.json` as part of the same call (additive, idempotent). You do NOT append it by hand. This coupling is deliberate: an approval with no watch is invisible to triage and never re-surfaces, so it would sit in `needs_reply` forever. It also means you must **never hand-write an item straight into `pending-approvals.json`** — always go through `write`, or the watch won't be armed. If `APPR_ID` is non-empty, just log `draft_posted` with `"approval_id": "$APPR_ID"` to `timeline.ndjson`. Do NOT add a `slack_thread` watch — see §3a exception.
 
 **Executing a reviewed item — when dispatched for a quest and you find `status: "reviewed"`:**
 

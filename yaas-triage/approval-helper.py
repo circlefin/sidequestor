@@ -31,6 +31,10 @@ write <json>
     Prints the generated approval ID on success.
     Prints nothing (exit 0) if an identical pending entry already exists
     (same quest_id + target.channel_id + target.thread_ts).
+    Also appends an `approval` watch to the quest's watch.json (additive,
+    idempotent) so triage re-dispatches the worker when the reviewer approves
+    or sends the item back. This is done as part of `write` on purpose: an
+    approval with no watch is invisible to triage and never re-surfaces.
 
 start <id>
     Transition status pending_review|reviewed → executing.
@@ -61,6 +65,52 @@ from pathlib import Path
 
 REPO_ROOT      = Path(__file__).parent.parent
 APPROVALS_FILE = REPO_ROOT / "state" / "pending-approvals.json"
+QUESTS_DIR     = REPO_ROOT / "state" / "quests"
+
+
+def _find_watch_json(quest_id: str) -> Path | None:
+    """Locate a quest's watch.json across active/completed/archived."""
+    for bucket in ("active", "completed", "archived"):
+        p = QUESTS_DIR / bucket / quest_id / "watch.json"
+        if p.exists():
+            return p
+    return None
+
+
+def _arm_approval_watch(quest_id: str, approval_id: str):
+    """Append an `approval` watch so triage re-dispatches the worker when the
+    reviewer approves or sends the item back (needs_reply). Additive only, and
+    idempotent on approval_id. This is coupled to item creation on purpose: an
+    approval with no watch is invisible to triage and sits forever (an item that
+    gets queued off this path, with no watch, strands in needs_reply). Failure
+    here must not lose the already-written approval, so any error is reported to
+    stderr and swallowed."""
+    watch_path = _find_watch_json(quest_id)
+    if watch_path is None:
+        print(f"warn:no_watch_json_for_quest:{quest_id}", file=sys.stderr)
+        return
+    try:
+        with open(watch_path, "r+") as wf:
+            fcntl.flock(wf, fcntl.LOCK_EX)
+            try:
+                wf.seek(0)
+                wdata = json.load(wf)
+                watches = wdata.setdefault("watches", [])
+                if any(w.get("type") == "approval"
+                       and w.get("approval_id") == approval_id for w in watches):
+                    return  # already armed
+                watches.append({
+                    "type":            "approval",
+                    "approval_id":     approval_id,
+                    "last_checked_ts": str(int(datetime.now(timezone.utc).timestamp())),
+                })
+                wf.seek(0)
+                wf.truncate()
+                json.dump(wdata, wf, indent=2)
+            finally:
+                fcntl.flock(wf, fcntl.LOCK_UN)
+    except Exception as e:  # never strand the already-written approval
+        print(f"warn:arm_watch_failed:{approval_id}:{e}", file=sys.stderr)
 
 
 def _load_locked(f) -> dict:
@@ -105,6 +155,7 @@ def cmd_write(payload_json: str):
             if duplicate:
                 return  # print nothing — caller treats as no-op
 
+            new_id = None
             now = datetime.now(timezone.utc).isoformat()
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             item = {
@@ -121,9 +172,15 @@ def cmd_write(payload_json: str):
             }
             data.setdefault("items", []).append(item)
             _save_locked(f, data)
-            print(item["id"])
+            new_id = item["id"]
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+
+    # Arm the tracking watch OUTSIDE the approvals lock (different file, its own
+    # flock). Coupled here so an approval can never be created without its watch.
+    if new_id:
+        _arm_approval_watch(quest_id, new_id)
+        print(new_id)
 
 
 def cmd_start(approval_id: str):
