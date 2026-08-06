@@ -19,49 +19,149 @@
 checkers/slack_utils.py — shared utilities for Slack MCP checker scripts.
 """
 import re
+import time
 
 
-PAGE_LIMIT = 50   # was 30. Raised because the cost of a wider first page is one
-                  # cheap API call, while the cost of missing messages is silent.
-MAX_PAGES  = 5    # hard stop at 250 messages of backlog on a single watch.
+PAGE_LIMIT      = 50     # messages per request
+MAX_PAGES       = 5      # cover a normal backlog (250 msgs) in one tick; past that,
+                         # stop walking and take a coverable slice instead. Walking
+                         # further only burns rate limit to learn what page 2 already
+                         # told us: the gap is bigger than we can swallow.
+MIN_SLICE       = 1      # a slice narrower than a second cannot meaningfully subdivide.
+                         # This is the floor for HALVING only. Flooring the initial
+                         # density estimate here instead meant a saturated 60s slice
+                         # halved to 30s, tripped the floor, and gave up immediately.
+SLICE_ATTEMPTS  = 12     # request budget for the slice phase, shared between paging
+                         # a dense slice, halving a too-wide one, and walking forward
 
 
-def drain(fetch_page, since: float, filter_user_ids=None, filter_keywords=None):
-    """Page a newest-first message source back until the watermark is passed.
+def drain(fetch_page, since: float, filter_user_ids=None, filter_keywords=None,
+          now: float = None):
+    """Read everything new on a Slack source, and only claim coverage we can prove.
 
-    `fetch_page(cursor)` must return `(text, next_cursor, transient_error)`, where
-    text is the MCP message blob and transient_error is a truthy reason string if
-    the page could not be read.
+    `fetch_page(cursor, oldest, latest)` must return `(text, next_cursor, transient)`.
 
-    Returns `(count, preview, newest_ts, complete, transient)`.
+    Returns `(count, preview, advance_to, complete, transient)`.
 
-    `complete` is the whole point. A bounded window that comes back FULL of
-    post-watermark messages does not prove there are no older unseen ones, and
-    advancing the cursor to "now" in that case skips them permanently. We keep
-    paging until we see a message at or below the watermark — which proves the gap
-    is covered — or until MAX_PAGES, which returns complete=False so triage refuses
-    to advance the cursor at all.
+    Why this is not just "read the newest N"
+    ────────────────────────────────────────
+    Slack returns newest-first. If you read the newest N of a large backlog you hold a
+    SUFFIX of the gap, and the unread part sits directly above the watermark — so the
+    cursor can never move, and the next tick reads the same newest N and is stuck the
+    same way. That is a livelock: it costs a dispatch every tick and never drains.
+
+    The fix is to bound the read at BOTH ends. `oldest` alone already makes paging
+    terminate at the watermark instead of walking a channel's whole history, which is
+    the common case and costs one request. When the gap is bigger than one page we take
+    a bounded forward SLICE — (watermark, watermark + slice] — which is a PREFIX of the
+    gap. A prefix can be fully covered, so the cursor advances to the end of the slice
+    and the backlog shrinks every tick until it is gone.
     """
-    total, preview, newest = 0, "", 0.0
-    cursor, pages, complete = None, 0, False
-    while pages < MAX_PAGES:
-        text, cursor, transient = fetch_page(cursor)
+    if now is None:
+        now = time.time()
+
+    def read(oldest, latest, cursor=None):
+        text, next_cursor, transient = fetch_page(cursor, oldest, latest)
         if transient:
-            return total, preview, newest, False, transient
-        count, page_preview, page_newest, saw_old, saw_any = _parse_page(
+            return None, None, transient
+        count, preview, newest, _saw_old, raw_seen = _parse_page(
             text, since, filter_user_ids, filter_keywords)
+        return (count, preview, newest, raw_seen), next_cursor, None
+
+    # ── Common case: bound the bottom at the watermark and page the gap out. ──
+    total, preview, newest = 0, "", 0.0
+    cursor, pages, raw_total, oldest_seen = None, 0, 0, None
+    while pages < MAX_PAGES:
+        got, cursor, transient = read(since, None, cursor)
+        if transient:
+            return 0, "", None, False, transient
+        count, page_preview, page_newest, raw_seen = got
         total += count
+        raw_total += raw_seen
         if not preview and page_preview:
             preview = page_preview
         newest = max(newest, page_newest)
+        if raw_seen and page_newest:
+            oldest_seen = page_newest if oldest_seen is None else min(oldest_seen, page_newest)
         pages += 1
-        # saw_old: a message at or below the watermark, so everything newer than the
-        # watermark is now accounted for. not saw_any / no cursor: the source is
-        # exhausted. Either way the gap is fully covered.
-        if saw_old or not saw_any or not cursor:
-            complete = True
+        if not cursor or not raw_seen:
+            # Paging ran out inside the gap, so the gap is fully covered.
+            return total, preview, (newest or None), True, None
+
+    # ── The gap is larger than MAX_PAGES * PAGE_LIMIT. Stop trying to swallow it
+    #    whole and take a prefix instead, so this tick makes real progress. ──
+    # Size the first slice from the ACTUAL gap rather than a fixed guess, then halve
+    # until one fits in a page. A fixed 6h slice drains a sparse month-long backlog at
+    # 6h per tick no matter how little is in it; starting from half the gap adapts to
+    # whatever the real density turns out to be, at the same cost in requests.
+    # Size the first slice from the density we just OBSERVED, not from a fixed guess
+    # or a blind halving of the gap. The walk above saw raw_total messages spanning
+    # (oldest_seen, now]; at that rate, this is roughly how long it takes to accumulate
+    # half a page. A fixed guess either drains a sparse backlog far too slowly or burns
+    # a request per halving on a dense one.
+    slice_sec = max((now - since) / 2.0, MIN_SLICE)
+    if oldest_seen and raw_total and now > oldest_seen:
+        per_sec = raw_total / (now - oldest_seen)
+        if per_sec > 0:
+            # Trust the observed density. Do NOT floor it at MIN_SLICE: that is the
+            # halving floor, and applying it here would inflate a correctly-small
+            # estimate back up to a slice we already know is too dense.
+            slice_sec = min(slice_sec, (PAGE_LIMIT / 2.0) / per_sec)
+    slice_sec = max(slice_sec, MIN_SLICE)
+
+    def cover(lo, hi, budget):
+        """Page (lo, hi] to exhaustion. Returns (count, preview, covered, spent).
+
+        A slice can defeat us in two independent ways: it can span too much TIME, or it
+        can be too DENSE. Halving handles the first. Paging handles the second. Earlier
+        this only halved, so a burst of 3000 messages inside 30 seconds could never be
+        covered at any slice width and the watch stalled permanently.
+        """
+        c, prev, cur, spent = 0, "", None, 0
+        while spent < budget:
+            got, cur, transient = read(lo, hi, cur)
+            spent += 1
+            if transient:
+                return c, prev, False, spent
+            cnt, page_prev, _newest, raw = got
+            c += cnt
+            if not prev and page_prev:
+                prev = page_prev
+            if not cur or not raw:
+                return c, prev, True, spent
+        return c, prev, False, spent
+
+    cursor_at = since          # how far we have proven coverage this call
+    budget = SLICE_ATTEMPTS
+    while budget > 0:
+        upper = min(cursor_at + slice_sec, now)
+        if upper <= cursor_at:
             break
-    return total, preview, newest, complete, None
+        # Give one slice at most half the remaining budget, so a single dense stretch
+        # cannot consume the whole call and leave nothing for the slices after it.
+        c, page_prev, covered, spent = cover(cursor_at, upper, max(1, budget // 2))
+        budget -= spent
+        if not covered:
+            slice_sec /= 2.0
+            if slice_sec < MIN_SLICE:
+                break
+            continue
+        # (cursor_at, upper] is fully covered. Bank it and keep walking forward with
+        # whatever budget is left: one proven slice per call is correct but drains a
+        # long backlog far too slowly, and the requests are already paid for.
+        total += c
+        if not preview and page_prev:
+            preview = page_prev
+        cursor_at = upper
+        if cursor_at >= now:
+            break
+
+    if cursor_at > since:
+        return total, preview, cursor_at, True, None
+
+    # Even a one-minute slice is saturated. Genuinely pathological; report it honestly
+    # and let the no-progress counter escalate it to a human.
+    return total, preview, None, False, None
 
 
 def parse_slack_messages(
@@ -134,7 +234,13 @@ def parse_slack_messages(
 def _parse_page(text, since, filter_user_ids=None, filter_keywords=None):
     """Single-page parse used by drain().
 
-    Returns (count, preview, newest_ts, saw_at_or_below_watermark, saw_any_message).
+    Returns (count, preview, newest_ts, saw_at_or_below_watermark, raw_seen).
+
+    `count` is filtered; `raw_seen` is every message the page returned. Coverage must
+    be judged on raw_seen: a slice holding 50 messages that all fail the filter has
+    still only shown us 50 of however many are in that slice, and treating it as
+    "covered" because the filtered count was 0 would advance the cursor straight past
+    the rest.
     `saw_at_or_below_watermark` is computed BEFORE the user/keyword filters, because
     it is a statement about the time window we covered, not about which messages we
     care about. Filtering it would make a page of filtered-out old messages look
@@ -142,7 +248,7 @@ def _parse_page(text, since, filter_user_ids=None, filter_keywords=None):
     """
     lines = text.split("\n")
     count, newest, preview = 0, 0.0, ""
-    saw_old, saw_any = False, False
+    saw_old, raw_seen = False, 0
     current_user_id = None
     i = 0
     while i < len(lines):
@@ -157,7 +263,7 @@ def _parse_page(text, since, filter_user_ids=None, filter_keywords=None):
             msg_user_id = current_user_id
             current_user_id = None
             ts = float(ts_m.group(1))
-            saw_any = True
+            raw_seen += 1
             if ts <= since:
                 saw_old = True
                 i += 1
@@ -188,4 +294,4 @@ def _parse_page(text, since, filter_user_ids=None, filter_keywords=None):
                 newest = ts
                 preview = body_text[:100]
         i += 1
-    return count, preview, newest, saw_old, saw_any
+    return count, preview, newest, saw_old, raw_seen

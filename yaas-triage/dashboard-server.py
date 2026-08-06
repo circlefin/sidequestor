@@ -747,15 +747,32 @@ def build_dashboard() -> dict:
                     continue
 
         quests.append({
-            "id":           quest_dir.name,
-            "title":        meta.get("title", quest_dir.name),
-            "status":       meta.get("status", "active"),
-            "priority":     meta.get("priority", "normal"),
-            "allow_send":   meta.get("allow_send", False),
-            "last_action":  last_action,
-            "last_blocked": last_blocked,
-            "last_seen_ts": last_seen_ts,
+            "id":            quest_dir.name,
+            "title":         meta.get("title", quest_dir.name),
+            "status":        meta.get("status", "active"),
+            "priority":      meta.get("priority", "normal"),
+            "allow_send":    meta.get("allow_send", False),
+            "last_action":   last_action,
+            "last_blocked":  last_blocked,
+            "last_seen_ts":  last_seen_ts,
+            "misconfig_count": 0,  # filled in below
         })
+
+    # Annotate quests with misconfig_count from unacked-counts.json
+    unacked_path = STATE_DIR / "triage" / "unacked-counts.json"
+    if unacked_path.exists():
+        try:
+            promote = int(os.environ.get("YAAS_UNACKED_PROMOTE", "3"))
+            uc = json.loads(unacked_path.read_text())
+            misconfig_by_quest: dict[str, int] = {}
+            for key, entry in uc.items():
+                qid, _, _ = key.partition("|")
+                if entry.get("count", 0) >= promote:
+                    misconfig_by_quest[qid] = misconfig_by_quest.get(qid, 0) + 1
+            for q in quests:
+                q["misconfig_count"] = misconfig_by_quest.get(q["id"], 0)
+        except Exception:
+            pass
 
     recent_activity.sort(key=lambda x: x.get("ts") or "", reverse=True)
     recent_activity = recent_activity[:20]
@@ -826,7 +843,7 @@ def build_messages() -> dict:
     appr_data  = _read_approvals() if APPROVALS_FILE.exists() else {"items": []}
     appr_by_id = _approvals_index(appr_data)
     pending    = [i for i in appr_data.get("items", [])
-                  if i.get("status") in ("pending_review", "needs_reply")]
+                  if i.get("status") not in TERMINAL_APPROVAL_STATUSES]
 
     needs_you, other_actions = [], []
     for i in pending:
@@ -1063,13 +1080,34 @@ def build_quest_detail(quest_id: str) -> dict | None:
         except Exception:
             pass
 
+    # Misconfigured watches: dispatched N times with no progress, now held.
+    misconfig_watches = []
+    unacked_path = STATE_DIR / "triage" / "unacked-counts.json"
+    if unacked_path.exists():
+        try:
+            uc = json.loads(unacked_path.read_text())
+            promote = int(os.environ.get("YAAS_UNACKED_PROMOTE", "3"))
+            for key, entry in uc.items():
+                qid, _, wid = key.partition("|")
+                if qid == quest_id and entry.get("count", 0) >= promote:
+                    misconfig_watches.append({
+                        "watch_id":    wid,
+                        "type":        entry.get("type", "unknown"),
+                        "count":       entry.get("count"),
+                        "last_status": entry.get("last_status"),
+                        "last_utc":    entry.get("last_utc"),
+                    })
+        except Exception:
+            pass
+
     open_items = {
-        "blocked":       blocked_now,
-        "threads":       open_threads,
-        "threads_total": threads_total,
-        "scheduled":     scheduled,
-        "review":        review,
-        "commitments":   commitments,
+        "blocked":           blocked_now,
+        "misconfig_watches": misconfig_watches,
+        "threads":           open_threads,
+        "threads_total":     threads_total,
+        "scheduled":         scheduled,
+        "review":            review,
+        "commitments":       commitments,
     }
 
     return {

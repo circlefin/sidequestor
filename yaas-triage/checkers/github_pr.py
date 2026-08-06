@@ -112,6 +112,23 @@ def gh_search(repo, extra, limit, timeout=30):
     return json.loads(r.stdout)
 
 
+def _covered(prs, limit, since_ts):
+    """Did this result reach back past the watermark?
+
+    NOT `len(prs) < limit`: `gh search prs --sort updated` returns the N most recently
+    updated PRs, so on any repo busier than `limit` that test is permanently false, the
+    watch can never commit, and the no-progress counter eventually promotes it to
+    misconfig. What actually matters is whether the OLDEST row we got back is already
+    older than the watermark, which proves nothing was missed in between.
+    """
+    if len(prs) < limit:
+        return True
+    try:
+        return min(updated_epoch(pr) for pr in prs) <= since_ts
+    except (ValueError, TypeError):
+        return False
+
+
 def updated_epoch(pr):
     """Epoch seconds of a PR's updatedAt.
 
@@ -148,7 +165,7 @@ def main():
             break
 
     if not changed:
-        result.counted(0, "", complete=len(prs) < limit)
+        result.counted(0, "", complete=_covered(prs, limit, since_ts))
         return
 
     top = changed[0]
@@ -159,7 +176,7 @@ def main():
     more = f" (+more, limit {limit} hit)" if len(changed) >= limit else ""
     result.counted(len(changed),
                    f"#{top.get('number','?')} [{top.get('state','?')}] {title}{more}",
-                   advance_to=updated_epoch(top), complete=len(prs) < limit)
+                   advance_to=updated_epoch(top), complete=_covered(prs, limit, since_ts))
 
 
 if __name__ == "__main__":

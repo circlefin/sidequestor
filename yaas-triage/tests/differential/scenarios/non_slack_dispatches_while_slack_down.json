@@ -1,0 +1,52 @@
+{
+  "name": "non_slack_dispatches_while_slack_down",
+  "why": "KNOWN DEFECT, frozen deliberately. The gate is COMPUTED per target (_target_needs_slack) but APPLIED globally: the first Slack-needing target sets the flag and the whole tick exits, so an email-only quest is stalled by a Slack outage it does not depend on. ~183 gate_slack_down events/day means this bites often. The golden records today's behaviour so the port is proven faithful first; fixing it is a separate, intentional golden change.",
+  "quests": {
+    "q-mail": {
+      "context": "# demo\n",
+      "watches": [
+        {
+          "watch_id": "we",
+          "type": "email",
+          "query": "from:x",
+          "last_checked_ts": "@now-3600",
+          "reason": "test"
+        }
+      ]
+    },
+    "q-slack": {
+      "context": "# demo\n",
+      "watches": [
+        {
+          "watch_id": "ws",
+          "type": "slack_thread",
+          "channel_id": "C1",
+          "thread_ts": "@now-7200.000100",
+          "last_checked_ts": "@now-3600",
+          "reason": "test"
+        }
+      ]
+    }
+  },
+  "checkers": {
+    "we": {
+      "outcome": "dirty",
+      "count": 1
+    },
+    "ws": {
+      "outcome": "dirty",
+      "count": 1
+    }
+  },
+  "slack": {
+    "healthy": false
+  },
+  "agent": {
+    "exit": 0,
+    "acks": {
+      "we": "handled",
+      "ws": "handled"
+    }
+  },
+  "known_defect": "slack_gate_applied_globally"
+}

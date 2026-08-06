@@ -187,12 +187,13 @@ echo "$$" > "$HOLDERFILE"
 
 # ── Post-run hook — runs on every exit except lock-contention ────────────────
 # Covers all code paths (no-quests early exit, idle, dry-run, post-dispatch).
-# rotate-logs.sh is self-gated (23h sentinel) so calling it every tick is safe.
-# notify.sh uses its own watermark — fires nothing if there are no new events.
+# rotate-logs.py is self-gated (23h sentinel) so calling it every tick is safe.
+# notify.py uses its own watermark — fires nothing if there are no new events.
 _on_exit() {
   rm -f "${TMP_RESULTS:-}"
   rm -f "${WATCH_ID_FAILURES:-}"
   rm -f "${DIRTY_WATCHES_NDJSON:-}"
+  rm -f "${CLEAN_WATCHES_NDJSON:-}"
   # Stamp completion HERE, at true end of tick, not mid-run. It used to be written
   # before dispatch, which meant a tick that crashed during dispatch still looked
   # completed — precisely why the 2026-06-30 crash loop went 6.5 hours undetected.
@@ -213,8 +214,8 @@ with open(tmp, "w") as f:
     json.dump(d, f, indent=2)
 os.replace(tmp, p)
 PYEOF
-  bash "$SCRIPT_DIR/rotate-logs.sh"    2>>"$LOG_FILE" || true
-  bash "$SCRIPT_DIR/notify.sh"         2>>"$LOG_FILE" || true
+  python3 "$SCRIPT_DIR/rotate-logs.py" 2>>"$LOG_FILE" || true
+  python3 "$SCRIPT_DIR/notify.py"      2>>"$LOG_FILE" || true
   bash "$SCRIPT_DIR/sync-yaas-v2.sh"   2>>"$LOG_FILE" || true
 }
 trap '_on_exit' EXIT
@@ -501,6 +502,13 @@ check_quest() {
     if [ "${new_count:-0}" -gt 0 ]; then
       echo -e "${qid}\tdirty\t${watch_id}\t${type}\t${advance_to:--}\t${complete}\t[$type] $new_count new — \"$preview\""
       had_dirty=1
+    else
+      # CLEAN and drained. Emitted per-watch so the advance path is identical to the
+      # dirty one: same record shape, same cursor source, one shared function. Also
+      # means a healthy watch is no longer held hostage by a rate-limited sibling.
+      # Must be in this else: a dirty watch needs an ACK before it may advance, so
+      # emitting `ok` for it would bypass the ledger entirely.
+      echo -e "${qid}\tok\t${watch_id}\t${type}\t${advance_to:--}\t${complete}\t[$type] clean"
     fi
   done
 
@@ -541,7 +549,19 @@ DIRTY_QUESTS=()
 CLEAN_QUESTS=()
 SKIPPED_QUESTS=()
 DIRTY_WATCHES_NDJSON=$(mktemp)
+CLEAN_WATCHES_NDJSON=$(mktemp)
 while IFS=$'\t' read -r qid status watch_id watch_type advance_to complete reason; do
+  if [ "$status" = "ok" ]; then
+    # Clean and drained: advance it, using the checker's own cursor when it gave one.
+    if [ "$complete" != "false" ]; then
+      jq -nc --arg quest_id "$qid" --arg watch_id "$watch_id" --arg type "$watch_type" \
+        --arg advance_to "$advance_to" \
+        '{quest_id:$quest_id,watch_id:$watch_id,type:$type,
+          advance_to:(if $advance_to == "" or $advance_to == "-" then null else $advance_to end)}' \
+        >> "$CLEAN_WATCHES_NDJSON"
+    fi
+    continue
+  fi
   if [ "$status" = "dirty" ]; then
     if [[ " ${DIRTY_QUESTS[*]-} " != *" $qid "* ]]; then
       DIRTY_QUESTS+=("$qid")
@@ -561,6 +581,29 @@ while IFS=$'\t' read -r qid status watch_id watch_type advance_to complete reaso
       SKIPPED_QUESTS+=("$qid")
     fi
     log "HOLD: $qid — $reason"
+    # A hold means no dispatch, so commit_quest never runs and the no-progress counter
+    # would never be touched. Without this the watch sits held and silent forever, which
+    # is exactly the stuck state this outcome was supposed to prevent. Bump it here so
+    # check_quest's promotion gate can escalate it to `misconfig` like anything else.
+    python3 - "$UNACKED_FILE" "$qid|$watch_id" "$NOW_UTC" "$watch_type" <<'PYEOF' 2>>"$LOG_FILE" || true
+import json, os, sys
+counts_path, key, now, wtype = sys.argv[1:5]
+try:
+    counts = json.load(open(counts_path)) if os.path.exists(counts_path) else {}
+except Exception:
+    counts = {}
+rec = counts.get(key) or {}
+rec["count"] = int(rec.get("count", 0)) + 1
+rec["first_utc"] = rec.get("first_utc") or now
+rec["last_utc"] = now
+rec["type"] = wtype
+rec["last_status"] = "held_incomplete_window"
+counts[key] = rec
+tmp = counts_path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(counts, f, indent=2)
+os.replace(tmp, counts_path)
+PYEOF
     jq -nc --arg ts "$NOW_UTC" --arg quest "$qid" --arg watch_id "$watch_id" --arg type "$watch_type" \
       '{ts:$ts,event:"gate_watch_backlog",quest:$quest,watch_id:$watch_id,type:$type,reason:"clean but window not drained"}' \
       >> "$RUN_LOG" || true
@@ -644,7 +687,18 @@ PENDING_REACTIONS="$REPO_ROOT/state/triage/pending_reactions.json"
 CUTOFF_DATE=$(date -u -v-60d +%Y-%m-%d 2>/dev/null || date -u -d "60 days ago" +%Y-%m-%d)
 REACTIONS_DIRTY=0
 
-python3 "$SCRIPT_DIR/checkers/reactions.py" "$MCP_CALL" "$CUTOFF_DATE" "$REPO_ROOT" "$PENDING_REACTIONS" 2>&1 || log "REACTIONS checker failed to execute (non-fatal) — reaction sweep skipped this cycle"
+_REACTION_OUT=$(python3 "$SCRIPT_DIR/checkers/reactions.py" "$MCP_CALL" "$CUTOFF_DATE" "$REPO_ROOT" "$PENDING_REACTIONS" 2>&1) \
+  || log "REACTIONS checker failed to execute (non-fatal) — reaction sweep skipped this cycle"
+printf '%s\n' "$_REACTION_OUT"
+# The sweep has no watermark to protect, but a truncated search still means reacted
+# messages exist that nobody will ever see. Every other checker reports coverage; this
+# one now does too.
+if printf '%s' "$_REACTION_OUT" | grep -q "REACTIONS_TRUNCATED=1"; then
+  log "REACTIONS TRUNCATED — the emoji search hit its page cap; older reacted messages were not seen."
+  jq -nc --arg ts "$NOW_UTC" \
+    '{ts:$ts,event:"gate_watch_backlog",quest:"reactions",reason:"reaction search truncated at page cap"}' \
+    >> "$RUN_LOG" || true
+fi
 
 # Parse sweep result
 if [ -f "$PENDING_REACTIONS" ]; then
@@ -654,20 +708,52 @@ else
   vlog "CLEAN: no new reactions"
 fi
 
-# ── Advance clean quest watermarks ──────────────────────────────────────────
-for qid in "${CLEAN_QUESTS[@]+"${CLEAN_QUESTS[@]}"}"; do
+# ── The single place a watermark ever moves ─────────────────────────────────
+# Both the clean path and the post-dispatch commit call this. There used to be two
+# separate jq expressions with different rules: the clean one ignored the checker's
+# advance_to entirely and moved everything to now-lag. Two commit paths meant a fix
+# applied to one silently missed the other, which is exactly how a saturated filtered
+# window kept advancing after the tripwire was added.
+_advance_watches() {
+  # $1 = quest_id, $2 = JSON array of {watch_id, advance_to}
+  local qid="$1" moves="$2" watch tmp n
   watch="$QUESTS_DIR/$qid/watch.json"
-  [ -f "$watch" ] || continue
-  TMP=$(mktemp "$(dirname "$watch")/.watch.XXXXXX")
-  if ! jq --arg now "$NOW_TS" --argjson lags "$LAG_MAP" '
+  [ -f "$watch" ] || return 0
+  n=$(jq 'length' <<< "$moves" 2>/dev/null || echo 0)
+  [ "${n:-0}" -gt 0 ] || return 0
+
+  tmp=$(mktemp "$(dirname "$watch")/.watch.XXXXXX")
+  if ! jq --arg now "$NOW_TS" --argjson lags "$LAG_MAP" --argjson moves "$moves" '
     .watches //= [] |
-    .watches[] |= (.last_checked_ts = (($now | tonumber) - ($lags[.type] // 0) | tostring))
-  ' "$watch" > "$TMP" || ! mv "$TMP" "$watch"; then
-    rm -f "$TMP"
-    log "WATCH WRITE FAILED: $qid — clean watermark not advanced"
-    continue
+    .watches[] |= (
+      . as $w |
+      ([$moves[] | select(.watch_id == $w.watch_id)] | first) as $m |
+      if $m != null
+      then .last_checked_ts = (
+             if ($m.advance_to // "") != ""
+             then ($m.advance_to | tostring)
+             else (($now | tonumber) - ($lags[$w.type] // 0) | tostring)
+             end)
+      else .
+      end
+    )
+  ' "$watch" > "$tmp" || ! mv "$tmp" "$watch"; then
+    rm -f "$tmp"
+    log "WATCH WRITE FAILED: $qid — $n watermark(s) not advanced"
+    return 1
   fi
-  vlog "Advanced watermark for $qid"
+  return 0
+}
+
+# ── Advance clean watch watermarks ──────────────────────────────────────────
+CLEAN_WATCHES_JSON=$(jq -sc '.' "$CLEAN_WATCHES_NDJSON" 2>/dev/null || echo '[]')
+rm -f "$CLEAN_WATCHES_NDJSON"; CLEAN_WATCHES_NDJSON=""
+for qid in $(jq -r '[.[].quest_id] | unique[]' <<< "$CLEAN_WATCHES_JSON" 2>/dev/null); do
+  _moves=$(jq -c --arg q "$qid" '[.[] | select(.quest_id == $q) | {watch_id, advance_to}]' \
+    <<< "$CLEAN_WATCHES_JSON")
+  if _advance_watches "$qid" "$_moves"; then
+    vlog "Advanced $(jq 'length' <<< "$_moves") clean watch watermark(s) for $qid"
+  fi
 done
 
 # ── Update triage run counters ────────────────────────────────────────────────
@@ -1009,16 +1095,6 @@ DISPATCH_TIMEOUT=$WORKER_TIMEOUT
 CLAUDE_PERMISSION_MODE="${YAAS_CLAUDE_PERMISSION_MODE:-${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}}"
 CODEX_PERMISSION_MODE="${YAAS_CODEX_PERMISSION_MODE:-workspace-write}"
 
-# Recursive process-tree killer — needed to terminate the agent's background
-# subprocesses which keep pipe FDs open and prevent the pipeline exiting cleanly.
-_kill_tree() {
-  local _p=$1 _sig=${2:-TERM}
-  local _ch
-  _ch=$(pgrep -P "$_p" 2>/dev/null) || true
-  for _c in $_ch; do _kill_tree "$_c" "$_sig"; done
-  kill -"$_sig" "$_p" 2>/dev/null || true
-}
-
 # Run discipline shared by every dispatch prompt. Backend-neutral: each agent
 # loads its own rules file (CLAUDE.md / AGENTS.md) from the repo root.
 _RUN_DISCIPLINE="watch.json is not editable: append with yaas-triage/add-watch.py per § 3a (a hook blocks the raw write). ACT SILENTLY: emit NO text between tool calls — no 'Reading X' or 'I need to check Y' narration. Batch independent reads/edits into a single turn using parallel tool_use blocks whenever possible. OUTPUT CONTRACT: emit the summary ONLY if something material happened (message sent, draft created, state changed, quest status changed). If nothing material happened — just exit with no text. When you do emit it, keep it under 8 lines."
@@ -1077,21 +1153,11 @@ dispatch_one() {
     return 0
   fi
 
-  # ── Per-dispatch log files. worker-latest.* points at the invocation in flight
-  #    so the dashboard's live panel keeps working unchanged.
-  worker_log="$LOG_DIR/worker-$stamp-$slug.log"
-  worker_ndjson="$LOG_DIR/worker-$stamp-$slug.ndjson"
-  DISPATCH_NDJSON="$worker_ndjson"
-  ln -sf "$(basename "$worker_log")"    "$LOG_DIR/worker-latest.log"
-  ln -sf "$(basename "$worker_ndjson")" "$LOG_DIR/worker-latest.ndjson"
-  {
-    echo "=== Worker dispatch $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
-    echo "Target: $target"
-    echo "Run ID: $DISPATCH_RUN_ID"
-    echo "Ack manifest items: $items"
-    echo "========================================================"
-  } > "$worker_log"
-  log "DISPATCH [$target] run_id=$DISPATCH_RUN_ID log=$worker_log"
+  # Record what watch.json looked like before the worker touched anything, so the
+  # append-only rule can be checked afterwards rather than guessed at beforehand.
+  if [ "$target" != "reactions" ]; then
+    python3 "$SCRIPT_DIR/watch-guard.py" snapshot "$target" >/dev/null 2>>"$LOG_FILE" || true
+  fi
 
   # ── Prompt. The ack block is what makes the commit evidence-based.
   ack_block="ACK LEDGER (REQUIRED): this dispatch has run_id $DISPATCH_RUN_ID. Before you exit, close EVERY item listed above with exactly one call each: python3 yaas-triage/ack-watch.py ack $DISPATCH_RUN_ID <item_id> handled|nothing_to_do|blocked \"<one-line note>\". Use handled when you acted (replied, drafted, queued for review, adopted, saved state), nothing_to_do when you read the new activity and it correctly needs no action, blocked when you could not finish. An item you do not ack keeps its old watermark and is re-dispatched next tick — so never ack something you did not actually look at, and never skip acking something you did handle."
@@ -1102,46 +1168,21 @@ dispatch_one() {
     prompt="Yaas worker dispatch: dirty target: $target. Exact dirty watches (JSON): $items — each item_id is a watch_id. Process EVERY listed watch_id: select it directly from watch.json with jq --arg id WATCH_ID '.watches[] | select(.watch_id == \$id)' and query that watch's source. Do not scan or truncate watch.json to guess what fired. Follow the Quest Activation Protocol in your rules file: read ONLY context.md first; read meta.json/watch.json/timeline.ndjson only when you actually need them to act. $ack_block $_RUN_DISCIPLINE"
   fi
 
-  # ── Run. Subshell so the watchdog can kill the whole tree via $bgpid.
-  #    Pipeline: dispatch-agent.sh → tee (raw ndjson) → format-stream.py (human).
-  #    PIPESTATUS[0] is the agent's own exit code.
-  exitfile=$(mktemp)
-  t0=$(date +%s)
-  (
-    YAAS_AGENT="$YAAS_AGENT" REPO_ROOT="$REPO_ROOT" \
-    YAAS_CLAUDE_PERMISSION_MODE="$CLAUDE_PERMISSION_MODE" \
-    YAAS_CODEX_PERMISSION_MODE="$CODEX_PERMISSION_MODE" \
-      bash "$SCRIPT_DIR/dispatch-agent.sh" "$prompt" \
-      2> "${worker_ndjson}.err" \
-      | tee "$worker_ndjson" \
-      | python3 "$SCRIPT_DIR/format-stream.py" >> "$worker_log"
-    echo "${PIPESTATUS[0]}" > "$exitfile"
-  ) 9>&- &
-  bgpid=$!
-
-  # Watchdog writes 124 BEFORE killing so the parent always reads the timeout code.
-  (
-    sleep $DISPATCH_TIMEOUT
-    if kill -0 "$bgpid" 2>/dev/null; then
-      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  TIMEOUT — worker for $target exceeded ${DISPATCH_TIMEOUT}s, killing (pid=$bgpid)" >> "$LOG_FILE"
-      echo "124" > "$exitfile"
-      _kill_tree "$bgpid" TERM
-      sleep 3
-      _kill_tree "$bgpid" KILL
-    fi
-  ) 9>&- &
-  watchdog=$!
-
-  wait "$bgpid" 2>/dev/null || true
-  DISPATCH_WALL=$(($(date +%s) - t0))
-  # Kill the watchdog AND its inner `sleep` — a bare kill only reaps the subshell,
-  # orphaning the sleep. (With 9>&- above the orphan no longer holds the lock FD.)
-  _kill_tree "$watchdog" TERM
-  wait "$watchdog" 2>/dev/null || true
-
-  DISPATCH_EXIT=$(cat "$exitfile" 2>/dev/null)
-  DISPATCH_EXIT=${DISPATCH_EXIT:-1}
-  rm -f "$exitfile"
+  # ── Run it. The pipeline, the watchdog and the process-tree kill all live in
+  #    run-agent.py, which manual-dispatch.sh uses too — they used to be two copies,
+  #    and only one of them had a test.
+  local agent_json
+  agent_json=$(python3 "$SCRIPT_DIR/run-agent.py" \
+    --prompt "$prompt" --label "$target" --timeout "$DISPATCH_TIMEOUT" \
+    --header "Target: $target" --header "Run ID: $DISPATCH_RUN_ID" \
+    --header "Ack manifest items: $items" 2>>"$LOG_FILE") || true
+  DISPATCH_EXIT=$(printf '%s' "$agent_json" | jq -r '.exit // 1' 2>/dev/null || echo 1)
+  DISPATCH_WALL=$(printf '%s' "$agent_json" | jq -r '.wall_sec // 0' 2>/dev/null || echo 0)
+  worker_ndjson=$(printf '%s' "$agent_json" | jq -r '.ndjson // ""' 2>/dev/null || echo "")
+  worker_log=$(printf '%s' "$agent_json" | jq -r '.log // ""' 2>/dev/null || echo "")
+  DISPATCH_NDJSON="$worker_ndjson"
+  case "$DISPATCH_EXIT" in ''|*[!0-9]*) DISPATCH_EXIT=1 ;; esac
+  case "$DISPATCH_WALL" in ''|*[!0-9]*) DISPATCH_WALL=0 ;; esac
   log "Worker [$target] exited with $DISPATCH_EXIT in ${DISPATCH_WALL}s (readable: $worker_log)"
 
   # ── Infra-failure guard, per dispatch. When Slack is unreachable the worker
@@ -1171,7 +1212,7 @@ dispatch_one() {
   # own event stream. Triage's curl checkers are a different execution path and
   # cannot prove native MCP/app/shell Slack access was available to the agent.
   if [ "$DISPATCH_EXIT" = "0" ] \
-     && python3 "$SCRIPT_DIR/worker-source-evidence.py" slack "$worker_ndjson"; then
+     && python3 "$SCRIPT_DIR/source-evidence.py" slack "$worker_ndjson"; then
     DISPATCH_SLACK_READ_OK=1
     log "WORKER SOURCE OK [$target]: successful Slack read observed in worker event stream"
   fi
@@ -1277,42 +1318,21 @@ commit_quest() {
     return 0
   fi
 
-  # Per-quest blocked-event guard: CLAUDE.md tells the worker to append a
-  # {"event":"blocked",...} line to timeline.ndjson when it can't finish a quest's
-  # work (and to stop without doing the rest). Exit code alone can't carry that,
-  # so read the signal here. A blocked event during THIS dispatch holds the whole
-  # quest, ack ledger notwithstanding — the worker said it stopped early.
-  tl="$QUESTS_DIR/$qid/timeline.ndjson"
-  if [ -f "$tl" ]; then
-    blocked=$(python3 - "$tl" "$DISPATCH_START_UTC" <<'PYEOF'
-import json, sys
-from datetime import datetime
-tl_path, boundary_raw = sys.argv[1], sys.argv[2]
-def parse(t):
-    if not t: return None
-    try: return datetime.fromisoformat(t.replace("Z", "+00:00"))
-    except Exception: return None
-boundary = parse(boundary_raw)
-hit = False
-for line in open(tl_path):
-    line = line.strip()
-    if not line: continue
-    try: d = json.loads(line)
-    except Exception: continue
-    if d.get("event") != "blocked": continue
-    ets = parse(d.get("ts", ""))
-    if boundary is None or (ets is not None and ets >= boundary):
-        hit = True; break
-print("1" if hit else "0")
-PYEOF
-)
-    if [ "$blocked" = "1" ]; then
-      log "BLOCKED — quest $qid logged a blocked event this dispatch; no watermark advanced (next tick re-surfaces)."
-      echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"event\":\"gate_quest_blocked\",\"quest\":\"$qid\"}" >> "$RUN_LOG"
-      _record_progress "$qid" "$DISPATCH_RUN_ID" ""
-      return 0
-    fi
+  # NOTE: there is deliberately no quest-wide `blocked` veto here any more. It used to
+  # scan the timeline for a blocked event from this dispatch and hold the ENTIRE quest,
+  # discarding valid per-item receipts along with it — so work the worker had genuinely
+  # finished was re-done next tick, risking a duplicate outbound reply. `blocked` already
+  # exists per item in the ack ledger, which holds exactly the item that is stuck and
+  # nothing else. The timeline event is still written and still surfaces in history.
+
+  # Undo any modification the worker made to a PRE-EXISTING entry, before we apply
+  # our own advances on top. Appends are kept: those are what § 3a asks for.
+  if ! _guard=$(python3 "$SCRIPT_DIR/watch-guard.py" verify "$qid" 2>>"$LOG_FILE"); then
+    log "WATCH GUARD [$qid] — worker modified existing watch entries; repaired from snapshot: $_guard"
+    jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg quest "$qid" --argjson detail "$_guard" \
+      '{ts:$ts,event:"gate_watch_tampered",quest:$quest,detail:$detail}' >> "$RUN_LOG" || true
   fi
+  python3 "$SCRIPT_DIR/watch-guard.py" clear "$qid" >/dev/null 2>&1 || true
 
   # ── Evidence-based commit: only watch_ids the worker closed as handled or
   #    nothing_to_do. Unacked and blocked items keep their old watermark.
@@ -1338,44 +1358,15 @@ PYEOF
     return 0
   fi
 
-  TMP=$(mktemp "$(dirname "$watch")/.watch.XXXXXX")
-  # Three conditions to advance a watch, ALL required:
-  #   1. it was dispatched this run (present in the dirty manifest),
-  #   2. the worker acked it handled/nothing_to_do,
-  #   3. the checker proved it drained its window (complete != false).
-  # (3) is the saturation tripwire. Every checker reads a BOUNDED window, and a
-  # window that came back full cannot prove there is nothing older, so advancing
-  # past it would skip activity nobody ever read. The cursor itself is the
-  # checker's own advance_to when it supplied one — the newest item it actually
-  # covered — and only otherwise the now-minus-lag guess.
-  if ! jq --arg now "$NOW_TS" --arg qid "$qid" --argjson lags "$LAG_MAP" \
-       --argjson dirty "$DIRTY_WATCHES_JSON" --argjson acked "$acked_json" '
-    .watches //= [] |
-    .watches[] |= (
-      . as $w |
-      ([$dirty[] | select(.quest_id == $qid and .watch_id == $w.watch_id)] | first) as $d |
-      if $d != null
-         and (any($acked[]; . == $w.watch_id))
-         and ($d.complete != false)
-      then .last_checked_ts = (
-             if ($d.advance_to // "") != ""
-             then ($d.advance_to | tostring)
-             else (($now | tonumber) - ($lags[$w.type] // 0) | tostring)
-             end)
-      else .
-      end
-    )
-  ' "$watch" > "$TMP" || ! mv "$TMP" "$watch"; then
-    rm -f "$TMP"
-    log "WATCH WRITE FAILED: $qid — acked watch watermarks not advanced"
+  local moves
+  moves=$(jq -c --arg qid "$qid" --argjson acked "$acked_json" \
+    '[.[] | select(.quest_id == $qid and .complete != false and (.watch_id as $i | any($acked[]; . == $i)))
+          | {watch_id, advance_to}]' <<< "$DIRTY_WATCHES_JSON" 2>/dev/null || echo '[]')
+  if ! _advance_watches "$qid" "$moves"; then
     _record_progress "$qid" "$DISPATCH_RUN_ID" ""
     return 0
   fi
 
-  # The COMMITTED set: acked AND dispatched AND the checker proved the window drained.
-  # This is what actually moved, and it is what the counters, the log line and the
-  # no-progress bookkeeping must all agree on. Passing the merely-acked set here was
-  # the bug: it cleared the breaker for watches whose cursor had deliberately been held.
   local committed_ids truncated
   committed_ids=$(jq -r --arg qid "$qid" --argjson acked "$acked_json" \
     '.[] | select(.quest_id == $qid and .complete != false and (.watch_id as $i | any($acked[]; . == $i))) | .watch_id' \
@@ -1388,8 +1379,7 @@ PYEOF
     jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg quest "$qid" --argjson n "$truncated" \
       '{ts:$ts,event:"gate_watch_backlog",quest:$quest,watches:$n}' >> "$RUN_LOG"
   fi
-  advanced=$(printf '%s\n' "$committed_ids" | grep -c . || true)
-  advanced=${advanced:-0}
+  advanced=$(jq 'length' <<< "$moves" 2>/dev/null || echo 0)
   log "Advanced $advanced acked watch watermark(s) for dirty quest $qid (post-worker-success)"
   echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"event\":\"gate_dispatch_success\",\"targets\":[\"$qid\"],\"acked\":$advanced}" >> "$RUN_LOG"
 

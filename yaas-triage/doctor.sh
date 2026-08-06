@@ -15,7 +15,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# doctor.sh — health check for yaas-triage install.
+# doctor.sh — is THIS MACHINE configured to run yaas?
+#
+# Three different questions, three different tools:
+#   yaas-triage/tests/run-all.sh   is the CODE correct?   (fixtures, no real state —
+#                                  passes on a machine with nothing set up)
+#   doctor.sh                      is this MACHINE set up? (real Keychain, real PATH,
+#                                  real .env, real plist)
+#   health-monitor.py              is it WORKING right now? (runtime, continuous)
+#
+# Only doctor answers the middle one, which is why the test suite does not replace it.
 #
 # Verifies prerequisites, config, credentials, launchd state, and recent
 # successful runs. Prints a checklist; exits 0 if everything is green,
@@ -142,16 +151,33 @@ else
 fi
 
 if launchctl list com.yaas.triage >/dev/null 2>&1; then
-  STATUS=$(launchctl list com.yaas.triage | grep LastExitStatus | sed 's/.*= //; s/;//')
-  PID=$(launchctl list com.yaas.triage | grep '"PID"' | sed 's/.*= //; s/;//')
+  # Extract just the number. The old `sed 's/.*= //; s/;//'` was greedy and only
+  # dropped the FIRST semicolon, so anything trailing on the line came along for the
+  # ride ("512 };") and then matched no case arm below — the interpretation silently
+  # degraded to "Unexpected". Pulling the digits out directly cannot do that.
+  LC_OUT=$(launchctl list com.yaas.triage 2>/dev/null)
+  # Split on ';' so each key is its own record no matter how the lines are packed.
+  # Without that, grabbing "the last number on the matching line" picks up a
+  # neighbouring key's value instead.
+  _num() { printf '%s\n' "$LC_OUT" | tr ';' '\n' | grep "\"$1\"" | head -1 \
+             | grep -oE -- '-?[0-9]+' | tail -1; }
+  STATUS=$(_num LastExitStatus); PID=$(_num PID)
+  [ -n "$STATUS" ] || STATUS="unknown"
+  [ -n "$PID" ] || PID="none"
   ok "launchd job loaded (PID=$PID, LastExitStatus=$STATUS)"
   case "$STATUS" in
     0)
       ok "Last triage tick exited cleanly"
       ;;
     36608)
-      # 143 << 8 — SIGTERM, expected when watchdog kills worker
+      # 143 << 8 — SIGTERM, expected when the watchdog kills a worker
       ok "Last exit was SIGTERM (143) — handled normally by watchdog logic"
+      ;;
+    15|-15)
+      # Raw SIGTERM, which is what `launchctl kickstart -k` leaves behind. Restarting
+      # the job is a routine thing to do (triage-loop.sh edits require it), so
+      # reporting it as "unexpected" was noise.
+      ok "Last exit was SIGTERM (15) — normal after a launchctl kickstart -k"
       ;;
     512)
       # 2 << 8 — set -eu aborted
@@ -165,35 +191,25 @@ else
   fail "launchd job not loaded — run ./setup/install-launchd.sh"
 fi
 
-# ── 7. Recent activity ──────────────────────────────────────────────────────
-section "Recent activity"
-LAST_RUN="$REPO_ROOT/state/triage/last-run.json"
-if [ -f "$LAST_RUN" ]; then
-  LAST_TS=$(jq -r '.last_triage_completed_utc // "never"' "$LAST_RUN" 2>/dev/null)
-  if [ -n "$LAST_TS" ] && [ "$LAST_TS" != "never" ]; then
-    # Compute age in minutes (BSD/GNU date compat)
-    LAST_EPOCH=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$LAST_TS" +%s 2>/dev/null || \
-                 date -u -d "$LAST_TS" +%s 2>/dev/null || echo "")
-    if [ -n "$LAST_EPOCH" ]; then
-      AGE_MIN=$(( ( $(date +%s) - LAST_EPOCH ) / 60 ))
-      if [ "$AGE_MIN" -lt 5 ]; then
-        ok "Last triage completed $AGE_MIN min ago"
-      elif [ "$AGE_MIN" -lt 60 ]; then
-        warn "Last triage was $AGE_MIN min ago — expected every 1–2 min"
-      else
-        fail "Last triage was $AGE_MIN min ago — triage may be stuck"
-      fi
-    else
-      ok "Last triage: $LAST_TS"
-    fi
+# ── 7. Runtime liveness — delegated ─────────────────────────────────────────
+# This used to re-implement "how long since the last tick", with its own date
+# parsing and its own thresholds. health-monitor.py does that continuously, on its
+# own launchd job, with alerting and a published verdict — so a copy here was a
+# worse version of a better mechanism, and a copy that only ran when someone
+# remembered to.
+#
+# doctor answers "is this machine configured"; health answers "is it working now".
+section "Runtime health"
+HEALTH="$REPO_ROOT/state/health-status.json"
+if [ -f "$HEALTH" ]; then
+  if [ "$(jq -r '.healthy // false' "$HEALTH" 2>/dev/null)" = "true" ]; then
+    ok "health-monitor reports healthy ($(jq -r '.ts // "?"' "$HEALTH"))"
+  else
+    fail "health-monitor reports problems: $(jq -r '[.problems[].headline] | join("; ")' "$HEALTH" 2>/dev/null)"
+    [ "$QUIET" = "0" ] && echo "    Detail: python3 yaas-triage/health-monitor.py --json"
   fi
-
-  TOTAL=$(jq -r '.runs_total // 0' "$LAST_RUN")
-  IDLE=$(jq -r '.runs_idle // 0' "$LAST_RUN")
-  DISP=$(jq -r '.runs_dispatched // 0' "$LAST_RUN")
-  [ "$QUIET" = "0" ] && echo "    Totals: $TOTAL runs ($IDLE idle, $DISP dispatched)"
 else
-  warn "No last-run.json yet — triage may not have run successfully"
+  warn "no health-status.json — install the heartbeat: ./setup/install-launchd-heartbeat.sh"
 fi
 
 # ── 8. Quest folder sanity ──────────────────────────────────────────────────

@@ -62,8 +62,10 @@ Exit codes:
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -113,6 +115,77 @@ def _call_slack(tool: str, args: dict) -> str:
     return body
 
 
+# How old the conversation may be before a reply needs human review, in hours.
+STALE_HOURS = float(os.environ.get("YAAS_STALE_REPLY_HOURS", "24"))
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _thread_last_activity(channel_id: str, thread_ts: str):
+    """Epoch of the newest message in the target thread, or None if unreadable.
+
+    This is the staleness signal, and it is deliberately measured HERE rather than
+    passed in by triage. A reply is stale when the conversation it answers has already
+    gone quiet, which is a property of the thread, not of how the dispatch was
+    triggered. Measuring it at the send site means manual dispatches and reaction
+    replies are covered by the same rule, with nothing to remember.
+    """
+    try:
+        body = _call_slack("slack_read_thread",
+                           {"channel_id": channel_id, "thread_ts": thread_ts})
+    except Exception:
+        return None
+    newest = None
+    # Message timestamps are Slack ts values: "1785920000.123456". Take the largest
+    # one anywhere in the response rather than assuming a shape, since the MCP tool
+    # returns prose with embedded ts fields.
+    for m in re.finditer(r'\b(1[6-9]\d{8}\.\d{6})\b', body):
+        v = float(m.group(1))
+        newest = v if newest is None else max(newest, v)
+    return newest
+
+
+def _stale_reason(channel_id, thread_ts, now=None):
+    """Should this send be held for review? Returns a reason string, or None to send.
+
+    Fails CLOSED: if the thread cannot be read, we cannot show the conversation is
+    still live, so the reply is queued rather than sent. Auto-replying into a thread
+    whose state is unknown is the exact failure this exists to prevent.
+    """
+    if os.environ.get("YAAS_FORCE_DRAFT") == "1":
+        return "catch-up mode is active (YAAS_FORCE_DRAFT=1)"
+    if not thread_ts:
+        # A new top-level message is not a reply to anything, so it has no staleness.
+        return None
+    now = now if now is not None else time.time()
+    newest = _thread_last_activity(channel_id, thread_ts)
+    if newest is None:
+        return "could not read the thread to confirm it is still live"
+    age_h = (now - newest) / 3600.0
+    if age_h > STALE_HOURS:
+        return (f"newest message in the thread is {age_h:.1f}h old "
+                f"(limit {STALE_HOURS:.0f}h), so the conversation has moved on")
+    return None
+
+
+def _queue_for_review(p, reason):
+    """Route a would-be send into the approval queue instead of sending it."""
+    quest_id = p.get("quest_id") or ""
+    payload = {
+        "quest_id": quest_id,
+        "quest_title": p.get("quest_title", quest_id),
+        "action_type": "slack_message",
+        "target": {"channel_id": p.get("channel_id"), "thread_ts": p.get("thread_ts")},
+        "message_text": p.get("message"),
+        "context": (p.get("note") or "") + f" [held automatically: {reason}]",
+        "risk_reason": f"stale-reply guard: {reason}",
+    }
+    out = subprocess.run(
+        ["python3", str(SCRIPT_DIR / "approval-helper.py"), "write", json.dumps(payload)],
+        capture_output=True, text=True)
+    return (out.stdout or "").strip()
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -143,6 +216,27 @@ def main():
         args["reply_broadcast"] = True
 
     tool = "slack_send_message_draft" if is_draft else "slack_send_message"
+
+    # 0. Stale-reply guard. A reply to a conversation that went quiet more than
+    #    STALE_HOURS ago is almost never still wanted: after a pause, triage hands the
+    #    worker the OLDEST unread slice first, so without this it would march forward
+    #    through days of backlog answering questions that were resolved without it.
+    #    Enforced here, in the only sanctioned send path, rather than as a rule in
+    #    CLAUDE.md, because a rule the model can forget is not a guard.
+    if not is_draft:
+        reason = _stale_reason(channel_id, thread_ts)
+        if reason:
+            appr_id = _queue_for_review(p, reason)
+            quest_dir = _quest_dir(quest_id) if quest_id else None
+            if quest_dir:
+                _append_timeline(quest_dir, {
+                    "ts": _utc_now(), "event": "draft_posted",
+                    "channel_id": channel_id, "thread_ts": thread_ts,
+                    "approval_id": appr_id, "held_reason": reason,
+                    "note": (note or "") + " [auto-held by the stale-reply guard]"})
+            print(json.dumps({"held": True, "reason": reason,
+                              "approval_id": appr_id, "response_ts": "", "permalink": ""}))
+            return 0
 
     # 1. Send / draft. On any failure nothing is logged (the message never landed).
     try:

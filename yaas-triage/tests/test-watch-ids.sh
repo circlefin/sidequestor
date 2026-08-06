@@ -1,7 +1,9 @@
 #!/bin/bash
 set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Suites live in yaas-triage/tests/; SCRIPT_DIR points at yaas-triage/ so every
+# reference to a helper stays exactly as it was written.
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 WATCH="$TMP_DIR/watch.json"

@@ -78,21 +78,8 @@ if ! perl -e 'use Fcntl qw(:flock); exit !flock(STDIN, LOCK_EX|LOCK_NB)' 0<&9; t
 fi
 echo "$$" > "$HOLDERFILE"
 
-# ── Worker log streaming — identical shape to triage.sh so build_live_run()
-#    in dashboard-server.py picks it up unchanged. ─────────────────────────────
 cd "$REPO_ROOT"
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-WORKER_LOG="$LOG_DIR/worker-$STAMP.log"
-WORKER_NDJSON="$LOG_DIR/worker-$STAMP.ndjson"
-ln -sf "$(basename "$WORKER_LOG")"    "$LOG_DIR/worker-latest.log"
-ln -sf "$(basename "$WORKER_NDJSON")" "$LOG_DIR/worker-latest.ndjson"
-{
-  echo "=== Worker dispatch $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
-  echo "Dirty targets: $QUEST_ID (manual)"
-  echo "Manual instruction: $INSTRUCTION"
-  echo "========================================================"
-} > "$WORKER_LOG"
-log "MANUAL DISPATCH — quest=$QUEST_ID backend=$YAAS_AGENT log=$WORKER_LOG"
+log "MANUAL DISPATCH — quest=$QUEST_ID backend=$YAAS_AGENT"
 
 NOW_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 INSTR_JSON=$(printf '%s' "$INSTRUCTION" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
@@ -107,41 +94,17 @@ CODEX_PERMISSION_MODE="${YAAS_CODEX_PERMISSION_MODE:-workspace-write}"
 # the human instruction as the thing to act on this run.
 WORKER_PROMPT="Yaas worker dispatch (manual, dashboard-initiated). Dirty target: $QUEST_ID. This is NOT triggered by new Slack/email activity — it is a direct instruction from the operator. Follow the Quest Activation Protocol for this quest (read context.md first; read other files only when you need them). ALL normal rules apply: draft-vs-send authorization (§3, §3d), never modify existing watch.json entries, act-first-then-report (§3b), log every outbound action to timeline.ndjson via slack-send.py. MANUAL INSTRUCTION TO ACT ON: $INSTRUCTION. NO ACK LEDGER for this dispatch: there is no run_id and this run advances no watermarks, so skip § 4a entirely and do NOT call ack-watch.py. ACT SILENTLY: emit no narration between tool calls. OUTPUT CONTRACT: emit the summary only if something material happened; keep it under 8 lines."
 
-_kill_tree() {
-  local _p=$1 _sig=${2:-TERM} _ch
-  _ch=$(pgrep -P "$_p" 2>/dev/null) || true
-  for _c in $_ch; do _kill_tree "$_c" "$_sig"; done
-  kill -"$_sig" "$_p" 2>/dev/null || true
-}
+# The pipeline, watchdog and process-tree kill live in run-agent.py, shared with
+# triage.sh. This file used to carry its own copy of all three, untested, so a fix to
+# either had to be made twice and was verified once.
+AGENT_JSON=$(python3 "$SCRIPT_DIR/run-agent.py" \
+  --prompt "$WORKER_PROMPT" --label "$QUEST_ID" --timeout "$WORKER_TIMEOUT" \
+  --header "Dirty targets: $QUEST_ID (manual)" \
+  --header "Manual instruction: $INSTRUCTION" 2>>"$LOG_FILE") || true
+EXIT=$(printf '%s' "$AGENT_JSON" | jq -r '.exit // 1' 2>/dev/null || echo 1)
+case "$EXIT" in ''|*[!0-9]*) EXIT=1 ;; esac
+WORKER_LOG=$(printf '%s' "$AGENT_JSON" | jq -r '.log // ""' 2>/dev/null || echo "")
 
-_EXITFILE=$(mktemp)
-(
-  YAAS_AGENT="$YAAS_AGENT" REPO_ROOT="$REPO_ROOT" \
-  YAAS_CLAUDE_PERMISSION_MODE="$CLAUDE_PERMISSION_MODE" \
-  YAAS_CODEX_PERMISSION_MODE="$CODEX_PERMISSION_MODE" \
-    bash "$SCRIPT_DIR/dispatch-agent.sh" "$WORKER_PROMPT" \
-    2> "${WORKER_NDJSON}.err" \
-    | tee "$WORKER_NDJSON" \
-    | python3 "$SCRIPT_DIR/format-stream.py" >> "$WORKER_LOG"
-  echo "${PIPESTATUS[0]}" > "$_EXITFILE"
-) 9>&- &
-_BGPID=$!
-
-(
-  sleep $WORKER_TIMEOUT
-  if kill -0 "$_BGPID" 2>/dev/null; then
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  TIMEOUT — manual worker exceeded ${WORKER_TIMEOUT}s, killing (pid=$_BGPID)" >> "$LOG_FILE"
-    echo "124" > "$_EXITFILE"
-    _kill_tree "$_BGPID" TERM; sleep 3; _kill_tree "$_BGPID" KILL
-  fi
-) 9>&- &
-_WATCHDOG=$!
-
-wait "$_BGPID" 2>/dev/null || true
-_kill_tree "$_WATCHDOG" TERM
-wait "$_WATCHDOG" 2>/dev/null || true
-
-EXIT=$(cat "$_EXITFILE" 2>/dev/null); EXIT=${EXIT:-1}; rm -f "$_EXITFILE"
-log "MANUAL DISPATCH done — quest=$QUEST_ID worker exit=$EXIT"
+log "MANUAL DISPATCH done — quest=$QUEST_ID worker exit=$EXIT (log: $WORKER_LOG)"
 echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"event\":\"manual_dispatch_done\",\"quest\":\"$QUEST_ID\",\"exit\":$EXIT}" >> "$RUN_LOG"
 exit 0

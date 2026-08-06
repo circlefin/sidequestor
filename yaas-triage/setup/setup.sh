@@ -299,7 +299,7 @@ if [[ "$INSTALL_DASHBOARD" =~ ^[Yy] ]]; then
   fi
 else
   echo "Skipped. You can start the dashboard manually any time:"
-  echo "  $TRIAGE_DIR/dashboard.sh"
+  echo "  $TRIAGE_DIR/dashboard-start.sh"
 fi
 
 # ── Offer daily yaas-v2 auto-sync ───────────────────────────────────────────
@@ -341,7 +341,7 @@ echo "║  yaas setup complete                                               ║
 echo "╠════════════════════════════════════════════════════════════════════╣"
 echo "║  Manual run:     $TRIAGE_DIR/triage.sh"
 echo "║  Dry run:        DRY_RUN=1 $TRIAGE_DIR/triage.sh"
-echo "║  Dashboard:      $TRIAGE_DIR/dashboard.sh  (http://localhost:8877)"
+echo "║  Dashboard:      $TRIAGE_DIR/dashboard-start.sh  (http://localhost:8877)"
 echo "║  Rotate token:   rerun setup.sh"
 echo "║  Revoke:         Settings → Manage apps in your Slack workspace    ║"
 echo "╚════════════════════════════════════════════════════════════════════╝"

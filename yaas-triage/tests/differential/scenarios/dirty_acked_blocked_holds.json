@@ -1,0 +1,31 @@
+{
+  "name": "dirty_acked_blocked_holds",
+  "why": "An explicit 'I could not finish' must hold the watermark and come back next tick, exactly like no ack at all.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\nTest quest.\n",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "type": "slack_thread",
+          "last_checked_ts": "@now-3600",
+          "reason": "test",
+          "channel_id": "C1",
+          "thread_ts": "@now-7200.000100"
+        }
+      ]
+    }
+  },
+  "checkers": {
+    "w1": {
+      "outcome": "dirty",
+      "count": 1
+    }
+  },
+  "agent": {
+    "exit": 0,
+    "acks": {
+      "w1": "blocked"
+    }
+  }
+}

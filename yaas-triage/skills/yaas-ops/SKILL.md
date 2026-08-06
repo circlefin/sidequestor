@@ -19,7 +19,7 @@ yaas-triage/
 ├── format-stream.py          ← formats claude --output-format stream-json for human logs
 ├── extract-tokens.py         ← parses worker ndjson, writes cost event to run-log
 ├── worker.mcp.json           ← MCP server config for the claude worker process
-├── doctor.sh                 ← health check
+├── doctor.sh                 ← is this MACHINE configured (setup validation)
 ├── README.md
 ├── checkers/                 ← one script per watch type (plugin directory)
 │   ├── slack_thread.py · slack_channel.py · slack_dm.py
@@ -246,7 +246,9 @@ cd <repo>
 cp .env.example .env             # then fill in SLACK_*, YAAS_FROM_EMAIL, etc.
 cp CLAUDE.example.md CLAUDE.md   # customize as needed
 ./yaas-triage/setup/setup.sh
-./yaas-triage/doctor.sh          # verify install is healthy
+./yaas-triage/doctor.sh          # is this machine configured (real creds, PATH, plist)
+python3 yaas-triage/health-monitor.py   # is it working right now
+yaas-triage/tests/run-all.sh     # is the code correct (fixtures, safe any time)
 ```
 
 `setup.sh` walks through Slack OAuth (PKCE flow, no client secret needed), stores the user `xoxp` token in macOS keychain at `(service=slack-xoxp-token, account=yaas)`, runs a connectivity check, and optionally installs the launchd job. Each user creates their own Slack app at https://api.slack.com/apps with the scopes listed in `setup/yaas-app-config.json`.

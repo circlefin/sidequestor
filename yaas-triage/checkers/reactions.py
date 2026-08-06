@@ -47,6 +47,9 @@ def sgtnow():
     return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
 
+MAX_PAGES = 30   # ~600 results per emoji over the 60-day window
+
+
 def main():
     mcp_call, cutoff, repo_root, pending_path = sys.argv[1:5]
     state_dir = os.path.join(repo_root, "state")
@@ -59,6 +62,7 @@ def main():
     ]
 
     pending = {}
+    truncated = []
 
     for emoji, fname, key in emoji_specs:
         state_file = os.path.join(state_dir, fname)
@@ -105,12 +109,21 @@ def main():
             if not m or not page_ts:
                 break
             cursor = m.group(1)
-            if pages >= 30:
+            if pages >= MAX_PAGES:
+                # Hit our own page cap with more results waiting. Every other checker
+                # reports this as complete=false; this sweep has no watermark to
+                # protect, but staying silent about it means a reacted message older
+                # than the cap is simply never seen and nothing says so.
+                truncated.append(emoji)
                 break
 
         if new_ts:
             pending[emoji] = sorted(set(new_ts), key=float)
             print(f"DIRTY_REACTION: {emoji} → {len(pending[emoji])} new", file=sys.stderr)
+
+    if truncated:
+        print(f"REACTIONS_TRUNCATED={','.join(sorted(set(truncated)))}", file=sys.stderr)
+        print(f"{sgtnow()}  REACTIONS_TRUNCATED=1")
 
     if pending:
         os.makedirs(os.path.dirname(pending_path), exist_ok=True)

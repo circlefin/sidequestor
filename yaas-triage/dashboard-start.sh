@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# dashboard.sh — start the YAAS dashboard server and open it in the browser.
+# dashboard-start.sh — start the YAAS dashboard server and open it in the browser.
 # Safe to run multiple times: skips launch if already listening on the port.
 
 set -euo pipefail

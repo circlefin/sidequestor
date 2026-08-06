@@ -8,7 +8,7 @@ jacket over your local working directory for Claude Code, Codex, or Cursor.
 Drop it into the repo you already work in and it wraps your existing harness
 instead of replacing it. The live control panel — where drafts wait for your
 review and every quest's messages are one click from Slack — is the
-**Sidequestor dashboard** (`yaas-triage/dashboard.sh`, http://localhost:8877).
+**Sidequestor dashboard** (`yaas-triage/dashboard-start.sh`, http://localhost:8877).
 
 Everything worth your attention becomes a **quest**: a first-class unit of work
 with its own objective, watchers, timeline, and memory. yaas keeps your quests
@@ -94,12 +94,12 @@ It checks every 5 minutes for: no completed tick, a tick that started and never 
 ### 4. Verify
 
 ```bash
-./yaas-triage/doctor.sh                          # connectivity + config
+./yaas-triage/doctor.sh                          # is this machine configured
 python3 yaas-triage/health-monitor.py            # is the loop alive and unblocked?
-for t in yaas-triage/test-*.sh; do printf '%-36s ' "$t"; bash "$t" >/dev/null 2>&1 && echo PASS || echo FAIL; done
+yaas-triage/tests/run-all.sh                     # every suite, ~30s, touches no real state
 ```
 
-`doctor.sh` should report "All checks passed"; the failed line tells you what to fix. `health-monitor.py` prints `healthy` and exits 0. All nine test suites should pass — they run against temp fixtures and touch no real state, so they are safe to run any time.
+`doctor.sh` should report "All checks passed"; the failed line tells you what to fix. `health-monitor.py` prints `healthy` and exits 0. All 14 test suites should pass — they run against temp fixtures and touch no real state, so they are safe to run any time.
 
 ---
 
@@ -200,7 +200,7 @@ launchctl kickstart -k "gui/$(id -u)/com.yaas.triage"
 ### Dashboard
 
 ```bash
-./yaas-triage/dashboard.sh   # starts the server (localhost:8877) and opens it
+./yaas-triage/dashboard-start.sh   # starts the server (localhost:8877) and opens it
 ```
 
 Shows active quests, pending approvals, recent activity, and daily/weekly briefs. A pulsing pill in the top-right header appears whenever a worker is currently dispatched — click it to expand a live transcript of what it's doing.
@@ -249,7 +249,7 @@ yourself-as-a-service/
 ├── ARCHITECTURE.md                  ← full system design + verification commands
 ├── CLAUDE.example.md                ← worker-instruction starter (copy → CLAUDE.md, customize)
 ├── CLAUDE.md                        ← your customized worker instructions (gitignored)
-├── dashboard.html                   ← live dashboard UI, served by dashboard.sh
+├── dashboard.html                   ← live dashboard UI, served by dashboard-start.sh
 ├── .env.example                     ← per-install template (copy → .env, gitignored)
 ├── settings.json.example            ← per-install template (copy → settings.json, gitignored)
 ├── LICENSE
@@ -265,18 +265,18 @@ yourself-as-a-service/
 │   ├── health-monitor.py            ← the dead-man switch (own launchd job)
 │   ├── heartbeat-loop.sh            ← KeepAlive driver for the monitor
 │   ├── ensure-watch-ids.py          ← backfills the stable watch_id everything keys on
-│   ├── worker-source-evidence.py    ← proves a real source read happened in the worker stream
+│   ├── source-evidence.py    ← proves a real source read happened in the worker stream
 │   ├── slack-send.py                ← send + log the body in one step (dashboard needs the body)
 │   ├── mcp-call.sh / jira-call.sh   ← Slack MCP and Jira REST bridges (Keychain auth)
 │   ├── format-stream.py             ← worker event stream → human log
 │   ├── extract-tokens.py            ← per-dispatch cost into the run log
 │   ├── translate-stream.py          ← normalizes codex/cursor streams
-│   ├── notify.sh / rotate-logs.sh   ← desktop notifications; log + queue rotation
+│   ├── notify.py / rotate-logs.py   ← desktop notifications; log + queue rotation
 │   ├── manual-dispatch.sh           ← dashboard-initiated run (advances no watermarks)
 │   ├── dashboard-server.py          ← dashboard backend + live state API
-│   ├── dashboard.sh                 ← starts the dashboard and opens it
+│   ├── dashboard-start.sh                 ← starts the dashboard and opens it
 │   ├── sync-yaas-v2.sh              ← opt-in daily pull from this template
-│   ├── doctor.sh                    ← connectivity + config health check
+│   ├── doctor.sh                    ← is this machine configured (setup validation)
 │   ├── test-*.sh                    ← nine suites; see ARCHITECTURE.md § 16
 │   ├── checkers/                    ← one .py per watch type, plus result.py (the contract)
 │   ├── setup/                       ← OAuth flow, launchd installers, template tracking

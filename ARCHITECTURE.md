@@ -442,7 +442,7 @@ loud rather than silently accepted as coverage.
 **What this does NOT solve.** The worker writes its own acks, so the ledger catches
 accidental omission but not a false `nothing_to_do` on a source it never read. Closing that
 requires correlating the ack against an observed source read in the worker's own event
-stream, which `worker-source-evidence.py` already does for Slack.
+stream, which `source-evidence.py` already does for Slack.
 
 ### Quest Activation Protocol (from CLAUDE.md)
 
@@ -821,7 +821,7 @@ and described none of the current failure modes. Current state:
 | Issue | Shape | Status |
 |---|---|---|
 | Approval stuck in `executing` | If a worker dies between `approval-helper.py start` and `done`, the item is invisible on the dashboard (which allowlists two statuses), clean to `approval.py`, and keeps its watch. A human-approved message can be lost with no surface. | Item 7. `health-monitor.py` now ALERTS on it (`approval_stuck`), so it is no longer silent, but nothing re-drives it yet. |
-| Ack ledger is self-attestation | The worker writes its own acks, so the ledger catches accidental omission but not a false `nothing_to_do` on a message it never read. | Fix is to correlate an ack against an observed source read in the worker event stream, which `worker-source-evidence.py` already does for Slack. |
+| Ack ledger is self-attestation | The worker writes its own acks, so the ledger catches accidental omission but not a false `nothing_to_do` on a message it never read. | Fix is to correlate an ack against an observed source read in the worker event stream, which `source-evidence.py` already does for Slack. |
 | `reactions.py` bounds unreported | Still on the legacy `count\|preview` path, with `limit: 20` per page and a 30-page stop, neither surfaced to triage. The last place a bounded window can silently truncate. | |
 | `jira.py` / `github_pr.py` do not drain | They report `complete` from their existing limit checks, so a truncated result correctly holds the cursor, but they do not page to resolve it. | |
 | Invariants only in prose | No `PreToolUse` hook guards `watch.json` or `pending-approvals.json`; the `SubagentStop` hook still targets `yaas-worker`, an agent this architecture removed. | Item 9. |
@@ -983,7 +983,8 @@ modes against a temp tree rather than asserting on mocks.
 | `test-notify.sh` | desktop notification watermarking and caps |
 
 ```bash
-for t in yaas-triage/test-*.sh; do printf '%-34s ' "$t"; bash "$t" >/dev/null 2>&1 && echo PASS || echo FAIL; done
+yaas-triage/tests/run-all.sh        # one line per suite
+yaas-triage/tests/run-all.sh -v     # full output
 ```
 
 Several of these were written after a negative control showed the obvious assertion would

@@ -21,7 +21,7 @@
 # themselves. Gated by settings.json -> sync.yaas_v2_auto_pull (default off —
 # this never runs unless a user explicitly opts in). Also gated by
 # state/last_yaas_v2_sync.ts — skips if run within the last 23 hours, same
-# pattern as rotate-logs.sh.
+# pattern as rotate-logs.py.
 #
 # Requires a .git-yaas-v2 second git-dir (a separate GIT_DIR whose worktree
 # is the repo root) tracking the canonical yaas-v2 template read-only. Set up

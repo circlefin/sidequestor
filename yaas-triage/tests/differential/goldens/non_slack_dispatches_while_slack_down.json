@@ -1,0 +1,23 @@
+{
+  "acks": {},
+  "dispatches": [],
+  "events": [
+    {
+      "event": "gate_slack_down",
+      "targets": [
+        "q-mail",
+        "q-slack"
+      ]
+    }
+  ],
+  "exit": 0,
+  "planned": [],
+  "quests": {
+    "q-mail": "active",
+    "q-slack": "active"
+  },
+  "watches": {
+    "q-mail/we": "held",
+    "q-slack/ws": "held"
+  }
+}

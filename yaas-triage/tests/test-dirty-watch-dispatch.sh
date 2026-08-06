@@ -1,7 +1,9 @@
 #!/bin/bash
 set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Suites live in yaas-triage/tests/; SCRIPT_DIR points at yaas-triage/ so every
+# reference to a helper stays exactly as it was written.
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 ROOT="$TMP_DIR/repo"
@@ -19,8 +21,9 @@ FAIL_QUEST="$ROOT/state/quests/active/quest-isolation-fail"
 CONTRACT_QUEST="$ROOT/state/quests/active/quest-contract"
 
 mkdir -p "$TRIAGE/checkers" "$QUEST" "$BROKEN_QUEST" "$CLEAN_QUEST" "$BUSINESS_QUEST" "$ERROR_QUEST" "$LOCAL_QUEST" "$RECOVERY_QUEST" "$CURRENT_BLOCK_QUEST" "$MISCONFIG_QUEST" "$FAIL_QUEST" "$CONTRACT_QUEST" "$ROOT/state/triage" "$ROOT/logs"
-cp "$SCRIPT_DIR/triage.sh" "$SCRIPT_DIR/ensure-watch-ids.py" "$SCRIPT_DIR/worker-source-evidence.py" \
-   "$SCRIPT_DIR/ack-watch.py" "$SCRIPT_DIR/checker-health.py" "$SCRIPT_DIR/spend-window.py" "$TRIAGE/"
+cp "$SCRIPT_DIR/triage.sh" "$SCRIPT_DIR/ensure-watch-ids.py" "$SCRIPT_DIR/source-evidence.py" \
+   "$SCRIPT_DIR/ack-watch.py" "$SCRIPT_DIR/checker-health.py" "$SCRIPT_DIR/spend-window.py" \
+   "$SCRIPT_DIR/run-agent.py" "$SCRIPT_DIR/watch-guard.py" "$TRIAGE/"
 cp "$SCRIPT_DIR/checkers/result.py" "$TRIAGE/checkers/"
 
 cat > "$QUEST/watch.json" <<'JSON'
@@ -213,7 +216,7 @@ import sys
 for _ in sys.stdin:
     pass
 PY
-for helper in rotate-logs.sh notify.sh sync-yaas-v2.sh mcp-call.sh; do
+for helper in sync-yaas-v2.sh mcp-call.sh; do
   cat > "$TRIAGE/$helper" <<'SH'
 #!/bin/bash
 exit 0
@@ -292,11 +295,22 @@ grep -F "BACKOFF: quest-error-blocked" "$ROOT/logs/triage.log" >/dev/null
 # watches[3] was dispatched and its ack was withheld → held, even though the
 #   worker exited 0. This is the whole point of the ledger: exit 0 is no longer
 #   evidence that an item was handled.
-# watches[0] rate-limited and watches[2] clean → never dispatched → held.
+# watches[0] rate-limited → held: we never saw its source this tick.
+# watches[2] clean and drained → ADVANCES, even though a sibling is rate-limited and
+#   another sibling is dirty. A watch's cursor is its own; the old code held every
+#   watch in a quest whenever any one of them was skipped, which punished healthy
+#   sources for a noisy neighbour.
 [ "$(jq -r '.watches[1].last_checked_ts | tonumber > 100' "$QUEST/watch.json")" = "true" ]
 [ "$(jq -r '.watches[3].last_checked_ts' "$QUEST/watch.json")" = "100" ]
 [ "$(jq -r '.watches[0].last_checked_ts' "$QUEST/watch.json")" = "100" ]
-[ "$(jq -r '.watches[2].last_checked_ts' "$QUEST/watch.json")" = "100" ]
+[ "$(jq -r '.watches[2].last_checked_ts | tonumber > 100' "$QUEST/watch.json")" = "true" ]
+
+# ── One commit path, not two. ───────────────────────────────────────────────
+# A clean watch must advance using the CHECKER'S cursor, exactly like a dirty one.
+# The clean path used to ignore advance_to and move everything to now-lag, which is
+# how a saturated filtered window kept advancing after the tripwire was added.
+CLEAN_ADV=$(jq -r '.watches[4].last_checked_ts' "$CONTRACT_QUEST/watch.json")
+[ "$CLEAN_ADV" = "100" ]   # this one is clean but INCOMPLETE, so it is still held
 
 # The withheld item is counted so a permanently silent worker cannot re-dispatch
 # the same watch forever; check_quest promotes it to misconfig at the threshold.
@@ -405,14 +419,14 @@ jq -e 'select(.event == "gate_quest_unreadable" and .quest == "quest-broken")' "
 cat > "$TMP_DIR/failed-worker.ndjson" <<'JSON'
 {"type":"item.completed","item":{"type":"mcp_tool_call","tool":"slack.slack_read_thread","status":"completed","error":{"message":"failed"},"result":null}}
 JSON
-if python3 "$SCRIPT_DIR/worker-source-evidence.py" slack "$TMP_DIR/failed-worker.ndjson"; then
+if python3 "$SCRIPT_DIR/source-evidence.py" slack "$TMP_DIR/failed-worker.ndjson"; then
   echo "failed Slack tool call was incorrectly accepted as recovery evidence" >&2
   exit 1
 fi
 cat > "$TMP_DIR/slack-error-body.ndjson" <<'JSON'
 {"type":"item.completed","item":{"type":"mcp_tool_call","tool":"slack.slack_read_thread","status":"completed","error":null,"result":{"content":[{"type":"text","text":"{\"ok\":false,\"error\":\"invalid_auth\"}"}]}}}
 JSON
-if python3 "$SCRIPT_DIR/worker-source-evidence.py" slack "$TMP_DIR/slack-error-body.ndjson"; then
+if python3 "$SCRIPT_DIR/source-evidence.py" slack "$TMP_DIR/slack-error-body.ndjson"; then
   echo "Slack ok:false body was incorrectly accepted as recovery evidence" >&2
   exit 1
 fi
@@ -424,8 +438,12 @@ grep -F "MISCONFIG: quest-misconfigured" "$ROOT/logs/triage.log" >/dev/null
 ! grep -F "SKIP: quest-misconfigured" "$ROOT/logs/triage.log" >/dev/null
 jq -e 'select(.event == "gate_watch_misconfigured" and .quest == "quest-misconfigured" and .type == "no_such_checker_fixture")' "$ROOT/state/run-log.ndjson" >/dev/null
 [ "$(jq -r '.watches_misconfigured' "$ROOT/state/triage/last-run.json")" -eq 1 ]
-# The healthy sibling watch is held too, which is why the event above must exist.
-[ "$(jq -r '.watches[1].last_checked_ts' "$MISCONFIG_QUEST/watch.json")" = "100" ]
+# The healthy sibling ADVANCES. A misconfigured watch is a permanent fault on ONE
+# source; holding its neighbours as well just manufactures a second backlog while a
+# human investigates. The broken watch is held and the event above makes it visible,
+# which is what actually matters.
+[ "$(jq -r '.watches[1].last_checked_ts | tonumber > 100' "$MISCONFIG_QUEST/watch.json")" = "true" ]
+[ "$(jq -r '.watches[0].last_checked_ts' "$MISCONFIG_QUEST/watch.json")" = "100" ]
 
 # Message content is not an envelope: a real read of a thread that discusses
 # rate limits or auth errors still counts as recovery evidence.
@@ -433,7 +451,7 @@ cat > "$TMP_DIR/prose-worker.ndjson" <<'JSON'
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"mcp__slack__slack_read_thread","input":{}}]}}
 {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"Alice: the API returned ratelimited and invalid_auth all morning"}]}]}}
 JSON
-if ! python3 "$SCRIPT_DIR/worker-source-evidence.py" slack "$TMP_DIR/prose-worker.ndjson"; then
+if ! python3 "$SCRIPT_DIR/source-evidence.py" slack "$TMP_DIR/prose-worker.ndjson"; then
   echo "a successful Slack read was rejected because of its message content" >&2
   exit 1
 fi

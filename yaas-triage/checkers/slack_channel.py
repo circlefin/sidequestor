@@ -48,23 +48,41 @@ def main():
     channel_id = entry["channel_id"]
     since = float(entry.get("last_checked_ts", "0"))
 
-    def fetch_page(cursor):
-        """One page, newest-first. Returns (text, next_cursor, transient_reason)."""
+    def fetch_page(cursor, oldest=None, latest=None):
+        """One page. Returns (text, next_cursor, transient_reason).
+
+        `oldest`/`latest` bound the read. Bounding the bottom at the watermark is what
+        makes paging terminate at the gap instead of walking the channel's history;
+        bounding the top is what lets drain() take a coverable forward slice when the
+        gap is too big to swallow whole."""
         args = {"channel_id": channel_id, "limit": PAGE_LIMIT}
         if cursor:
             args["cursor"] = cursor
+        if oldest is not None:
+            args["oldest"] = f"{float(oldest):.6f}"
+        if latest is not None:
+            args["latest"] = f"{float(latest):.6f}"
         r = subprocess.run(
             [MCP_CALL, "slack_read_channel", json.dumps(args)],
             capture_output=True, text=True, timeout=30,
         )
         body = (r.stdout or "").strip()
+        # client.py gives every surface ONE exit taxonomy:
+        #   0 ok  1 auth  2 error  3 bad args  4 transient
+        # Acting on it is the entire point of unifying them. Before this, a rate limit
+        # came back as a generic failure and had to be guessed at from the body text,
+        # which is how ~1,380 rate limits were misfiled as hard errors.
+        if r.returncode == 4:
+            return "", None, "TRANSIENT: rate limit or network; watermark held"
+        if r.returncode == 1:
+            return "", None, f"slack auth failure on slack_read_channel"
         # A non-zero exit is NOT automatically a hard error: mcp-call.sh exits 2 on
         # any JSON-RPC .error, and a rate limit arrives that way. Inspect the body
         # before classifying, or rate limits get misfiled as `error` and (before the
         # backoff landed) dispatched a paid worker. ~1,380 lifetime occurrences of
         # exactly that were visible in triage.log.
         if "ratelimited" in body.lower():
-            return "", None, "slack ratelimited (transient); watermark held"
+            return "", None, "TRANSIENT: slack ratelimited; watermark held"
         if r.returncode != 0 or not body:
             return "", None, f"mcp slack_read_channel failed (exit {r.returncode}) {body[:60]}"
         try:
@@ -77,14 +95,17 @@ def main():
             return "", None, f"non-json response: {body[:80]}"
         return d.get("messages", ""), _next_cursor(d), None
 
-    count, preview, newest, complete, transient = drain(
+    count, preview, advance_to, complete, transient = drain(
         fetch_page, since,
         entry.get("filter_user_ids") or None,
         entry.get("filter_keywords") or None,
     )
 
     if transient:
-        if "ratelimited" in transient:
+        # An explicit marker, not a keyword hunt through prose. Substring-matching the
+        # word "ratelimited" is how a transient failure got classified as permanent
+        # whenever the wording changed.
+        if transient.startswith("TRANSIENT:"):
             result.ratelimited(transient)
         else:
             result.error(transient)
@@ -93,9 +114,7 @@ def main():
     # advance_to is the newest message this check actually covered, not "now". If
     # nothing new arrived there is nothing to prove, so leave it unset and let
     # triage use its own clock.
-    result.counted(count, preview,
-                   advance_to=newest if newest > 0 else None,
-                   complete=complete)
+    result.counted(count, preview, advance_to=advance_to, complete=complete)
 
 
 def _next_cursor(d):

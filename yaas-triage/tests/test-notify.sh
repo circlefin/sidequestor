@@ -15,19 +15,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# test-notify.sh — unit test for notify.sh's detection/filtering logic.
+# test-notify.sh — unit test for notify.py's detection/filtering logic.
 #
-# Decoupled from real macOS delivery: notify.sh is run with YAAS_NOTIFY_CMD
+# Decoupled from real macOS delivery: notify.py is run with YAAS_NOTIFY_CMD
 # pointed at a recorder script that appends "<title>\t<subtitle>\t<body>" to a
-# file, so we assert WHAT notify.sh decided to notify without depending on
+# file, so we assert WHAT notify.py decided to notify without depending on
 # Notification Center actually displaying anything. Each case uses a fresh
-# throwaway REPO_ROOT and WATERMARK via the env overrides notify.sh supports.
+# throwaway REPO_ROOT and WATERMARK via the env overrides notify.py supports.
 #
-# Usage: yaas-triage/test-notify.sh   (exits 0 = all pass, 1 = a failure)
+# Usage: yaas-triage/tests/test-notify.sh   (exits 0 = all pass, 1 = a failure)
 
 set -u
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-NOTIFY="$SCRIPT_DIR/notify.sh"
+# Suites live in yaas-triage/tests/; SCRIPT_DIR points at yaas-triage/ so every
+# reference to a helper stays exactly as it was written.
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+NOTIFY="$SCRIPT_DIR/notify.py"
 PASS=0; FAIL=0
 
 # Recorder used as YAAS_NOTIFY_CMD: argv = title, subtitle, body.
@@ -47,7 +49,7 @@ now()       { python3 -c 'import time;print(f"{time.time():.6f}")'; }
 iso_ago()   { python3 -c "import time,datetime;print(datetime.datetime.fromtimestamp(time.time()-$1,datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))"; }
 epoch_ago() { python3 -c "import time;print(f'{time.time()-$1:.6f}')"; }
 
-# run notify.sh against a fixture root; returns recorder lines on stdout
+# run notify.py against a fixture root; returns recorder lines on stdout
 run_notify() {
   local root="$1" wm="$2" rec="$3"
   : > "$rec"
@@ -55,7 +57,7 @@ run_notify() {
   YAAS_NOTIFY_WATERMARK="$wm" \
   YAAS_NOTIFY_CMD="$RECORDER" \
   YAAS_TEST_RECORD="$rec" \
-  bash "$NOTIFY"
+  python3 "$NOTIFY"
 }
 
 # scaffold an empty fixture repo, echo its root
@@ -70,7 +72,7 @@ add_quest() { # root, id, title
   : > "$d/timeline.ndjson"; echo "$d/timeline.ndjson"
 }
 
-echo "notify.sh unit tests"
+echo "notify.py unit tests"
 
 # === CASE 1: first run (no watermark) writes watermark, fires nothing ========
 R="$(new_root)"; WM="$R/state/last_notified.ts"; REC="$(mktemp)"
@@ -157,5 +159,5 @@ else bad "watermark should advance" "before=$BEFORE after=$AFTER"; fi
 
 # --- summary ----------------------------------------------------------------
 echo "------------------------------------------------------------"
-printf 'notify.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
+printf 'notify.py: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = "0" ]
