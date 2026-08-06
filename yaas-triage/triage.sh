@@ -39,7 +39,25 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# The repo root is the nearest ancestor directory that contains yaas-triage/.
+#
+# NOT "$SCRIPT_DIR/..": that holds only while every script sits directly in yaas-triage/,
+# and silently resolves to yaas-triage/ itself once a script moves into a subdirectory,
+# writing state into a parallel tree nothing reads. `pwd -P` resolves symlinks so this
+# agrees with Python's Path.resolve() in the sibling scripts. Fails non-zero rather than
+# guessing, because a guessed root is the silent divergence being eliminated.
+_repo_root() {
+  local d
+  d=$(cd "$1" 2>/dev/null && pwd -P) || { echo "no such dir: $1" >&2; return 1; }
+  while :; do
+    [ -d "$d/yaas-triage" ] && { printf '%s' "$d"; return 0; }
+    [ "$d" = "/" ] && break
+    d=$(dirname "$d")
+  done
+  echo "cannot locate repo root above $1 (no ancestor has yaas-triage/)" >&2
+  return 1
+}
+REPO_ROOT="$(_repo_root "$SCRIPT_DIR")" || exit 1
 
 # Load personal secrets (CODA_API_KEY, YAAS_FROM_EMAIL, etc.)
 # errexit must be OFF while sourcing: under macOS bash 3.2, a malformed line
@@ -69,7 +87,7 @@ UNACKED_PROMOTE="${YAAS_UNACKED_PROMOTE:-3}"
 # dispatch a paid worker; it holds the watermark and backs off instead.
 CHECKER_HEALTH="$MANIFEST_DIR/checker-health.json"
 CHECKER_ERROR_PROMOTE="${YAAS_CHECKER_ERROR_PROMOTE:-6}"
-export MCP_CALL="$SCRIPT_DIR/mcp-call.sh"
+export MCP_CALL="$SCRIPT_DIR/surfaces/mcp-call.sh"
 export GWS_BIN=$(command -v gws 2>/dev/null || echo "/opt/homebrew/bin/gws")
 
 # Which agent backend the worker dispatch runs on (claude|codex|cursor).
@@ -185,6 +203,47 @@ fi
 # Lock acquired — record our PID for future contenders to read
 echo "$$" > "$HOLDERFILE"
 
+# ── Validate the knobs that gate spend and data loss ─────────────────────────
+# ${VAR:-default} only falls back on an EMPTY value, so a typo like
+# YAAS_MAX_SPEND_6H=twenty passes straight through and the numeric comparison it feeds
+# evaluates as "no cap". A ceiling that silently turns itself off is worse than no ceiling,
+# because it looks present. Fail the tick loudly instead.
+_bad_knobs=""
+for _k in YAAS_TICK_DISPATCH_BUDGET YAAS_MAX_DISPATCH_FANOUT YAAS_MAX_TARGET_DISPATCH_PER_HOUR \
+          YAAS_UNACKED_PROMOTE YAAS_CHECKER_ERROR_PROMOTE YAAS_RETIRE_DEFAULT_DAYS \
+          YAAS_LOG_RETAIN_DAYS YAAS_MANIFEST_RETAIN_DAYS YAAS_CHECKER_HEALTH_RETAIN_DAYS \
+          YAAS_TRIAGE_MAX_PARALLEL YAAS_MIN_DISPATCH_SLICE YAAS_STALE_REPLY_HOURS \
+          YAAS_CATCHUP_AFTER_HOURS; do
+  _v=$(eval "printf '%s' \"\${$_k:-}\"")
+  [ -z "$_v" ] && continue
+  # Reject anything that is not a plain number. "." and "1.2.3" both slipped through a
+  # naive character-class check, and "." then reads as 0 in arithmetic — a ceiling of zero.
+  case "$_v" in
+    ''|.|*[!0-9.]*|*.*.*) _bad_knobs="$_bad_knobs $_k=$_v" ;;
+  esac
+done
+# The spend caps are named per window (YAAS_MAX_SPEND_6H and friends), so they are matched
+# by prefix rather than listed.
+for _kv in $(env | grep '^YAAS_MAX_SPEND_' 2>/dev/null || true); do
+  _k=${_kv%%=*}; _v=${_kv#*=}
+  [ -z "$_v" ] && continue
+  case "$_v" in ''|.|*[!0-9.]*|*.*.*) _bad_knobs="$_bad_knobs $_k=$_v" ;; esac
+done
+if [ -n "$_bad_knobs" ]; then
+  jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg bad "$_bad_knobs" \
+    '{ts:$ts,event:"gate_bad_env_knob",bad:$bad}' >> "$RUN_LOG" 2>/dev/null || true
+  log "BAD ENV KNOB —$_bad_knobs must be numeric. Refusing to run: a malformed ceiling reads as no ceiling. Fix .env and the next tick recovers."
+  exit 2
+fi
+
+# ── Catch-up detection MUST happen before this tick writes anything ──────────
+# The gap is measured from the newest run-log entry, and this tick appends to that log in
+# at least six places below. Detecting later therefore measures a gap of zero and can never
+# fire. The verdict is captured here and acted on further down, after the checks have run,
+# so the digest can describe what actually accumulated.
+CATCHUP=$(python3 "$SCRIPT_DIR/ops/catchup.py" detect 2>>"$LOG_FILE" || echo '{}')
+CATCHUP_ARMED=$(jq -r '.armed // false' <<< "$CATCHUP" 2>/dev/null || echo false)
+
 # ── Post-run hook — runs on every exit except lock-contention ────────────────
 # Covers all code paths (no-quests early exit, idle, dry-run, post-dispatch).
 # rotate-logs.py is self-gated (23h sentinel) so calling it every tick is safe.
@@ -214,9 +273,9 @@ with open(tmp, "w") as f:
     json.dump(d, f, indent=2)
 os.replace(tmp, p)
 PYEOF
-  python3 "$SCRIPT_DIR/rotate-logs.py" 2>>"$LOG_FILE" || true
-  python3 "$SCRIPT_DIR/notify.py"      2>>"$LOG_FILE" || true
-  bash "$SCRIPT_DIR/sync-yaas-v2.sh"   2>>"$LOG_FILE" || true
+  python3 "$SCRIPT_DIR/ops/rotate-logs.py" 2>>"$LOG_FILE" || true
+  python3 "$SCRIPT_DIR/ops/notify.py"      2>>"$LOG_FILE" || true
+  bash "$SCRIPT_DIR/ops/sync-yaas-v2.sh"   2>>"$LOG_FILE" || true
 }
 trap '_on_exit' EXIT
 
@@ -294,7 +353,7 @@ for qd in "${QUEST_DIRS[@]}"; do
   qid=$(basename "$qd")
   watch="$qd/watch.json"
   [ -f "$watch" ] || continue
-  if ! python3 "$SCRIPT_DIR/ensure-watch-ids.py" "$qid" "$watch" 2>>"$LOG_FILE"; then
+  if ! python3 "$SCRIPT_DIR/ledger/ensure-watch-ids.py" "$qid" "$watch" 2>>"$LOG_FILE"; then
     echo "$qid" >> "$WATCH_ID_FAILURES"
     log "SKIP: $qid — invalid watch.json; watch IDs could not be ensured"
     jq -nc --arg ts "$NOW_UTC" --arg quest "$qid" \
@@ -464,7 +523,7 @@ check_quest() {
       # watermark, back off exponentially, and promote to `misconfig` once it is
       # clearly not transient.
       local errn
-      errn=$(python3 "$SCRIPT_DIR/checker-health.py" fail "$watch_id" "$preview" 2>>"$LOG_FILE" || echo 1)
+      errn=$(python3 "$SCRIPT_DIR/ledger/checker-health.py" fail "$watch_id" "$preview" 2>>"$LOG_FILE" || echo 1)
       case "$errn" in ''|*[!0-9]*) errn=1 ;; esac
       if [ "$errn" -ge "$CHECKER_ERROR_PROMOTE" ]; then
         echo -e "${qid}\tmisconfig\t${watch_id}\t${type}\t-\tfalse\t[$type] $errn consecutive checker errors — $preview"
@@ -496,7 +555,7 @@ check_quest() {
     case "$type" in slack_*) slack_succeeded=$((slack_succeeded + 1)) ;; esac
     # Recovery. Guarded on the snapshot so the healthy path spawns no process.
     if [ "$(jq -r --arg id "$watch_id" 'has($id)' <<< "$CHECKER_HEALTH_JSON" 2>/dev/null || echo false)" = "true" ]; then
-      python3 "$SCRIPT_DIR/checker-health.py" ok "$watch_id" >/dev/null 2>>"$LOG_FILE" || true
+      python3 "$SCRIPT_DIR/ledger/checker-health.py" ok "$watch_id" >/dev/null 2>>"$LOG_FILE" || true
       log "CHECKER RECOVERED: $qid [$type] $watch_id"
     fi
     if [ "${new_count:-0}" -gt 0 ]; then
@@ -745,6 +804,39 @@ _advance_watches() {
   return 0
 }
 
+# ── Catch-up hold: after a long silence, read everything before answering ────
+# Placed ABOVE the watermark advance on purpose. After a week down, the checkers hand the
+# worker the OLDEST unseen slice first — they must, since a watermark can only cross a
+# prefix of the gap — so dispatching now means answering a seven-day-old question while
+# blind to the hundreds of messages that followed it.
+#
+# So: check every watch (that is already done by this point), then stop. Nothing sent,
+# nothing committed, not even clean watermarks. Holding ALL of it makes release a clean
+# resume from exactly where the pause began, instead of a half-applied tick whose end state
+# depends on how far it got.
+#
+# surfaces/slack-send.py's 24h guard is the always-on companion: it makes a backlog safe by
+# drafting stale replies. This makes it VISIBLE, and puts the call on a human.
+if [ "$CATCHUP_ARMED" = "true" ]; then
+  _gap=$(jq -r '.gap_hours // "?"' <<< "$CATCHUP")
+  # Built from TMP_RESULTS rather than DIRTY_WATCHES_JSON: that record carries only the
+  # coordinates a commit needs (watch_id, advance_to, complete), while the count and preview
+  # a human wants live in column 7 of the results file. Reading the results file also avoids
+  # changing a structure the differential goldens compare.
+  _dirty_for_digest=$(awk -F '\t' '$2 == "dirty" {
+      printf "%s\t%s\t%s\n", $1, $4, $7 }' "$TMP_RESULTS" 2>/dev/null \
+    | jq -Rsc 'split("\n") | map(select(length > 0) | split("\t")
+        | {quest_id: .[0], type: .[1], detail: .[2]})' 2>/dev/null || echo '[]')
+  python3 "$SCRIPT_DIR/ops/catchup.py" digest \
+    "$(jq -nc --argjson d "${_dirty_for_digest:-[]}" --argjson q "$QUEST_COUNT" \
+        '{dirty:$d, quests_checked:$q}')" >/dev/null 2>>"$LOG_FILE" || true
+  jq -nc --arg ts "$NOW_UTC" --arg gap "$_gap" \
+    '{ts:$ts,event:"gate_catchup_hold",gap_hours:$gap}' >> "$RUN_LOG"
+  log "CATCHUP HOLD — triage was silent for ${_gap}h. Every watch was checked; nothing sent, no watermark moved. Review state/catchup-digest.md, then: python3 yaas-triage/ops/catchup.py release"
+  slog "Run OK — catch-up hold after ${_gap}h silence. Nothing sent. Release when ready."
+  exit 0
+fi
+
 # ── Advance clean watch watermarks ──────────────────────────────────────────
 CLEAN_WATCHES_JSON=$(jq -sc '.' "$CLEAN_WATCHES_NDJSON" 2>/dev/null || echo '[]')
 rm -f "$CLEAN_WATCHES_NDJSON"; CLEAN_WATCHES_NDJSON=""
@@ -918,9 +1010,9 @@ fi
 # One dispatch-<run_id>.json per invocation. They are only needed until the
 # commit that reads them, but keeping a week makes "what did the worker actually
 # close" answerable after the fact.
-python3 "$SCRIPT_DIR/ack-watch.py" prune "${YAAS_MANIFEST_RETAIN_DAYS:-7}" \
+python3 "$SCRIPT_DIR/ledger/ack-watch.py" prune "${YAAS_MANIFEST_RETAIN_DAYS:-7}" \
   >/dev/null 2>>"$LOG_FILE" || true
-python3 "$SCRIPT_DIR/checker-health.py" prune "${YAAS_CHECKER_HEALTH_RETAIN_DAYS:-30}" \
+python3 "$SCRIPT_DIR/ledger/checker-health.py" prune "${YAAS_CHECKER_HEALTH_RETAIN_DAYS:-30}" \
   >/dev/null 2>>"$LOG_FILE" || true
 
 # ── Decide ──────────────────────────────────────────────────────────────────
@@ -939,7 +1031,17 @@ json.dump(d, open(p, 'w'), indent=2)
 fi
 
 # Build the dispatch target list (quests + optional synthetic "reactions")
-DISPATCH_TARGETS=("${DIRTY_QUESTS[@]+"${DIRTY_QUESTS[@]}"}")
+# Sorted, because the fairness rotation below is meaningless otherwise. Quests are checked in
+# PARALLEL, so the order they land in DIRTY_QUESTS depends on which checker finished first —
+# rotating a randomly-ordered list by a persisted cursor does not distribute anything, it just
+# shuffles. A stable base order is what makes "start one further along each time" fair.
+# (It also made the fairness golden flaky, which is how this was noticed.)
+DISPATCH_TARGETS=()
+while IFS= read -r _dq; do
+  [ -n "$_dq" ] && DISPATCH_TARGETS+=("$_dq")
+done < <(printf '%s\n' "${DIRTY_QUESTS[@]+"${DIRTY_QUESTS[@]}"}" | LC_ALL=C sort)
+# reactions stays last: it is not a quest, and keeping it in a fixed position means the
+# rotation walks the quests rather than sometimes starting on the reaction sweep.
 if [ "$REACTIONS_DIRTY" = "1" ]; then
   DISPATCH_TARGETS+=("reactions")
 fi
@@ -994,7 +1096,7 @@ fi
 MAX_SPEND_1H="${YAAS_MAX_SPEND_1H:-40}"
 MAX_SPEND_24H="${YAAS_MAX_SPEND_24H:-250}"
 MAX_DISPATCH_6H="${YAAS_MAX_DISPATCH_6H:-250}"
-BUDGET_JSON=$(python3 "$SCRIPT_DIR/spend-window.py" "$RUN_LOG" \
+BUDGET_JSON=$(python3 "$SCRIPT_DIR/dispatch/spend-window.py" "$RUN_LOG" \
   --cap-1h "$MAX_SPEND_1H" --cap-24h "$MAX_SPEND_24H" --cap-dispatch-6h "$MAX_DISPATCH_6H" \
   2>>"$LOG_FILE" || echo '')
 if [ -n "$BUDGET_JSON" ]; then
@@ -1033,22 +1135,61 @@ fi
 # Does this one target need Slack? Used by the tick-level health gate below and,
 # per dispatch, by the post-run infra-failure guard.
 _target_needs_slack() {
+  # Does the work THIS TICK needs Slack for? Judged on the DIRTY watches, not on every watch
+  # the quest happens to own: a quest with one clean Slack watch and a dirty email watch was
+  # being gated by a Slack outage it did not depend on.
+  #
+  # Known and accepted limitation: this classifies by what TRIGGERED the dispatch, not by what
+  # the worker will DO. An email-triggered quest whose reply goes to Slack is still dispatched
+  # during an outage, where the send fails and the worker acks `blocked`, so the watermark is
+  # held and the work returns next tick. That is a wasted invocation, not lost data.
   local _t="$1" _w
   [ "$_t" = "reactions" ] && return 0
+  # Dirty watches for this target, from the results of this tick's checks.
+  if [ -n "${DIRTY_WATCHES_JSON:-}" ]; then
+    [ "$(jq -r --arg q "$_t" '[.[] | select(.quest_id == $q)
+            | select((.type // "") | startswith("slack_"))] | length' \
+         <<< "$DIRTY_WATCHES_JSON" 2>/dev/null || echo 0)" -gt 0 ] && return 0
+    # Dirty, but nothing Slack-shaped fired.
+    [ "$(jq -r --arg q "$_t" '[.[] | select(.quest_id == $q)] | length' \
+         <<< "$DIRTY_WATCHES_JSON" 2>/dev/null || echo 0)" -gt 0 ] && return 1
+  fi
+  # No dirty record (e.g. the post-run infra guard asking about a target generally): fall back
+  # to the conservative whole-quest answer.
   _w="$QUESTS_DIR/$_t/watch.json"
   [ -f "$_w" ] || return 1
   [ "$(jq '[.watches[]? | select(.type | type=="string" and startswith("slack_"))] | length' "$_w" 2>/dev/null || echo 0)" -gt 0 ]
 }
 
+# The gate is PER TARGET, not per tick. It used to break on the first Slack-needing target
+# and exit the whole run, so an email-only or Jira-only quest was stalled by a Slack outage
+# it does not depend on. At roughly 183 gate_slack_down events a day that was a routine
+# stall, not an edge case.
+#
+# Now: ping Slack once, and if it is down drop only the targets that actually need it. Their
+# watermarks are untouched, so they re-surface next tick; everything else dispatches.
 SLACK_NEEDED=0
 for _tgt in "${DISPATCH_TARGETS[@]}"; do
   if _target_needs_slack "$_tgt"; then SLACK_NEEDED=1; break; fi
 done
 if [ "$SLACK_NEEDED" = "1" ] && ! slack_health_ok; then
-  echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_slack_down\",\"targets\":$TARGETS_JSON}" >> "$RUN_LOG"
-  log "SLACK DOWN — pre-dispatch ping failed and Slack is needed for [${DISPATCH_TARGETS[*]}]. Skipping dispatch; watermarks preserved, reactions retained. Retrying next tick."
-  slog "Run OK — Slack unreachable, dispatch skipped (will retry)."
-  exit 0
+  _kept=(); _gated=()
+  for _tgt in "${DISPATCH_TARGETS[@]}"; do
+    if _target_needs_slack "$_tgt"; then _gated+=("$_tgt"); else _kept+=("$_tgt"); fi
+  done
+  _gated_json=$(printf '%s\n' "${_gated[@]}" | jq -R . | jq -sc .)
+  _kept_json=$(printf '%s\n' "${_kept[@]+"${_kept[@]}"}" | jq -R 'select(length>0)' | jq -sc .)
+  echo "{\"ts\":\"$NOW_UTC\",\"event\":\"gate_slack_down\",\"targets\":$_gated_json,\"still_dispatched\":$_kept_json}" >> "$RUN_LOG"
+
+  if [ "${#_kept[@]}" -eq 0 ]; then
+    log "SLACK DOWN — every dirty target needs Slack [${_gated[*]}]. Skipping dispatch; watermarks preserved, reactions retained. Retrying next tick."
+    slog "Run OK — Slack unreachable, dispatch skipped (will retry)."
+    exit 0
+  fi
+
+  log "SLACK DOWN — gating [${_gated[*]}] (watermarks preserved, retried next tick); still dispatching [${_kept[*]}], which does not need Slack."
+  DISPATCH_TARGETS=("${_kept[@]}")
+  TARGETS_JSON="$_kept_json"
 fi
 
 # ── Dispatch: one agent invocation per dirty target ─────────────────────────
@@ -1097,7 +1238,7 @@ CODEX_PERMISSION_MODE="${YAAS_CODEX_PERMISSION_MODE:-workspace-write}"
 
 # Run discipline shared by every dispatch prompt. Backend-neutral: each agent
 # loads its own rules file (CLAUDE.md / AGENTS.md) from the repo root.
-_RUN_DISCIPLINE="watch.json is not editable: append with yaas-triage/add-watch.py per § 3a (a hook blocks the raw write). ACT SILENTLY: emit NO text between tool calls — no 'Reading X' or 'I need to check Y' narration. Batch independent reads/edits into a single turn using parallel tool_use blocks whenever possible. OUTPUT CONTRACT: emit the summary ONLY if something material happened (message sent, draft created, state changed, quest status changed). If nothing material happened — just exit with no text. When you do emit it, keep it under 8 lines."
+_RUN_DISCIPLINE="watch.json is not editable: append with yaas-triage/ledger/add-watch.py per § 3a (a hook blocks the raw write). ACT SILENTLY: emit NO text between tool calls — no 'Reading X' or 'I need to check Y' narration. Batch independent reads/edits into a single turn using parallel tool_use blocks whenever possible. OUTPUT CONTRACT: emit the summary ONLY if something material happened (message sent, draft created, state changed, quest status changed). If nothing material happened — just exit with no text. When you do emit it, keep it under 8 lines."
 
 # ── dispatch_one <target> ────────────────────────────────────────────────────
 # Runs exactly one agent invocation for one target. Sets these globals for the
@@ -1142,7 +1283,7 @@ dispatch_one() {
     DISPATCH_EXIT=8
     return 0
   fi
-  if ! python3 "$SCRIPT_DIR/ack-watch.py" open "$DISPATCH_RUN_ID" "$target" "$kind" "$items" \
+  if ! python3 "$SCRIPT_DIR/ledger/ack-watch.py" open "$DISPATCH_RUN_ID" "$target" "$kind" "$items" \
        >/dev/null 2>>"$LOG_FILE"; then
     # No manifest means no evidence-based commit is possible. Refuse to dispatch
     # rather than fall back to committing on exit code alone.
@@ -1156,11 +1297,11 @@ dispatch_one() {
   # Record what watch.json looked like before the worker touched anything, so the
   # append-only rule can be checked afterwards rather than guessed at beforehand.
   if [ "$target" != "reactions" ]; then
-    python3 "$SCRIPT_DIR/watch-guard.py" snapshot "$target" >/dev/null 2>>"$LOG_FILE" || true
+    python3 "$SCRIPT_DIR/ledger/watch-guard.py" snapshot "$target" >/dev/null 2>>"$LOG_FILE" || true
   fi
 
   # ── Prompt. The ack block is what makes the commit evidence-based.
-  ack_block="ACK LEDGER (REQUIRED): this dispatch has run_id $DISPATCH_RUN_ID. Before you exit, close EVERY item listed above with exactly one call each: python3 yaas-triage/ack-watch.py ack $DISPATCH_RUN_ID <item_id> handled|nothing_to_do|blocked \"<one-line note>\". Use handled when you acted (replied, drafted, queued for review, adopted, saved state), nothing_to_do when you read the new activity and it correctly needs no action, blocked when you could not finish. An item you do not ack keeps its old watermark and is re-dispatched next tick — so never ack something you did not actually look at, and never skip acking something you did handle."
+  ack_block="ACK LEDGER (REQUIRED): this dispatch has run_id $DISPATCH_RUN_ID. Before you exit, close EVERY item listed above with exactly one call each: python3 yaas-triage/ledger/ack-watch.py ack $DISPATCH_RUN_ID <item_id> handled|nothing_to_do|blocked \"<one-line note>\". Use handled when you acted (replied, drafted, queued for review, adopted, saved state), nothing_to_do when you read the new activity and it correctly needs no action, blocked when you could not finish. An item you do not ack keeps its old watermark and is re-dispatched next tick — so never ack something you did not actually look at, and never skip acking something you did handle."
 
   if [ "$target" = "reactions" ]; then
     prompt="Yaas worker dispatch: dirty target: reactions. Ack items (JSON): $items — each item_id is \"<emoji>:<msg_ts>\". Run the Reactions Fast Path in your rules file. It is SELF-CONTAINED: do NOT read any quest folder, except as the :incoming_envelope: adoption section explicitly requires. $ack_block $_RUN_DISCIPLINE"
@@ -1172,7 +1313,7 @@ dispatch_one() {
   #    run-agent.py, which manual-dispatch.sh uses too — they used to be two copies,
   #    and only one of them had a test.
   local agent_json
-  agent_json=$(python3 "$SCRIPT_DIR/run-agent.py" \
+  agent_json=$(python3 "$SCRIPT_DIR/dispatch/run-agent.py" \
     --prompt "$prompt" --label "$target" --timeout "$DISPATCH_TIMEOUT" \
     --header "Target: $target" --header "Run ID: $DISPATCH_RUN_ID" \
     --header "Ack manifest items: $items" 2>>"$LOG_FILE") || true
@@ -1212,7 +1353,7 @@ dispatch_one() {
   # own event stream. Triage's curl checkers are a different execution path and
   # cannot prove native MCP/app/shell Slack access was available to the agent.
   if [ "$DISPATCH_EXIT" = "0" ] \
-     && python3 "$SCRIPT_DIR/source-evidence.py" slack "$worker_ndjson"; then
+     && python3 "$SCRIPT_DIR/dispatch/source-evidence.py" slack "$worker_ndjson"; then
     DISPATCH_SLACK_READ_OK=1
     log "WORKER SOURCE OK [$target]: successful Slack read observed in worker event stream"
   fi
@@ -1220,12 +1361,12 @@ dispatch_one() {
   # ── Token usage. Claude reports cost in its result event; Codex/Cursor use a
   # different schema with no cost field, so report raw counts instead.
   if [ "$YAAS_AGENT" = "claude" ]; then
-    python3 "$SCRIPT_DIR/extract-tokens.py" \
+    python3 "$SCRIPT_DIR/dispatch/extract-tokens.py" \
       "$worker_ndjson" "$DISPATCH_EXIT" "$DISPATCH_WALL" "$target" \
       "$RUN_LOG" "$LOG_FILE" "$worker_log" 2>&1 || true
   else
     local tok _in _out
-    tok=$(python3 "$SCRIPT_DIR/translate-stream.py" "$YAAS_AGENT" "$worker_ndjson" "$DISPATCH_EXIT" 2>/dev/null || true)
+    tok=$(python3 "$SCRIPT_DIR/dispatch/translate-stream.py" "$YAAS_AGENT" "$worker_ndjson" "$DISPATCH_EXIT" 2>/dev/null || true)
     if [ -n "$tok" ]; then
       _in=$(printf '%s' "$tok" | jq -r '.input_tokens // 0')
       _out=$(printf '%s' "$tok" | jq -r '.output_tokens // 0')
@@ -1327,12 +1468,12 @@ commit_quest() {
 
   # Undo any modification the worker made to a PRE-EXISTING entry, before we apply
   # our own advances on top. Appends are kept: those are what § 3a asks for.
-  if ! _guard=$(python3 "$SCRIPT_DIR/watch-guard.py" verify "$qid" 2>>"$LOG_FILE"); then
+  if ! _guard=$(python3 "$SCRIPT_DIR/ledger/watch-guard.py" verify "$qid" 2>>"$LOG_FILE"); then
     log "WATCH GUARD [$qid] — worker modified existing watch entries; repaired from snapshot: $_guard"
     jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg quest "$qid" --argjson detail "$_guard" \
       '{ts:$ts,event:"gate_watch_tampered",quest:$quest,detail:$detail}' >> "$RUN_LOG" || true
   fi
-  python3 "$SCRIPT_DIR/watch-guard.py" clear "$qid" >/dev/null 2>&1 || true
+  python3 "$SCRIPT_DIR/ledger/watch-guard.py" clear "$qid" >/dev/null 2>&1 || true
 
   # ── Evidence-based commit: only watch_ids the worker closed as handled or
   #    nothing_to_do. Unacked and blocked items keep their old watermark.
@@ -1340,7 +1481,7 @@ commit_quest() {
   # the same as "the worker acked nothing" — treat it as a hard hold and say so,
   # so a persistently corrupt manifest is diagnosable instead of looking like a
   # silent worker.
-  if ! acked_ids=$(python3 "$SCRIPT_DIR/ack-watch.py" acked "$DISPATCH_RUN_ID" 2>>"$LOG_FILE"); then
+  if ! acked_ids=$(python3 "$SCRIPT_DIR/ledger/ack-watch.py" acked "$DISPATCH_RUN_ID" 2>>"$LOG_FILE"); then
     log "ACK MANIFEST UNREADABLE [$qid] — no watermark advanced (next tick re-surfaces)."
     jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg quest "$qid" --arg run_id "$DISPATCH_RUN_ID" \
       '{ts:$ts,event:"gate_ack_manifest_unreadable",quest:$quest,run_id:$run_id}' >> "$RUN_LOG"
@@ -1348,7 +1489,65 @@ commit_quest() {
     return 0
   fi
   acked_json=$(printf '%s\n' "$acked_ids" | jq -R 'select(length > 0)' | jq -sc .)
-  log "ACK SUMMARY [$qid] $(python3 "$SCRIPT_DIR/ack-watch.py" summary "$DISPATCH_RUN_ID" 2>/dev/null || echo '{}')"
+
+  # ── Source-evidence check on acks: OBSERVE ONLY by default ───────────────────
+  # `nothing_to_do` claims "I read the source and it needed no action". It is the only status
+  # that advances a watermark leaving no other trace, so a worker that skips the read and acks
+  # it anyway buries the message. This compares the acked items against the channels the
+  # worker's own event stream shows it successfully read.
+  #
+  # It does NOT hold anything unless YAAS_ACK_EVIDENCE_ENFORCE=1, and that default is a
+  # deliberate decision after review, not timidity:
+  #
+  #   1. A false negative is NOT merely a one-tick delay, which is what I first assumed. Three
+  #      no-progress dispatches promote the watch to `misconfig`, which stops automatic
+  #      retries entirely. So enforcing on imperfect evidence trades silent loss for eventual
+  #      manual-recovery loss, and that is not obviously the better trade.
+  #   2. The known false-negative surface is wide: a `slack_search` whose channel appears only
+  #      in the results, a read by permalink or thread ts with no channel argument, a DM read
+  #      by user id, any tool returning the channel only in its response, and Codex/Cursor
+  #      event schemas this parser does not model.
+  #   3. It is bypassable anyway. A worker can ack `handled` instead and skip the check, since
+  #      `handled` is not verified. "handled leaves another trace" is only sound if the commit
+  #      code checks that trace and ties it to this watch and run, which it does not yet.
+  #
+  # So it runs in observation mode and logs `gate_ack_unverified`. Once live data shows how
+  # often the evidence is genuinely absent, enforcement becomes an informed switch rather than
+  # a guess. Coverage today is SLACK, CHANNEL-ATTRIBUTABLE ONLY: absence of these events does
+  # not mean every ack was verified.
+  if [ -n "${DISPATCH_NDJSON:-}" ] && [ -f "${DISPATCH_NDJSON:-/nonexistent}" ]; then
+    local _ntd _read_channels _unverified_json _enforce
+    _enforce="${YAAS_ACK_EVIDENCE_ENFORCE:-0}"
+    _ntd=$(python3 "$SCRIPT_DIR/ledger/ack-watch.py" acked-as "$DISPATCH_RUN_ID" nothing_to_do 2>>"$LOG_FILE")
+    if [ -n "$_ntd" ]; then
+      _read_channels=$(python3 "$SCRIPT_DIR/dispatch/source-evidence.py" sources "$DISPATCH_NDJSON" 2>>"$LOG_FILE")
+      # One pass over watch.json rather than two per item.
+      _unverified_json=$(jq -c --arg ids "$_ntd" --arg chans "$_read_channels" '
+          ($ids | split("\n") | map(select(length > 0))) as $want
+        | ($chans | split("\n") | map(select(length > 0))) as $read
+        | [ .watches[]?
+            | select(.watch_id as $i | $want | index($i))
+            | select((.type // "") | startswith("slack_"))
+            | select((.channel_id // "") != "")
+            | select((.channel_id | IN($read[])) | not)
+            | .watch_id ]' "$watch" 2>/dev/null || echo '[]')
+
+      if [ "$_unverified_json" != "[]" ] && [ -n "$_unverified_json" ]; then
+        jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg quest "$qid" \
+          --argjson items "$_unverified_json" --arg enforced "$_enforce" \
+          '{ts:$ts,event:"gate_ack_unverified",quest:$quest,items:$items,enforced:$enforced}' \
+          >> "$RUN_LOG" || true
+        if [ "$_enforce" = "1" ]; then
+          acked_json=$(jq -c --argjson drop "$_unverified_json" '. - $drop' <<< "$acked_json")
+          log "UNVERIFIED ACK [$qid] — $_unverified_json acked nothing_to_do with no observed read of that channel; watermark HELD (YAAS_ACK_EVIDENCE_ENFORCE=1)."
+        else
+          log "UNVERIFIED ACK [$qid] (observing only) — $_unverified_json acked nothing_to_do with no observed read of that channel. Watermark advanced as usual; set YAAS_ACK_EVIDENCE_ENFORCE=1 to hold instead."
+        fi
+      fi
+    fi
+  fi
+
+  log "ACK SUMMARY [$qid] $(python3 "$SCRIPT_DIR/ledger/ack-watch.py" summary "$DISPATCH_RUN_ID" 2>/dev/null || echo '{}')"
 
   if [ "$acked_json" = "[]" ]; then
     log "NO ACKS [$qid] — worker exited 0 without closing any item; every watermark held (next tick re-surfaces)."
@@ -1406,7 +1605,7 @@ commit_reactions() {
   fi
   [ -f "$PENDING_REACTIONS" ] || return 0
 
-  log "ACK SUMMARY [reactions] $(python3 "$SCRIPT_DIR/ack-watch.py" summary "$DISPATCH_RUN_ID" 2>/dev/null || echo '{}')"
+  log "ACK SUMMARY [reactions] $(python3 "$SCRIPT_DIR/ledger/ack-watch.py" summary "$DISPATCH_RUN_ID" 2>/dev/null || echo '{}')"
   python3 - "$PENDING_REACTIONS" "$MANIFEST_DIR/dispatch-$DISPATCH_RUN_ID.json" \
     "$UNACKED_FILE" "$NOW_UTC" "$UNACKED_PROMOTE" <<'PYEOF' 2>>"$LOG_FILE" || true
 import json, os, sys
@@ -1549,7 +1748,7 @@ for _target in "${ROTATED_TARGETS[@]}"; do
   # reason, and complements the per-ITEM no-progress counter. 25/hour because the
   # busiest legitimate quest observed hit 17 in an hour (a per-minute loop would be
   # 60), so a tighter cap would block real work.
-  _tgt_recent=$(python3 "$SCRIPT_DIR/spend-window.py" "$RUN_LOG" --target "$_target" 2>/dev/null | jq -r '.target_dispatches_1h // 0' 2>/dev/null || echo 0)
+  _tgt_recent=$(python3 "$SCRIPT_DIR/dispatch/spend-window.py" "$RUN_LOG" --target "$_target" 2>/dev/null | jq -r '.target_dispatches_1h // 0' 2>/dev/null || echo 0)
   case "$_tgt_recent" in ''|*[!0-9]*) _tgt_recent=0 ;; esac
   if [ "$_tgt_recent" -ge "${YAAS_MAX_TARGET_DISPATCH_PER_HOUR:-25}" ]; then
     log "TARGET BREAKER OPEN: $_target dispatched $_tgt_recent time(s) in the last hour; skipping. Watermarks held."

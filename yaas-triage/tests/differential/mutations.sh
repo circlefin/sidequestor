@@ -123,6 +123,42 @@ run_mutation "Slack health gate always passes" \
   '  true "$MCP_CALL" slack_search_public_and_private' \
   "slack_down_gates_dispatch"
 
+# ── The rules C1a added coverage for ─────────────────────────────────────────
+# These DELETE watch entries or decide dispatch ORDER. Before C1a no golden touched them at
+# all, so a port could have dropped any of them and passed everything.
+
+# 5. Never retiring a stale thread grows watch.json without bound.
+run_mutation "stop retiring stale threads" \
+  'RETIRE_DEFAULT_DAYS="${YAAS_RETIRE_DEFAULT_DAYS:-30}"' \
+  'RETIRE_DEFAULT_DAYS="${YAAS_RETIRE_DEFAULT_DAYS:-99999}"' \
+  "retire_stale_thread"
+
+# 6. Ignoring the per-quest window applies the 30-day default everywhere, which silently
+#    stops tracking the long-running partner threads that set it to "never".
+run_mutation "ignore the per-quest retire window" \
+  '(.retire_slack_threads_after_days // $RETIRE_DEFAULT_DAYS)' \
+  '($RETIRE_DEFAULT_DAYS)' \
+  "retire_respects_never"
+
+# 7. An approval watch that is never retired fires forever after its draft is executed.
+run_mutation "stop retiring completed approvals" \
+  'select(.type == "approval")] | length' \
+  'select(false)] | length' \
+  "retire_completed_approval"
+
+# 8. A one-shot schedule that is never retired re-fires on every tick.
+run_mutation "stop retiring fired one-shot schedules" \
+  'select(.type == "schedule" and (has("cron") | not) and has("next_fire_ts"))] | length' \
+  'select(false)] | length' \
+  "retire_fired_one_shot_schedule"
+
+# 9. Dropping the fairness cursor lets one busy quest starve the others whenever a tick
+#    cannot dispatch them all. Invisible on every single-target golden.
+run_mutation "drop the fairness rotation" \
+  '_OFFSET=$(( _CURSOR % _NTARGETS ))' \
+  '_OFFSET=0' \
+  "fairness_rotation"
+
 echo
 printf '%s mutation(s) caught, %s survived\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

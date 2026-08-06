@@ -95,8 +95,8 @@ Never read all four as a reflex. Each file read costs a model round-trip. After 
 **Schedule watch type** (`watches[]` with `"type": "schedule"`): the cron fired. No content to fetch — act based on what the quest says to do at that scheduled time.
 
 **Jira watch type** (`jira`): fires when an issue in the entry's `jql` set changed (status transition, new comment, any field edit — Jira bumps `updated` on all of them). An interactive Atlassian MCP is typically NOT exposed in headless dispatch, so do not reach for `searchJiraIssues`; it returns `tool_not_found` there. Use the REST bridge:
-1. `yaas-triage/jira-call.sh GET '/rest/api/3/search/jql?jql=<url-encoded>&fields=status,summary,updated&maxResults=100'` — re-read the set and diff it against what the quest last recorded.
-2. `yaas-triage/jira-call.sh GET '/rest/api/3/issue/<KEY>/comment'` — read new comments when the change was a reply rather than a transition. A reviewer question needs an answer (draft to the approval queue unless the quest sets `allow_send`).
+1. `yaas-triage/surfaces/jira-call.sh GET '/rest/api/3/search/jql?jql=<url-encoded>&fields=status,summary,updated&maxResults=100'` — re-read the set and diff it against what the quest last recorded.
+2. `yaas-triage/surfaces/jira-call.sh GET '/rest/api/3/issue/<KEY>/comment'` — read new comments when the change was a reply rather than a transition. A reviewer question needs an answer (draft to the approval queue unless the quest sets `allow_send`).
 
 Post a comment with `POST /rest/api/3/issue/<KEY>/comment` only when the quest authorizes it. The checker already confirmed something moved; your job is to identify what and act.
 
@@ -127,7 +127,7 @@ Reactions are never handled here — they are their own dispatch target, see § 
 Any time you send a message or post a draft, watch the thread so the next tick picks up replies:
 
 ```bash
-python3 yaas-triage/add-watch.py <quest_id> '{"type":"slack_thread","channel_id":"C...","thread_ts":"<parent_ts>","last_checked_ts":"<response_ts>","reason":"why","watch_mode":"read_only"}'
+python3 yaas-triage/ledger/add-watch.py <quest_id> '{"type":"slack_thread","channel_id":"C...","thread_ts":"<parent_ts>","last_checked_ts":"<response_ts>","reason":"why","watch_mode":"read_only"}'
 ```
 
 `add-watch.py` is the only way to add a watch: Edit/Write on `watch.json` is blocked by a hook. It appends, validates the type's fields, assigns the `watch_id`, and prints `skip:duplicate` if the thread is already watched, so you can call it without checking first.
@@ -169,7 +169,7 @@ When you post into an internal routing or expert channel to request help on beha
 
 ### 3d. Manual review queue (general rule — all quests)
 
-Use this queue when you cannot or should not act immediately and the action needs the user's review first. The live dashboard (`dashboard.html` / `yaas-triage/dashboard-server.py`) surfaces pending items; once reviewed, triage re-dispatches you to execute with the user's instructions applied.
+Use this queue when you cannot or should not act immediately and the action needs the user's review first. The live dashboard (`dashboard.html` / `yaas-triage/ops/dashboard-server.py`) surfaces pending items; once reviewed, triage re-dispatches you to execute with the user's instructions applied.
 
 **When to use it:**
 1. `allow_send: false` in `meta.json` — any outbound action, regardless of channel.
@@ -178,10 +178,10 @@ Use this queue when you cannot or should not act immediately and the action need
 
 **Writing a review item:**
 
-Use `yaas-triage/approval-helper.py write <json>` — it handles dedup, flock, and ID generation atomically. Pass a JSON object with: `quest_id`, `quest_title`, `action_type` (`slack_message` / `file_edit` / `remote_request`), `target` (`{channel_id, thread_ts}`), `message_text`, `context` (2-3 sentences: what triggered this, who is involved, why review is needed), `risk_reason`. The script prints the new approval ID on success, or nothing if an identical pending entry already exists (dedup by `quest_id` + target).
+Use `yaas-triage/ledger/approval-helper.py write <json>` — it handles dedup, flock, and ID generation atomically. Pass a JSON object with: `quest_id`, `quest_title`, `action_type` (`slack_message` / `file_edit` / `remote_request`), `target` (`{channel_id, thread_ts}`), `message_text`, `context` (2-3 sentences: what triggered this, who is involved, why review is needed), `risk_reason`. The script prints the new approval ID on success, or nothing if an identical pending entry already exists (dedup by `quest_id` + target).
 
 ```bash
-APPR_ID=$(python3 yaas-triage/approval-helper.py write \
+APPR_ID=$(python3 yaas-triage/ledger/approval-helper.py write \
   '{"quest_id":"...","quest_title":"...","action_type":"slack_message",
     "target":{"channel_id":"C...","thread_ts":null},
     "message_text":"...","context":"...","risk_reason":"..."}')
@@ -191,10 +191,10 @@ APPR_ID=$(python3 yaas-triage/approval-helper.py write \
 
 **Executing a reviewed item — when dispatched for a quest and you find `status: "reviewed"`:**
 
-1. Claim it: `python3 yaas-triage/approval-helper.py start <id>`. If it prints `skip:<status>`, another worker beat you or it was cancelled — log a `note` and exit 0.
+1. Claim it: `python3 yaas-triage/ledger/approval-helper.py start <id>`. If it prints `skip:<status>`, another worker beat you or it was cancelled — log a `note` and exit 0.
 2. Read `message_text` from the item (the user may have edited it in the dashboard). Read `review_note` if present — apply it as an instruction: rewrite tone, change format, adjust recipients, whatever it says. Use your full LLM judgment.
 3. Execute the action. **If the send fails because the channel is restricted (e.g., `mcp_externally_shared_channel_restricted`):** save the draft to the actual target thread via `slack_send_message_draft` (with `channel_id` + `thread_ts`), then DM the user only the permalink to that thread. Do not paste the draft text in the DM — they can open the thread, find the draft in the compose box, and send it themselves.
-4. Mark done: `python3 yaas-triage/approval-helper.py done <id> <response_ts>`.
+4. Mark done: `python3 yaas-triage/ledger/approval-helper.py done <id> <response_ts>`.
 5. Append a `slack_thread` watch to `watch.json` with `last_checked_ts = response_ts` (per §3a).
 6. Log `executed` to `timeline.ndjson` with `approval_id`, `response_ts`, and a note on any changes applied from `review_note`.
 
@@ -213,7 +213,7 @@ Append one line per action:
 **Send Slack messages through `slack-send.py` so the body is logged automatically.** For any quest send or draft, use the helper instead of calling `slack_send_message` / `slack_send_message_draft` (native or via `mcp-call.sh`) and then logging separately:
 
 ```bash
-python3 yaas-triage/slack-send.py '{"quest_id":"<qid>","channel_id":"C...","message":"<verbatim body>","thread_ts":"<parent ts, optional>","note":"<short summary>"}'
+python3 yaas-triage/surfaces/slack-send.py '{"quest_id":"<qid>","channel_id":"C...","message":"<verbatim body>","thread_ts":"<parent ts, optional>","note":"<short summary>"}'
 # add "draft": true to save a draft instead of sending; "event":"..." to override the default (message_sent / draft_posted)
 ```
 
@@ -238,7 +238,7 @@ If you **couldn't** complete an action (error, ambiguous situation, needed user 
 `claude -p` exits 0 even when you only did half the work, so triage does not commit on your exit code. It commits per item, and only for items you close:
 
 ```bash
-python3 yaas-triage/ack-watch.py ack <run_id> <item_id> handled|nothing_to_do|blocked "<one-line note>"
+python3 yaas-triage/ledger/ack-watch.py ack <run_id> <item_id> handled|nothing_to_do|blocked "<one-line note>"
 ```
 
 One call per `watch_id` in `Exact dirty watches (JSON)` (item_id is `<emoji>:<msg_ts>` in a `reactions` dispatch). `handled` = you acted. `nothing_to_do` = you read it and it correctly needs no action. `blocked` = you couldn't finish. `handled` and `nothing_to_do` advance that watch's watermark; `blocked` and anything unacked hold it and come back next tick.
@@ -276,13 +276,13 @@ Every reaction where you **take action** carries a visible three-state lifecycle
 1. **Marked for processing** — the user applies the trigger reaction. This is what the checker detects; it is the only lifecycle reaction the user adds.
 2. **Processing** — the moment you pick the message up (before doing the work), swap it: remove the trigger reaction, add `:claudeloading:`.
    ```bash
-   ./yaas-triage/slack-react.sh remove <channel_id> <msg_ts> <trigger_emoji>   # claude-intensifies | writing_hand | incoming_envelope
-   ./yaas-triage/slack-react.sh add    <channel_id> <msg_ts> claudeloading
+   ./yaas-triage/surfaces/slack-react.sh remove <channel_id> <msg_ts> <trigger_emoji>   # claude-intensifies | writing_hand | incoming_envelope
+   ./yaas-triage/surfaces/slack-react.sh add    <channel_id> <msg_ts> claudeloading
    ```
 3. **Done actioning** — once the action is complete (reply sent / draft posted / message adopted) and every in-tick commitment is done, swap again: remove `:claudeloading:`, add `:updatedone:`.
    ```bash
-   ./yaas-triage/slack-react.sh remove <channel_id> <msg_ts> claudeloading
-   ./yaas-triage/slack-react.sh add    <channel_id> <msg_ts> updatedone
+   ./yaas-triage/surfaces/slack-react.sh remove <channel_id> <msg_ts> claudeloading
+   ./yaas-triage/surfaces/slack-react.sh add    <channel_id> <msg_ts> updatedone
    ```
 
 The Slack MCP surface has no remove-reaction tool, so removals go through `slack-react.sh` (Slack Web API, same user token). If the action genuinely can't complete this tick (blocked, needs a quest; or `:incoming_envelope:` found no owning quest and got skipped), leave it at `:claudeloading:` — do NOT advance to `:updatedone:`, since that signals completion.
@@ -356,14 +356,14 @@ Everywhere this file names a Slack tool (`slack_read_thread`, `slack_read_channe
 **If you do NOT have a native Slack tool exposed** (e.g. you are running on a harness where the Slack MCP server isn't configured, or its status is not connected), do NOT flail — do NOT list servers, grep the repo, or try to discover a path. Go straight to the repo's shell bridge, which calls the exact same Slack tools over HTTP with the same arguments:
 
 ```bash
-./yaas-triage/mcp-call.sh <tool_name> '<arguments_json>'
+./yaas-triage/surfaces/mcp-call.sh <tool_name> '<arguments_json>'
 ```
 
 Examples (the `<tool_name>` and JSON keys are identical to the native tool's):
 ```bash
-./yaas-triage/mcp-call.sh slack_read_thread '{"channel_id":"C0…","thread_ts":"1700…"}'
-./yaas-triage/mcp-call.sh slack_search_public_and_private '{"query":"to:me","limit":5}'
-./yaas-triage/mcp-call.sh slack_send_message '{"channel_id":"D0…","message":"…"}'
+./yaas-triage/surfaces/mcp-call.sh slack_read_thread '{"channel_id":"C0…","thread_ts":"1700…"}'
+./yaas-triage/surfaces/mcp-call.sh slack_search_public_and_private '{"query":"to:me","limit":5}'
+./yaas-triage/surfaces/mcp-call.sh slack_send_message '{"channel_id":"D0…","message":"…"}'
 ```
 
 Rules for the shell path:
@@ -405,7 +405,7 @@ No raw tool output, no message bodies, no token counts. Do not report watermarks
 6. **Respect privacy absolutely.** Never share info about one person with another unless directly relevant or explicitly asked. When in doubt, share less.
 7. **Nothing persists in memory after you terminate.** Write to `state/` if it matters.
 8. **Honor in-tick commitments — in quest work AND reaction replies.** If your reply contains "I'll do X", do X in the same tick before exiting (see § 3b). `watch.json` does not track outbound promises, and reaction state files track nothing at all, so an unkept commitment never resurfaces on its own.
-9. **Use the manual review queue for uncertain or high-risk actions.** When `allow_send: false`, when a watch reason says `DRAFT ONLY`, or when your judgment flags an action as risky — write to `state/pending-approvals.json` via `yaas-triage/approval-helper.py` rather than acting directly. See §3d.
+9. **Use the manual review queue for uncertain or high-risk actions.** When `allow_send: false`, when a watch reason says `DRAFT ONLY`, or when your judgment flags an action as risky — write to `state/pending-approvals.json` via `yaas-triage/ledger/approval-helper.py` rather than acting directly. See §3d.
 10. **Acknowledge emails when acting on them.** Any time a quest takes action triggered by an email, send a reply to the sender acknowledging receipt before or immediately after acting (see § 3 email rule). Never leave a human email unanswered while acting on it silently.
 
 ---

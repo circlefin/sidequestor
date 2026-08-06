@@ -1,6 +1,6 @@
 {
   "name": "non_slack_dispatches_while_slack_down",
-  "why": "KNOWN DEFECT, frozen deliberately. The gate is COMPUTED per target (_target_needs_slack) but APPLIED globally: the first Slack-needing target sets the flag and the whole tick exits, so an email-only quest is stalled by a Slack outage it does not depend on. ~183 gate_slack_down events/day means this bites often. The golden records today's behaviour so the port is proven faithful first; fixing it is a separate, intentional golden change.",
+  "why": "The Slack health gate must be PER TARGET. With Slack unreachable, a quest whose watches are all email must still dispatch, while a Slack-only quest is gated with its watermark untouched so it retries next tick. This was a frozen known defect until 2026-08-06: the gate was computed per target but APPLIED globally, so the first Slack-needing target exited the whole tick and stalled email/Jira/schedule work that did not depend on Slack. At ~183 gate_slack_down events a day that was routine, not an edge case. (A MIXED quest is still gated as a whole, since dispatch granularity is the target, and that is correct.)",
   "quests": {
     "q-mail": {
       "context": "# demo\n",
@@ -47,6 +47,5 @@
       "we": "handled",
       "ws": "handled"
     }
-  },
-  "known_defect": "slack_gate_applied_globally"
+  }
 }

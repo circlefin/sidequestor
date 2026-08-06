@@ -167,7 +167,7 @@ target = opt("--label") or ""
 # target succeed and another stall.
 spec = agent.get("per_target", {}).get(target, agent)
 
-ack_bin = os.path.join(os.environ["YAAS_TRIAGE_DIR"], "ack-watch.py")
+ack_bin = os.path.join(os.environ["YAAS_TRIAGE_DIR"], "ledger", "ack-watch.py")
 # Scenarios ack by alias; the manifest holds real watch_ids.
 to_real = {a: w for w, a in sc.get("_aliases", {}).items()}
 for item, status in (spec.get("acks") or {}).items():
@@ -178,11 +178,42 @@ for item, status in (spec.get("acks") or {}).items():
 # Let a scenario simulate a worker that appends a watch (the one mutation the rules
 # allow) or one that illegally rewrites an existing entry (watch-guard must revert it).
 for extra in spec.get("append_watches", []):
-    subprocess.run(["python3", os.path.join(os.environ["YAAS_TRIAGE_DIR"], "add-watch.py"),
+    subprocess.run(["python3", os.path.join(os.environ["YAAS_TRIAGE_DIR"], "ledger", "add-watch.py"),
                     target, json.dumps(extra)], capture_output=True)
 
+# A real event stream, so the source-evidence check has something to read. `reads` lists
+# channels the worker successfully read; `failed_reads` lists channels it TRIED and failed,
+# which must not count as evidence. Omitting `reads` entirely means "no stream at all",
+# which is how a scenario asks for the pre-check behaviour.
+ndjson_path = "stub.ndjson"
+reads = spec.get("reads")
+if reads is not None:
+    lines = []
+    for i, ch in enumerate(reads):
+        lines.append(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": f"ok{i}", "name": "mcp__slack__slack_read_thread",
+             "input": {"channel_id": ch}}]}}))
+        lines.append(json.dumps({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"ok{i}",
+             "content": [{"type": "text", "text": "Alice: a message"}]}]}}))
+    for i, ch in enumerate(spec.get("failed_reads") or []):
+        lines.append(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": f"bad{i}", "name": "mcp__slack__slack_read_thread",
+             "input": {"channel_id": ch}}]}}))
+        lines.append(json.dumps({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"bad{i}", "is_error": True,
+             "content": "ratelimited"}]}}))
+    ndjson_path = os.path.join(os.environ.get("REPO_ROOT", "."), "logs", "stub-worker.ndjson")
+    os.makedirs(os.path.dirname(ndjson_path), exist_ok=True)
+    # chr(10) rather than a newline escape: this file is a Python literal that
+    # GENERATES Python, so "\\n" here is interpreted one level too early and puts a
+    # real newline inside the generated source, which then fails to parse.
+    with open(ndjson_path, "w") as f:
+        for line in lines:
+            f.write(line + chr(10))
+
 print(json.dumps({"exit": spec.get("exit", 0), "wall_sec": spec.get("wall_sec", 1),
-                  "log": "stub.log", "ndjson": "stub.ndjson",
+                  "log": "stub.log", "ndjson": ndjson_path,
                   "timed_out": bool(spec.get("timed_out", False))}))
 sys.exit(spec.get("exit", 0))
 '''
@@ -266,9 +297,9 @@ def build(scenario_path, dest):
                        "email", "jira", "github_pr", "schedule", "approval"):
         _write(tri / "checkers" / f"{watch_type}.py", CHECKER_STUB, executable=True)
     _write(tri / "checkers" / "reactions.py", REACTIONS_STUB, executable=True)
-    _write(tri / "run-agent.py", RUN_AGENT_STUB, executable=True)
-    _write(tri / "mcp-call.sh", MCP_STUB, executable=True)
-    _write(tri / "notify.py", NOTIFY_STUB, executable=True)
+    _write(tri / "dispatch" / "run-agent.py", RUN_AGENT_STUB, executable=True)
+    _write(tri / "surfaces" / "mcp-call.sh", MCP_STUB, executable=True)
+    _write(tri / "ops" / "notify.py", NOTIFY_STUB, executable=True)
 
     # ── State tree ──────────────────────────────────────────────────────────────
     (dest / "state" / "triage").mkdir(parents=True)

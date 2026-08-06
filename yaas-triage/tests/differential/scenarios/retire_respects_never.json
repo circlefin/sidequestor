@@ -1,0 +1,26 @@
+{
+  "name": "retire_respects_never",
+  "why": "retire_slack_threads_after_days: \"never\" must keep an ancient thread. This is the setting used for long-running partner conversations, so over-applying the retire rule here loses tracking on exactly the threads that matter most.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\n",
+      "meta": {
+        "retire_slack_threads_after_days": "never"
+      },
+      "watches": [
+        {
+          "watch_id": "w-ancient",
+          "type": "slack_thread",
+          "channel_id": "C1",
+          "thread_ts": "@now-34560000.000100",
+          "last_checked_ts": "@now-3600",
+          "reason": "test"
+        }
+      ]
+    }
+  },
+  "checkers": {},
+  "agent": {
+    "exit": 0
+  }
+}

@@ -1,79 +1,105 @@
-# Sidequestor — v2
+# Sidequestor
 
-> *Yourself-as-a-service, while you're AFK.*
+> *Yourself as a service, while you're AFK.*
 
-**Sidequestor** (formerly "Yourself as a Service", still `yaas` internally) is a
-personal Slack, email, and calendar agent that acts as you, and fits like a
-jacket over your local working directory for Claude Code, Codex, or Cursor.
-Drop it into the repo you already work in and it wraps your existing harness
-instead of replacing it. The live control panel — where drafts wait for your
-review and every quest's messages are one click from Slack — is the
-**Sidequestor dashboard** (`yaas-triage/dashboard-start.sh`, http://localhost:8877).
+You already have an AI agent on your machine — Claude Code, Codex, or Cursor — sitting in the
+repo you work in, waiting for you to type something.
 
-Everything worth your attention becomes a **quest**: a first-class unit of work
-with its own objective, watchers, timeline, and memory. yaas keeps your quests
-moving, watching the threads, channels, DMs, Gmail queries, and cron schedules
-each one cares about, and waking an LLM worker only when that quest has genuine
-new activity to act on.
+**Sidequestor is a sleeve you pull over it.** Same agent, same directory, same rules file. The
+difference is that it stops waiting for you.
 
-The monitoring is **intelligent and cost-free**: a pure-bash triage loop sweeps
-every watched source on a 60-second heartbeat, tracks a per-watch watermark so
-nothing is seen twice or missed, and spends zero tokens until something real
-lands.
+```
+        ┌──────────────────────────────────────────────┐
+        │  S I D E Q U E S T O R                       │  ← the sleeve
+        │                                              │
+        │   watches things · decides · wakes the agent │
+        │                                              │
+        │     ┌──────────────────────────────────┐     │
+        │     │  your existing agent + repo      │     │  ← unchanged
+        │     │  (claude / codex / cursor)       │     │
+        │     └──────────────────────────────────┘     │
+        └──────────────────────────────────────────────┘
+```
 
-**$0 when idle. Tokens spent only on dispatch.**
+It watches the Slack threads, channels, DMs, Gmail queries, Jira sets, GitHub PRs and cron
+schedules you care about. When one of them genuinely moves, it wakes your agent, hands it just
+that one thing, and writes down what happened. When nothing moves, it costs **nothing** —
+the watching is shell and Python, about 150ms a tick.
 
-The harder problem is not doing the work but **knowing it was done**. A headless
-agent exits successfully whether it handled everything or quietly handled
-nothing, so nothing here commits on an exit code: the worker closes each
-dispatched item in an acknowledgment ledger, checkers report whether they
-actually drained their window, spend has hard ceilings, and a separate launchd
-job watches the loop from outside it. Every one of those exists because its
-absence caused a real incident.
-
-> One launchd job keeps `yaas-triage/triage-loop.sh` alive, which paces
-> `triage.sh` at `YAAS_TRIAGE_INTERVAL` (60s). A second job runs the health
-> monitor. Pure bash orchestrator + Python checker plugins. The worker dispatch
-> is **harness-agnostic**: Claude Code (default), Codex, or Cursor, selected
-> with `YAAS_AGENT` in `.env`. See
-> **[Choosing a harness](#choosing-a-harness-claude--codex--cursor)**.
-
-For the full architecture, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+**$0 idle. Tokens only on dispatch.**
 
 ---
 
-## Setup (first time)
+## The interesting problem
 
-### 1. Prerequisites
+Doing the work is the easy half. The hard half:
 
-| Tool | Why | Install |
+> **How do you know it was actually done?**
+
+A headless agent exits successfully whether it handled everything or quietly handled nothing.
+So nothing here trusts an exit code. The agent must close each item it was handed in an
+acknowledgment ledger; checkers must prove they read to the end of their window; spend has hard
+ceilings; and a separate job watches the loop from outside it, because a health check inside the
+loop cannot notice the loop being dead.
+
+Every one of those exists because its absence caused a real incident. The stories are in
+[ARCHITECTURE.md](ARCHITECTURE.md), which is short and mostly diagrams.
+
+---
+
+## Everything is a quest
+
+A **quest** is one thing you care about, with its own objective, its own watchers, and its own
+memory. It is a folder with four files. That's the whole data model.
+
+```
+state/quests/active/watch-my-channel/
+├── context.md        why this exists, and how to decide      ← the agent reads this first
+├── meta.json         status, priority, may-it-send
+├── watch.json        where to look, and how far it has got
+└── timeline.ndjson   everything it has ever done
+```
+
+No database. No migrations. You can read your agent's entire memory with `cat`.
+
+---
+
+## Install
+
+### 1. What you need
+
+| Tool | Why | Get it |
 |---|---|---|
-| `claude` CLI | worker dispatch (default harness) | https://docs.claude.com/en/docs/claude-code |
-| `codex` / `cursor-agent` | only if running those harnesses (see [Choosing a harness](#choosing-a-harness-claude--codex--cursor)) | `brew install codex` / Cursor CLI installer |
-| `gws` CLI | Gmail / Drive / Docs (worker + email checker) | internal Google Workspace tool |
-| `jq` ≥ 1.6 | JSON parsing in triage.sh | `brew install jq` |
-| `perl` | `flock` lock acquisition | preinstalled on macOS |
-| `python3` ≥ 3.9 | all `.py` files | macOS system Python is fine |
-| `node` | Coda MCP (optional) | `brew install node` |
+| `claude` CLI | the default agent | https://docs.claude.com/en/docs/claude-code |
+| `codex` / `cursor-agent` | only if you prefer those | `brew install codex` · Cursor CLI installer |
+| `jq` ≥ 1.6 | the orchestrator speaks JSON | `brew install jq` |
+| `python3` ≥ 3.9 | everything else | macOS system Python is fine |
+| `perl` | file locking | already on your Mac |
+| `gws` CLI | only for Gmail / Drive watches | Google Workspace CLI |
+| `node` | only for the Coda MCP | `brew install node` |
+
+macOS only for now: it leans on `launchd` and the Keychain.
 
 ### 2. Clone and configure
 
 ```bash
-git clone https://github.com/<your-org>/yourself-as-a-service-v2.git yourself-as-a-service
-cd yourself-as-a-service
+git clone https://github.com/<your-org>/yourself-as-a-service-v2.git sidequestor
+cd sidequestor
 cp .env.example .env
 cp CLAUDE.example.md CLAUDE.md
 ```
 
-Edit `.env` with your values:
-- **Slack app:** create your own Slack app (PKCE OAuth, no client secret) and fill the `SLACK_*` values in `.env`. `.env.example` has the app-creation steps (scopes, redirect URL); `setup.sh` then OAuth-authorizes it under your Slack identity.
-- **`YAAS_FROM_EMAIL`** (quoted, e.g. `"Jane Doe <jane@example.com>"`) — sender identity for the Gmail reply skill.
-- **Optional:** `CODA_API_KEY` + `CODA_MCP_PATH` if you use the Coda MCP server, and `JIRA_EMAIL` + `JIRA_BASE_URL` for Jira watches.
-- **Everything else is optional with a working default.** `.env.example` is the canonical list of knobs, grouped into spend ceilings, dispatch shape, agent backend, loop/checker tuning, and retention, each with its default and the reasoning. The spend ceilings are worth a look before you leave them alone: run `python3 yaas-triage/spend-window.py state/run-log.ndjson | jq .` after a day to see your own rate, since cost per dispatch scales with how large your `CLAUDE.md` and quest context files are.
+Two files to edit, and only two:
 
-Edit `CLAUDE.md` to add your bot identity, tone rules, and references to any personal skills. The protocol sections must stay intact — they're contracted by `triage.sh`.
+**`.env`** — the Slack app details, and your sender identity for email replies. Every other knob
+has a working default, and `.env.example` explains each one and why it's set where it is. Worth
+a glance at the spend ceilings before you leave them alone.
 
-One rule worth adding in your tone section: **email replies should read like emails** — proper greeting, prose paragraphs, sign-off. Not like Slack messages with bullets and bold headers.
+**`CLAUDE.md`** — your agent's rules: who it is, how it writes, what it must never do. Add your
+voice here. Leave the protocol sections alone; `triage.sh` has a contract with them.
+
+> If you already have a `CLAUDE.md` in this repo for your own interactive use, that's the point
+> — the sleeve reads the same file your agent already reads.
 
 ### 3. Install
 
@@ -81,143 +107,34 @@ One rule worth adding in your tone section: **email replies should read like ema
 ./yaas-triage/setup/setup.sh
 ```
 
-This walks you through Slack OAuth, stores the user `xoxp` token in macOS Keychain, runs a connectivity check, and optionally installs the launchd jobs. It also offers to opt into a **daily auto-sync from this template** (off by default) — say yes if you just want to run the latest YAAS and don't plan to customize `dashboard.html` / `yaas-triage/*` yourself. See `settings.json.example` for what it controls.
+Walks you through Slack OAuth (PKCE, no client secret), puts the token in your Keychain — never
+in the repo — checks connectivity, and offers to install the background jobs.
 
-Then install the health monitor, which is a **separate** job on purpose — a check running inside the triage loop cannot detect the loop being dead, which is exactly how one outage ran for 6.5 hours:
+Then the watchdog, which is a **separate** job on purpose:
 
 ```bash
 ./yaas-triage/setup/install-launchd-heartbeat.sh
 ```
 
-It checks every 5 minutes for: no completed tick, a tick that started and never finished, consecutive tick failures, a checker stuck past its retry threshold, an approval stranded mid-send, and any budget or misconfiguration event. Alerts land as desktop notifications and in `state/health-status.json`.
+A check running inside the triage loop cannot detect the loop being dead. That is not
+theoretical: one outage ran 6.5 hours because nothing was watching the watcher.
 
-### 4. Verify
+### 4. Confirm it's real
 
 ```bash
-./yaas-triage/doctor.sh                          # is this machine configured
-python3 yaas-triage/health-monitor.py            # is the loop alive and unblocked?
-yaas-triage/tests/run-all.sh                     # every suite, ~30s, touches no real state
+./yaas-triage/ops/doctor.sh                    # is this MACHINE set up?
+python3 yaas-triage/ops/health-monitor.py      # is it WORKING right now?
+yaas-triage/tests/run-all.sh                   # is the CODE correct?
 ```
 
-`doctor.sh` should report "All checks passed"; the failed line tells you what to fix. `health-monitor.py` prints `healthy` and exits 0. All 14 test suites should pass — they run against temp fixtures and touch no real state, so they are safe to run any time.
+Three different questions, three different tools. The tests use throwaway fixtures and touch
+none of your real state, so they're safe to run whenever.
+
+Expect: `All checks passed`, `healthy`, and `20 suite(s) passed`.
 
 ---
 
-## Choosing a harness (Claude / Codex / Cursor)
-
-The worker dispatch is backend-agnostic. `triage.sh` does the same thing regardless of harness — sweep quests, decide dirtiness, and (only when there's real activity) launch one headless agent. Which agent it launches is set by **`YAAS_AGENT`** in `.env`:
-
-```bash
-YAAS_AGENT=claude   # default — Claude Code (claude CLI)
-YAAS_AGENT=codex    # OpenAI Codex CLI
-YAAS_AGENT=cursor   # Cursor Agent CLI (cursor-agent)
-```
-
-`yaas-triage/dispatch-agent.sh` is the only backend-specific piece: it maps `YAAS_AGENT` to the right binary and headless flags, streams the agent's raw event JSONL back to `triage.sh`, and exits with the agent's exit code. Everything else (quests, watches, approvals, state) is identical across harnesses.
-
-### The rules file each harness reads
-
-Each CLI loads its own instruction file from the repo root. They should all point at the same customized `CLAUDE.md`, so create symlinks after `cp CLAUDE.example.md CLAUDE.md`:
-
-```bash
-ln -s CLAUDE.md AGENTS.md    # Codex and Cursor both read AGENTS.md
-ln -s CLAUDE.md GEMINI.md    # (optional) Gemini CLI
-```
-
-This keeps one source of truth — edit `CLAUDE.md`, every harness sees the change.
-
-### Per-harness prerequisites and notes
-
-| Harness | CLI | MCP / tool config (yours to set up) | Notes |
-|---|---|---|---|
-| **Claude** | `claude` | `yaas-triage/worker.mcp.json` (Slack/Coda/Atlassian) | Default. Native Slack MCP. Full token+cost accounting. |
-| **Codex** | `codex` | `~/.codex/config.toml` | Runs bounded by default (`workspace-write`, `approval_policy=never`, network on). Set `YAAS_CODEX_PERMISSION_MODE=bypassPermissions` to use `--dangerously-bypass-approvals-and-sandbox`. The native Slack plugin is disabled at dispatch so all Slack goes through `mcp-call.sh` with a uniform sender identity. |
-| **Cursor** | `cursor-agent` | `.cursor/mcp.json` | Runs with `--approve-mcps`. Slack goes through `mcp-call.sh` when no native Slack MCP is configured. |
-
-**How Slack works across harnesses.** Every harness reaches Slack through the same underlying `mcp.slack.com` endpoint. If a harness has a native Slack tool, it uses it; otherwise the worker calls `yaas-triage/mcp-call.sh` (a shell bridge using your Keychain token) with the *same* tool names and arguments. This is documented in the "Slack access" section of `CLAUDE.example.md`, so any harness knows to fall back to it. Sends routed through `mcp-call.sh` carry your consistent Slack app identity.
-
-### Model selection
-
-Each backend's model is overridable via `.env` (leave unset to use that CLI's own default):
-
-```bash
-YAAS_CLAUDE_MODEL=opus          # default: opus
-YAAS_CODEX_MODEL=               # default: ~/.codex/config.toml model
-YAAS_CURSOR_MODEL=              # default: cursor's "auto"
-
-YAAS_CLAUDE_PERMISSION_MODE=acceptEdits   # any Claude --permission-mode value
-YAAS_CODEX_PERMISSION_MODE=workspace-write # workspace-write or bypassPermissions
-```
-
-> **Cost note.** Only the Claude path reports a dollar cost (`gate_dispatch_tokens` with `$`). Codex/Cursor report raw token counts only. Watch the reasoning-effort setting on Codex especially — a high-effort model can spend 1M+ input tokens on a single tick.
-
-### Switching harnesses
-
-Edit `YAAS_AGENT` in `.env` and the next tick picks it up (`triage.sh` re-sources `.env` every run). No restart needed. The dispatch log line shows which backend ran: `DISPATCH — invoking yaas worker (backend=codex) for: …`.
-
----
-
-## Daily operation
-
-Once installed, the loop runs a tick every 60s and the monitor checks in every 5 minutes. You don't need to do anything.
-
-```bash
-# is it alive, and is anything silently held?
-python3 yaas-triage/health-monitor.py            # exit 0 = healthy
-cat state/health-status.json                     # the same verdict, as published
-
-tail -f logs/triage.log                          # human-readable triage log
-tail -f logs/worker-latest.log                   # the dispatch in flight
-launchctl list | grep com.yaas                   # all jobs
-
-# spend, against your ceilings
-python3 yaas-triage/spend-window.py state/run-log.ndjson | jq .
-
-# manual runs
-./yaas-triage/triage.sh                          # one tick now
-DRY_RUN=1 VERBOSE=1 ./yaas-triage/triage.sh      # check phase only, never dispatches
-
-./yaas-triage/setup/install-launchd.sh uninstall  # stop the loop
-./yaas-triage/setup/install-launchd.sh            # reinstall
-```
-
-**If nothing is dispatching despite dirty quests,** check in this order — each writes its own event to `state/run-log.ndjson`:
-
-| Event | Meaning |
-|---|---|
-| `gate_budget_exceeded` | a spend or dispatch ceiling was hit; raise it in `.env` or wait for the window to roll |
-| `gate_slack_down` | the pre-dispatch Slack probe failed |
-| `gate_dispatch_deferred` | past the per-tick fan-out cap; it will run next tick |
-| `gate_target_breaker_open` | one quest has been dispatched too often this hour |
-| `gate_watch_misconfigured` | a watch has permanently stopped being checked and needs you |
-
-**One thing worth knowing:** editing `triage-loop.sh` or `dashboard-server.py` has no effect until that job is restarted, because launchd keeps one long-lived process and neither bash nor Python re-reads a running file. Edits to `triage.sh` and the checkers apply on the next tick.
-
-```bash
-launchctl kickstart -k "gui/$(id -u)/com.yaas.triage"
-```
-
-### Dashboard
-
-```bash
-./yaas-triage/dashboard-start.sh   # starts the server (localhost:8877) and opens it
-```
-
-Shows active quests, pending approvals, recent activity, and daily/weekly briefs. A pulsing pill in the top-right header appears whenever a worker is currently dispatched — click it to expand a live transcript of what it's doing.
-
-`setup.sh` offers to install it as a launchd job too, so it survives reboots and restarts itself if it ever dies — say yes there, or run it yourself any time:
-
-```bash
-./yaas-triage/setup/install-launchd-dashboard.sh             # install (KeepAlive + RunAtLoad)
-./yaas-triage/setup/install-launchd-dashboard.sh uninstall   # stop
-./yaas-triage/setup/install-launchd-dashboard.sh status      # check
-```
-
----
-
-## Creating a quest
-
-A quest is a folder under `state/quests/active/` with four files: `meta.json`, `watch.json`, `context.md`, `timeline.ndjson`. Create them via the scaffolding script (validates inputs, sets timestamps correctly, writes canonical schema):
+## Your first quest
 
 ```bash
 python3 yaas-triage/skills/yaas-quest-creation/new-quest.py '{
@@ -226,137 +143,165 @@ python3 yaas-triage/skills/yaas-quest-creation/new-quest.py '{
   "allow_send": false,
   "context": "Track new top-level messages in #my-channel; reply when warranted.",
   "watches": [
-    {
-      "type": "slack_channel",
-      "channel_id": "C012345ABCD",
-      "reason": "monitor channel activity"
-    }
+    {"type": "slack_channel", "channel_id": "C012345ABCD", "reason": "monitor activity"}
   ]
 }'
 ```
 
-See [`yaas-triage/skills/yaas-quest-creation/SKILL.md`](yaas-triage/skills/yaas-quest-creation/SKILL.md) for the full spec.
+Note `allow_send: false`. Start there. The agent will draft instead of sending, and the drafts
+wait for you in the dashboard. Turn it on per quest once you trust what it writes.
 
-Watch types: `slack_thread`, `slack_channel`, `slack_dm`, `slack_mention` (any message @mentioning a user_id, global), `schedule` (5-field cron + IANA TZ), `email` (Gmail search query).
+Things you can watch:
 
----
-
-## Repository layout
-
-```
-yourself-as-a-service/
-├── README.md                        ← this file
-├── ARCHITECTURE.md                  ← full system design + verification commands
-├── CLAUDE.example.md                ← worker-instruction starter (copy → CLAUDE.md, customize)
-├── CLAUDE.md                        ← your customized worker instructions (gitignored)
-├── dashboard.html                   ← live dashboard UI, served by dashboard-start.sh
-├── .env.example                     ← per-install template (copy → .env, gitignored)
-├── settings.json.example            ← per-install template (copy → settings.json, gitignored)
-├── LICENSE
-├── yaas-triage/                     ← generic triage infrastructure
-│   ├── triage.sh                    ← one tick: sweep, gate, dispatch, commit
-│   ├── triage-loop.sh               ← KeepAlive driver (launchd target)
-│   ├── dispatch-agent.sh            ← launches the worker on the YAAS_AGENT backend
-│   ├── ack-watch.py                 ← the acknowledgment ledger: what actually got handled
-│   ├── add-watch.py                 ← the ONLY way to append a watch (append-only, validated)
-│   ├── approval-helper.py           ← the human review queue + execution leases
-│   ├── spend-window.py              ← rolling spend/dispatch windows and the ceilings
-│   ├── checker-health.py            ← per-watch exponential backoff on checker failures
-│   ├── health-monitor.py            ← the dead-man switch (own launchd job)
-│   ├── heartbeat-loop.sh            ← KeepAlive driver for the monitor
-│   ├── ensure-watch-ids.py          ← backfills the stable watch_id everything keys on
-│   ├── source-evidence.py    ← proves a real source read happened in the worker stream
-│   ├── slack-send.py                ← send + log the body in one step (dashboard needs the body)
-│   ├── mcp-call.sh / jira-call.sh   ← Slack MCP and Jira REST bridges (Keychain auth)
-│   ├── format-stream.py             ← worker event stream → human log
-│   ├── extract-tokens.py            ← per-dispatch cost into the run log
-│   ├── translate-stream.py          ← normalizes codex/cursor streams
-│   ├── notify.py / rotate-logs.py   ← desktop notifications; log + queue rotation
-│   ├── manual-dispatch.sh           ← dashboard-initiated run (advances no watermarks)
-│   ├── dashboard-server.py          ← dashboard backend + live state API
-│   ├── dashboard-start.sh                 ← starts the dashboard and opens it
-│   ├── sync-yaas-v2.sh              ← opt-in daily pull from this template
-│   ├── doctor.sh                    ← is this machine configured (setup validation)
-│   ├── test-*.sh                    ← nine suites; see ARCHITECTURE.md § 16
-│   ├── checkers/                    ← one .py per watch type, plus result.py (the contract)
-│   ├── setup/                       ← OAuth flow, launchd installers, template tracking
-│   └── skills/                      ← four generic worker skills
-│       ├── yaas-quest-creation/     ← new-quest.py + SKILL.md
-│       ├── yaas-gmail-reply/        ← gmail-reply.py + SKILL.md (RFC 2822 threading)
-│       ├── yaas-answering-quality/  ← reply quality guardrails
-│       └── yaas-ops/                ← operations + extending the system
-├── .claude/hooks/                   ← deny-state-writes.sh: the lock on watch.json
-├── skills/                          ← your personal/domain skills (gitignored)
-├── state/                           ← runtime: quests, watermarks, reaction history (gitignored)
-└── logs/                            ← triage + worker logs (gitignored)
-```
-
----
-
-## Cost model
-
-| Tick outcome | Cost |
+| Type | Watches for |
 |---|---|
-| Idle (nothing dirty, no new reactions) | **$0.00** |
-| Held back by a gate (budget, Slack down, deferred) | **$0.00**, and no work is lost |
-| One dirty quest | typically $0.30–$1.50 per invocation |
-| Several dirty quests | one invocation each, sequentially, capped by `YAAS_MAX_DISPATCH_FANOUT` |
+| `slack_thread` · `slack_channel` · `slack_dm` | replies · new posts · DMs |
+| `slack_mention` | anyone @mentioning you, anywhere |
+| `email` | a Gmail search query |
+| `jira` · `github_pr` | an issue set changing · PR activity |
+| `schedule` | a cron expression or a one-off time |
+| `approval` | you reviewing one of its drafts |
 
-Most ticks cost nothing. The figure that matters is per *invocation*, not per tick, because
-each one reloads your full `CLAUDE.md` plus that quest's context — so cost scales with how
-large those files are, and a tick with four dirty quests pays it four times. That is the
-deliberate trade for a failure in one quest being unable to bury another's activity.
+---
 
-**Read your own numbers before trusting anyone's estimate:**
+## Living with it
+
+Once installed, there is nothing to do. It ticks every 60 seconds.
 
 ```bash
-python3 yaas-triage/spend-window.py state/run-log.ndjson | jq .
+./yaas-triage/ops/dashboard-start.sh     # the control panel, localhost:8877
 ```
 
-**Ceilings are on by default** and are circuit breakers, not throttles: `YAAS_MAX_SPEND_1H`
-(40), `YAAS_MAX_SPEND_24H` (250), `YAAS_MAX_DISPATCH_6H` (250), and a per-quest hourly
-breaker. On a breach, checks still run and watermarks still hold — only the dispatch is
-withheld, so the work re-surfaces once the window rolls forward. Tune them in `.env` from
-your measured rate.
+That's where drafts wait for you, every quest's messages are one click from Slack, and a pulsing
+pill appears when a worker is running — click it to watch the agent think in real time.
 
-The dispatch-count ceiling matters most under `YAAS_AGENT=codex` or `cursor`, which report
-token counts but no cost, so the dollar ceilings cannot see them.
+When you want to look under the hood:
+
+```bash
+tail -f logs/triage.log                  # what the loop is deciding
+tail -f logs/worker-latest.log           # what the agent is doing right now
+python3 yaas-triage/ops/health-monitor.py            # anything silently stuck?
+python3 yaas-triage/dispatch/spend-window.py state/run-log.ndjson | jq .   # what it's costing
+
+./yaas-triage/triage.sh                  # run one tick now
+DRY_RUN=1 VERBOSE=1 ./yaas-triage/triage.sh   # look, don't touch
+```
+
+**Nothing dispatching despite obvious activity?** Every gate says so in
+`state/run-log.ndjson`:
+
+| Event | Means |
+|---|---|
+| `gate_budget_exceeded` | you hit a spend ceiling; raise it or wait for the window to roll |
+| `gate_slack_down` | Slack didn't answer, so Slack-dependent quests are waiting |
+| `gate_dispatch_deferred` | too many at once; next tick |
+| `gate_target_breaker_open` | one quest is hogging the hour |
+| `gate_watch_misconfigured` | a watch has stopped being checked and needs you |
+| `gate_catchup_hold` | it's been quiet a long time — see below |
+| `gate_bad_env_knob` | a value in `.env` isn't a number, so a ceiling would silently be no ceiling |
+
+**One gotcha:** editing `triage-loop.sh` or `dashboard-server.py` does nothing until that job
+restarts, because launchd holds one long-lived process and neither bash nor Python re-reads a
+running file. Edits to `triage.sh` and the checkers apply on the very next tick.
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.yaas.triage"
+```
 
 ---
 
-## Security model
+## Going away for a while
 
-- Slack user OAuth token (`xoxp-…`) stored in macOS Keychain (`service=slack-xoxp-token, account=yaas`). Never in `.env`, never in the repo.
-- OAuth uses PKCE — no client secret needs to live anywhere.
-- Token identity = the human who installed. Slack audit logs attribute every action to you, not a shared bot.
-- Revocation: visit Slack → Manage Apps → remove. The next launchd tick will fail authentication and stop posting.
-- Coda API key (optional) lives in `.env` and is passed to the local Coda MCP process via environment variable.
+Turn it off, take a week off, come back. Nothing is lost — every watch holds its place.
+
+But a week of backlog is a trap: the safe way to read a backlog is oldest-first, which is
+exactly the wrong way to *answer* one. So when it notices it's been quiet for more than six
+hours, it stops itself:
+
+```
+   long silence
+        │
+        ▼
+   reads everything · writes you a digest · sends nothing · commits nothing
+        │
+   you read state/catchup-digest.md
+        │
+   python3 yaas-triage/ops/catchup.py release
+        ▼
+   back to normal, from exactly where it paused
+```
+
+And independently of that, any reply to a conversation that has been quiet for more than 24
+hours goes to your approval queue instead of being sent. Your agent will not answer a week-old
+question as though it just arrived.
 
 ---
 
-## AI Safety
+## Pick your agent
 
-YAAS v2 was designed with safety features and safeguards in observance of Circle's AI Safety rules. Use, configure, and extend it with those principles in mind, alongside whatever AI-use policy applies where you run it. Built-in defaults aligned with that posture:
+```bash
+YAAS_AGENT=claude   # default
+YAAS_AGENT=codex
+YAAS_AGENT=cursor
+```
 
-- **Drafts by default.** New quests scaffold with `allow_send: false`. The worker drafts via `slack_send_message_draft` (or `gws gmail users drafts create`) until the user explicitly authorizes sending. See "drafts-only mode" behavior in the [Quest Activation Protocol](CLAUDE.example.md).
-- **Human-initiated reaction triggers.** The only path by which the worker sends without a quest's `allow_send: true` is the `:claudeloading:` reaction — and that requires a human to place the emoji on a specific message, which is itself the authorization.
-- **Full audit trail.** Every outbound action (send/draft/reply) is appended to the quest's `timeline.ndjson` with a permalink to the resulting Slack/Gmail message.
-- **Individual-identity tokens.** Slack actions are attributed to the human who ran `setup.sh`, never to a shared service account. Revocation is one click.
-- **Per-quest decision rules.** What the worker does on each watch fire is governed by that quest's own `context.md` — you write the rules, the worker follows them.
-- **Privacy by default.** CLAUDE.example.md Behavioral Rules §6: "Respect privacy absolutely. Never share info about one person with another unless directly relevant or explicitly asked. When in doubt, share less."
-
-When extending YAAS, follow the same posture: default to drafts, log everything, scope tokens to the individual, and write conservative `context.md` decision rules.
+Only one file knows the difference (`dispatch/dispatch-agent.sh`); everything else is
+backend-agnostic. Each harness reads its own rules file — `CLAUDE.md`, `AGENTS.md`, or
+`.cursorrules` — and `setup.sh` can symlink them so you maintain one.
 
 ---
 
-## Contributing
+## What it costs
 
-`yaas-triage/` is generic infrastructure with no personal data. Improvements welcome. Personal customizations (your bot tone, your watched channels, your skills) belong in `CLAUDE.md` and `skills/` — both gitignored from this public repo.
+Idle ticks are free. You pay per dispatch, and dispatch cost scales with how big your
+`CLAUDE.md` and quest context files are — the agent reads them every time.
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for system internals before opening a PR that touches the core loop.
+Ceilings are on by default and live in `.env`: rolling spend windows, a per-tick fan-out cap,
+and a per-quest hourly breaker. After a day of real use, run the `spend-window.py` command above
+to see your own rate rather than guessing.
+
+---
+
+## Safety
+
+- **Nothing sends by surprise.** `allow_send: false` per quest, a 24-hour staleness guard, and
+  an approval queue for anything held back.
+- **Tokens live in the Keychain**, never in `.env` and never in the repo.
+- **The agent cannot rewrite history.** It may append a new watch; any edit to an existing one
+  is reverted automatically.
+- **Everything is a file you can read**, and `logs/` plus `state/run-log.ndjson` record every
+  decision, including the ones where it chose to do nothing.
+
+The honest limits are listed in [ARCHITECTURE.md §13](ARCHITECTURE.md) rather than buried.
+Worth reading before you hand it anything sensitive.
+
+---
+
+## For contributors
+
+```
+yaas-triage/
+├── triage.sh          one tick
+├── checkers/          "is there anything new?"     one plugin per watch type
+├── dispatch/          "run a worker"
+├── ledger/            "owns a state file, atomically"
+├── surfaces/          "talk to the outside"
+├── ops/               "keep it alive and visible"
+└── tests/             20 suites + 29 goldens + 9 mutations
+```
+
+Adding a watch type means dropping one file in `checkers/`. Nothing else changes.
+
+Before you send a patch: `yaas-triage/tests/run-all.sh`, then
+`yaas-triage/tests/differential/run.sh check`. The second one runs a real tick against a
+throwaway repo and compares the decisions to recorded goldens — it is how a refactor proves it
+changed nothing it didn't mean to.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [ARCHITECTURE.md](ARCHITECTURE.md), and
+[SECURITY.md](SECURITY.md).
 
 ---
 
 ## License
 
-See [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](LICENSE).

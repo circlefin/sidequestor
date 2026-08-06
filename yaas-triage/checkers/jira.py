@@ -66,12 +66,13 @@ call without. Leave the ordering to this checker.
 import sys
 import os
 import json
+import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-JIRA_CALL = os.environ.get("JIRA_CALL", os.path.join(SCRIPT_DIR, "..", "jira-call.sh"))
+JIRA_CALL = os.environ.get("JIRA_CALL", os.path.join(SCRIPT_DIR, "..", "surfaces", "jira-call.sh"))
 
 # Bridge exit 4 = transient (429 / 5xx / timeout). Surfaced as `ratelimited`.
 EXIT_TRANSIENT = 4
@@ -120,10 +121,25 @@ def main():
     jql = entry["jql"]
     since_ts = float(entry.get("last_checked_ts") or 0)
 
-    # Sort newest-changed first so changed issues can never hide on a later page.
-    # Only safe to rely on (and to early-stop against) when we own the ordering.
+    # Bound the LOW end and sort ASCENDING, so the pages we hold are a contiguous PREFIX of
+    # the gap. Newest-first was a suffix: on a set busier than the page cap the cursor could
+    # never advance past it, which is the livelock github_pr hit for 14 hours on 2026-08-05.
+    # JQL wants "yyyy/MM/dd HH:mm" and is minute-granular, so back off a minute and re-apply
+    # the exact boundary in the post-filter below.
     caller_ordered = "order by" in jql.lower()
-    effective_jql = jql if caller_ordered else f"{jql} ORDER BY updated DESC"
+    bound = ""
+    if since_ts > 0:
+        since_str = datetime.fromtimestamp(since_ts - 60, timezone.utc).strftime("%Y/%m/%d %H:%M")
+        bound = f' AND updated >= "{since_str}"'
+
+    if caller_ordered:
+        # The caller owns the sort, so we cannot assume a prefix. Insert the bound before
+        # their ORDER BY and keep the conservative page-cap semantics.
+        m = re.search(r"(?i)\s+order\s+by\s+", jql)
+        head, tail = jql[:m.start()], jql[m.start():]
+        effective_jql = f"({head}){bound}{tail}"
+    else:
+        effective_jql = f"({jql}){bound} ORDER BY updated ASC"
 
     base = ("/rest/api/3/search/jql?jql=" + quote(effective_jql)
             + "&fields=status,summary,updated&maxResults=100")
@@ -135,41 +151,67 @@ def main():
         d = jira_get(path)
         issues = d.get("issues") or []
 
-        reached_old = False
         for issue in issues:
             if updated_epoch(issue) > since_ts:
                 changed.append(issue)
-            elif not caller_ordered:
-                # Descending sort: this and everything after it predates the
-                # watermark, so nothing further can be new.
-                reached_old = True
-                break
 
-        if reached_old or d.get("isLast") or not d.get("nextPageToken"):
+        if d.get("isLast") or not d.get("nextPageToken"):
             break
         if pages >= MAX_PAGES:
             capped = True
             break
         token = d["nextPageToken"]
 
-    # `capped` means the paging loop stopped at its page cap, so older changed
-    # issues may be unseen. It used to only warn inside the human preview string,
-    # where nothing read it; now it blocks the cursor advance.
+    changed.sort(key=updated_epoch)
+
+    # ── Tie safety, same hazard as github_pr ────────────────────────────────────────────
+    # Ascending order alone does not make a capped page a safe prefix: if paging stops partway
+    # through timestamp T, advancing to T makes the next run filter `> T` and permanently skip
+    # the rows at T we never saw. On a capped page the only provable boundary is strictly below
+    # the final row's timestamp. Caller-ordered queries are exempt because we do not own the
+    # sort there and already keep the conservative page-cap rule.
+    if capped and not caller_ordered and changed:
+        boundary = updated_epoch(changed[-1])
+        safe = [i for i in changed if updated_epoch(i) < boundary]
+        if not safe:
+            result.emit("hold", count=len(changed), preview="", complete=False,
+                        reason=(f"all {len(changed)} changed issues share the same updated "
+                                f"timestamp on a capped page; the watermark cannot advance "
+                                f"safely"))
+            return
+        changed = safe
+
     if not changed:
-        result.counted(0, "", complete=not capped)
+        if capped and not caller_ordered:
+            # The page filled yet nothing is past the watermark, so the boundary timestamp
+            # spans more than the page cap. Reporting clean+complete would let triage advance
+            # this watch to now-lag and skip everything beyond it.
+            result.emit("hold", count=0, preview="", complete=False,
+                        reason="a capped page produced nothing past the watermark; the "
+                               "boundary timestamp spans more than one page of results")
+            return
+        # An empty gap is covered by definition; a caller-ordered query that hit the page cap
+        # genuinely might have missed something.
+        result.counted(0, "", complete=(not capped) or not caller_ordered)
         return
 
-    changed.sort(key=updated_epoch, reverse=True)
-    top = changed[0]
-    key = top.get("key", "?")
-    status = top.get("fields", {}).get("status", {}).get("name", "?")
-    summary = (top.get("fields", {}).get("summary") or "")[:55]
-    # count MUST stay a bare integer — triage compares it with `-gt`, so any
-    # non-numeric decoration ("18+") fails that test and the quest reads clean,
-    # silently swallowing the dispatch. Page-cap warning goes in the preview.
-    more = f" (+more, page cap {MAX_PAGES} hit)" if capped else ""
+    newest = changed[-1]
+    key = newest.get("key", "?")
+    status = newest.get("fields", {}).get("status", {}).get("name", "?")
+    summary = (newest.get("fields", {}).get("summary") or "")[:55]
+
+    if caller_ordered:
+        complete = not capped
+        more = f" (+more, page cap {MAX_PAGES} hit)" if capped else ""
+    else:
+        complete = True
+        more = f" (+backlog; oldest {len(changed)} first)" if capped else ""
+
+    # count MUST stay a bare integer — triage compares it with `-gt`, so any non-numeric
+    # decoration ("18+") fails that test and the quest reads clean, silently swallowing the
+    # dispatch. Page-cap warning goes in the preview.
     result.counted(len(changed), f"{key} [{status}] — {summary}{more}",
-                   advance_to=updated_epoch(top), complete=not capped)
+                   advance_to=updated_epoch(newest), complete=complete)
 
 
 if __name__ == "__main__":

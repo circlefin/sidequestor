@@ -9,7 +9,7 @@
     <array>
         <string>/usr/bin/env</string>
         <string>python3</string>
-        <string>{{REPO_ROOT}}/yaas-triage/dashboard-server.py</string>
+        <string>{{REPO_ROOT}}/yaas-triage/ops/dashboard-server.py</string>
         <string>8877</string>
     </array>
 

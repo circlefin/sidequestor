@@ -25,7 +25,7 @@ import subprocess
 from datetime import datetime, timezone, timedelta
 
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MCP_CALL = os.environ.get("MCP_CALL", os.path.join(SCRIPT_DIR, "mcp-call.sh"))
+MCP_CALL = os.environ.get("MCP_CALL", os.path.join(os.path.dirname(SCRIPT_DIR), "surfaces", "mcp-call.sh"))
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

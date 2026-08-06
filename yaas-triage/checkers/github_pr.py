@@ -94,11 +94,18 @@ class Transient(Exception):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import result
 
-def gh_search(repo, extra, limit, timeout=30):
+def gh_search(repo, extra, limit, timeout=30, since_iso=None, order="desc"):
     cmd = [GH, "search", "prs", "--repo", repo,
-           "--sort", "updated", "--order", "desc",
+           "--sort", "updated", "--order", order,
            "--limit", str(limit),
            "--json", "number,title,updatedAt,state,url"]
+    if since_iso:
+        # Bound the LOW end. Without this the query returns the newest N overall, which on
+        # a repo busier than `limit` is a SUFFIX of the gap — and a watermark can never
+        # cross a suffix, because the unread part sits directly above it. Bounding the low
+        # end and sorting ASCENDING makes the result a PREFIX instead, which the watermark
+        # can cross, so the backlog shrinks every tick instead of livelocking.
+        cmd.append(f"updated:>={since_iso}")
     if extra:
         # Positional search terms/qualifiers go before the flags gh parses.
         cmd = cmd[:3] + extra.split() + cmd[3:]
@@ -112,21 +119,14 @@ def gh_search(repo, extra, limit, timeout=30):
     return json.loads(r.stdout)
 
 
-def _covered(prs, limit, since_ts):
-    """Did this result reach back past the watermark?
+def _drained(rows, limit):
+    """Did this page reach the end of the gap? (Purely informational now.)
 
-    NOT `len(prs) < limit`: `gh search prs --sort updated` returns the N most recently
-    updated PRs, so on any repo busier than `limit` that test is permanently false, the
-    watch can never commit, and the no-progress counter eventually promotes it to
-    misconfig. What actually matters is whether the OLDEST row we got back is already
-    older than the watermark, which proves nothing was missed in between.
+    With a bounded, ascending query a short page means the gap is exhausted. A FULL page
+    still means we hold a contiguous prefix of the gap, which is safe to commit — see the
+    note on `complete` in main().
     """
-    if len(prs) < limit:
-        return True
-    try:
-        return min(updated_epoch(pr) for pr in prs) <= since_ts
-    except (ValueError, TypeError):
-        return False
+    return len(rows) < limit
 
 
 def updated_epoch(pr):
@@ -154,29 +154,65 @@ def main():
     limit = int(entry.get("limit") or 100)
     since_ts = float(entry.get("last_checked_ts") or 0)
 
-    prs = gh_search(repo, extra, limit)
+    # Ask for the OLDEST unseen changes first, bounded below by the watermark. One second
+    # is subtracted because GitHub's `updated:>=` is inclusive and coarse; the post-filter
+    # below re-applies the exact boundary.
+    since_iso = None
+    if since_ts > 0:
+        since_iso = datetime.fromtimestamp(since_ts - 1, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    changed = []
-    for pr in prs:
-        if updated_epoch(pr) > since_ts:
-            changed.append(pr)
-        else:
-            # Descending order: this and everything after predates the watermark.
-            break
+    rows = gh_search(repo, extra, limit, since_iso=since_iso, order="asc")
+    changed = [pr for pr in rows if updated_epoch(pr) > since_ts]
+    drained = _drained(rows, limit)
+
+    # ── Tie safety. Ascending order alone does NOT make a capped page a safe prefix ──────
+    # If the page fills up partway through timestamp T, advancing to T means the next run
+    # filters `> T` and permanently skips the rows at T we never saw. Ordering by timestamp
+    # gives no tiebreak, so on a capped page the only provable boundary is the last timestamp
+    # we hold IN FULL: anything strictly below the final row's timestamp.
+    if not drained and rows:
+        if not changed:
+            # Every row is at or below the watermark, yet the page filled. The boundary
+            # timestamp therefore holds more rows than one page. Reporting clean+complete here
+            # would let triage advance this watch to now-lag and skip everything past the
+            # page, so hold instead.
+            result.emit("hold", count=0, preview="", complete=False,
+                        reason=(f"a full page of {limit} rows produced nothing past the "
+                                f"watermark; the boundary timestamp spans more than one page "
+                                f"— raise \"limit\" above {limit} for {repo}"))
+            return
+        boundary = updated_epoch(rows[-1])
+        safe = [pr for pr in changed if updated_epoch(pr) < boundary]
+        if not safe:
+            # Every NEW row sits at the boundary timestamp, so no advance is provable.
+            result.emit("hold", count=len(changed), preview="", complete=False,
+                        reason=(f"all {len(changed)} new rows share updatedAt "
+                                f"{rows[-1].get('updatedAt')} on a full page; raise \"limit\" "
+                                f"above {limit} for {repo} or the watermark cannot advance"))
+            return
+        changed = safe
 
     if not changed:
-        result.counted(0, "", complete=_covered(prs, limit, since_ts))
+        result.counted(0, "", complete=True)
         return
 
-    top = changed[0]
-    title = (top.get("title") or "")[:50]
-    # count MUST stay a bare integer — triage compares it with `-gt`, so any
-    # non-numeric decoration makes the test fail and the quest read clean,
-    # silently swallowing the dispatch. Truncation warning goes in the preview.
-    more = f" (+more, limit {limit} hit)" if len(changed) >= limit else ""
+    # Ascending, so the LAST row is the newest we can prove we hold in full.
+    newest = changed[-1]
+    title = (newest.get("title") or "")[:50]
+
+    # `complete` means "everything up to advance_to has been seen", NOT "the whole gap is
+    # done" — advance_to bounds the claim, the same convention slack_utils.drain() uses for a
+    # covered forward slice. With the tie trimming above, what remains IS a contiguous prefix,
+    # so committing to `newest` is safe and the backlog shrinks every tick.
+    complete = True
+
+    more = "" if drained else f" (+backlog; oldest {len(changed)} first)"
+    # count MUST stay a bare integer — triage compares it with `-gt`, so any non-numeric
+    # decoration makes the test fail and the quest read clean, silently swallowing the
+    # dispatch. Truncation goes in the preview.
     result.counted(len(changed),
-                   f"#{top.get('number','?')} [{top.get('state','?')}] {title}{more}",
-                   advance_to=updated_epoch(top), complete=_covered(prs, limit, since_ts))
+                   f"#{newest.get('number','?')} [{newest.get('state','?')}] {title}{more}",
+                   advance_to=updated_epoch(newest), complete=complete)
 
 
 if __name__ == "__main__":

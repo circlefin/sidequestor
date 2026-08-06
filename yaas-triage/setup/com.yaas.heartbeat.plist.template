@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>{{REPO_ROOT}}/yaas-triage/heartbeat-loop.sh</string>
+        <string>{{REPO_ROOT}}/yaas-triage/ops/heartbeat-loop.sh</string>
     </array>
 
     <!-- A SEPARATE job from com.yaas.triage on purpose: the whole point is to detect

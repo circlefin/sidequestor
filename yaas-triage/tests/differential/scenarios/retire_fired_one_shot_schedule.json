@@ -1,0 +1,30 @@
+{
+  "name": "retire_fired_one_shot_schedule",
+  "why": "A one-shot schedule that has fired is retired; a recurring cron schedule is not. Retiring a cron watch would silently stop a recurring job like the weekly brief.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\n",
+      "watches": [
+        {
+          "watch_id": "w-fired",
+          "type": "schedule",
+          "next_fire_ts": "@now-7200",
+          "last_checked_ts": "@now-3600",
+          "reason": "one-shot, already fired"
+        },
+        {
+          "watch_id": "w-cron",
+          "type": "schedule",
+          "cron": "0 9 * * 1",
+          "next_fire_ts": "@now-7200",
+          "last_checked_ts": "@now-3600",
+          "reason": "recurring, must survive"
+        }
+      ]
+    }
+  },
+  "checkers": {},
+  "agent": {
+    "exit": 0
+  }
+}

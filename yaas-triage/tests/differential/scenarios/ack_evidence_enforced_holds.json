@@ -1,0 +1,37 @@
+{
+  "name": "ack_evidence_enforced_holds",
+  "why": "ENFORCING MODE (YAAS_ACK_EVIDENCE_ENFORCE=1). Same setup as ack_evidence_observed_only, but the watermark is HELD instead of advanced. Recorded now so that flipping the switch later is a proven change rather than a hopeful one: if live observation shows the evidence check is reliable, this golden already says what enforcement does.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\n",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "type": "slack_thread",
+          "channel_id": "C0AAAAAAA",
+          "thread_ts": "@now-7200.000100",
+          "last_checked_ts": "@now-3600",
+          "reason": "test"
+        }
+      ]
+    }
+  },
+  "checkers": {
+    "w1": {
+      "outcome": "dirty",
+      "count": 1
+    }
+  },
+  "env": {
+    "YAAS_ACK_EVIDENCE_ENFORCE": "1"
+  },
+  "agent": {
+    "exit": 0,
+    "acks": {
+      "w1": "nothing_to_do"
+    },
+    "reads": [
+      "C0BBBBBBB"
+    ]
+  }
+}

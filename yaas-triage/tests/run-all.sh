@@ -26,13 +26,16 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 VERBOSE="${1:-}"
 PASS=0; FAIL=0; FAILED=""
 
-for t in "$HERE"/test-*.sh; do
-  name=$(basename "$t")
+# Recurse: suites now live in unit/<mirror of the source tree>/ and behaviour/. The label
+# keeps the directory, because "ledger/add-watch" tells you what broke and "add-watch" does
+# not.
+for t in $(find "$HERE/unit" "$HERE/behaviour" -name '*.test.sh' 2>/dev/null | sort); do
+  name=${t#$HERE/}
   if [ "$VERBOSE" = "-v" ]; then
     printf '\n══ %s %s\n' "$name" "$(printf '═%.0s' $(seq 1 $((60 - ${#name}))))"
     bash "$t" && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); FAILED="$FAILED $name"; }
   else
-    printf '  %-40s ' "$name"
+    printf '  %-44s ' "$name"
     if bash "$t" >/dev/null 2>&1; then printf '\033[32mPASS\033[0m\n'; PASS=$((PASS+1))
     else printf '\033[31mFAIL\033[0m\n'; FAIL=$((FAIL+1)); FAILED="$FAILED $name"; fi
   fi
@@ -48,6 +51,7 @@ echo "$PASS suite(s) passed, $FAIL failed"
 # It is the regression net for the triage.sh -> Python port: see differential/README.md.
 if [ -d "$HERE/differential" ]; then
   echo
+  echo "coverage:  tests/coverage.sh   (source files with no unit test)"
   echo "differential harness (not run above, ~70s):"
   echo "  differential/run.sh check              orchestrator vs recorded goldens"
   echo "  differential/mutations.sh              prove the harness still catches breakage"

@@ -125,7 +125,7 @@ Keep the lag as small as the source allows. Every second of lag widens the windo
 }
 ```
 
-`jira` needs the REST bridge (`yaas-triage/jira-call.sh`, Basic-auth API token in Keychain `jira-api-token`/`yaas`) because the Atlassian MCP is interactive-OAuth only and is absent in headless dispatch. `github_pr` accepts optional `search` (extra GitHub qualifiers) and `limit` (default 100) — read the warning in `checkers/github_pr.py`'s docstring before adding a `search`, since repeated qualifiers AND rather than OR and can silently match nothing.
+`jira` needs the REST bridge (`yaas-triage/surfaces/jira-call.sh`, Basic-auth API token in Keychain `jira-api-token`/`yaas`) because the Atlassian MCP is interactive-OAuth only and is absent in headless dispatch. `github_pr` accepts optional `search` (extra GitHub qualifiers) and `limit` (default 100) — read the warning in `checkers/github_pr.py`'s docstring before adding a `search`, since repeated qualifiers AND rather than OR and can silently match nothing.
 
 `last_checked_ts` is always a Unix epoch float string. triage.sh is the sole owner of this field — the worker must never modify existing entries (it may only append new ones).
 
@@ -246,8 +246,8 @@ cd <repo>
 cp .env.example .env             # then fill in SLACK_*, YAAS_FROM_EMAIL, etc.
 cp CLAUDE.example.md CLAUDE.md   # customize as needed
 ./yaas-triage/setup/setup.sh
-./yaas-triage/doctor.sh          # is this machine configured (real creds, PATH, plist)
-python3 yaas-triage/health-monitor.py   # is it working right now
+./yaas-triage/ops/doctor.sh          # is this machine configured (real creds, PATH, plist)
+python3 yaas-triage/ops/health-monitor.py   # is it working right now
 yaas-triage/tests/run-all.sh     # is the code correct (fixtures, safe any time)
 ```
 
@@ -290,7 +290,7 @@ come up while debugging:
 | `YAAS_RETIRE_DEFAULT_DAYS` | 30 | Default age threshold for retiring stale `slack_thread` watches. Per-quest override via `retire_slack_threads_after_days` in meta.json. |
 
 Current spend against the ceilings:
-`python3 yaas-triage/spend-window.py state/run-log.ndjson | jq .`
+`python3 yaas-triage/dispatch/spend-window.py state/run-log.ndjson | jq .`
 
 ---
 
@@ -299,7 +299,7 @@ Current spend against the ceilings:
 | Symptom | Check |
 |---|---|
 | Quest never fires | `DRY_RUN=1 VERBOSE=1 bash yaas-triage/triage.sh` — see per-type checker output |
-| Checker returns `0\|` when it should find messages | Run checker directly: `MCP_CALL=yaas-triage/mcp-call.sh python3 yaas-triage/checkers/slack_thread.py '<entry_json>'` |
+| Checker returns `0\|` when it should find messages | Run checker directly: `MCP_CALL=yaas-triage/surfaces/mcp-call.sh python3 yaas-triage/checkers/slack_thread.py '<entry_json>'` |
 | Email quest misses messages | Watermark too far ahead? Check `watches[].last_checked_ts` in the quest's `watch.json`. Gmail indexes ~60s after delivery; `email.lag=120` gives a 2-min buffer |
 | Worker keeps retrying the same error | Check `logs/worker-latest.log`. If the quest has a permanently-deleted thread, remove it from `watches[]` |
 | Triage lock stuck | Check `logs/triage.lock.holder`. If PID is dead, the OS releases the lock automatically on next tick |
