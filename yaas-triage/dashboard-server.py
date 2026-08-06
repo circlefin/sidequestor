@@ -51,6 +51,13 @@ REPO_ROOT      = SCRIPT_DIR.parent
 STATE_DIR      = REPO_ROOT / "state"
 LOG_DIR        = REPO_ROOT / "logs"
 APPROVALS_FILE = STATE_DIR / "pending-approvals.json"
+
+# Statuses that are genuinely finished. Everything else is shown, deliberately: the
+# queue used to ALLOWLIST pending_review/needs_reply, so `executing` and `reviewed`
+# were invisible by construction and an approval stuck mid-execution had no surface at
+# all. Default-visible means a status nobody thought about shows up instead of
+# vanishing.
+TERMINAL_APPROVAL_STATUSES = ("executed", "cancelled")
 DASHBOARD_HTML = REPO_ROOT / "dashboard.html"
 PORT           = int(sys.argv[1]) if len(sys.argv) > 1 else 8877
 
@@ -639,7 +646,7 @@ def build_open_items() -> dict:
     if APPROVALS_FILE.exists():
         try:
             for i in _read_approvals().get("items", []):
-                if i.get("status") not in ("pending_review", "needs_reply"):
+                if i.get("status") in TERMINAL_APPROVAL_STATUSES:
                     continue
                 t = i.get("target") or {}
                 review.append({
@@ -766,7 +773,7 @@ def build_dashboard() -> dict:
         try:
             data = _read_approvals()
             pending_review = [i for i in data.get("items", [])
-                              if i.get("status") in ("pending_review", "needs_reply")]
+                              if i.get("status") not in TERMINAL_APPROVAL_STATUSES]
         except Exception:
             pass
 
@@ -826,7 +833,10 @@ def build_messages() -> dict:
         (needs_you if i.get("action_type", "slack_message") in _MSG_ACTION_TYPES
          else other_actions).append(_approval_card(i))
 
-    recent, summary_only = [], 0
+    # Recent activity: all timeline events (not just outbound) across active quests.
+    # Skips "created" (no display value) and empty note/info events.
+    _SKIP_EVENTS = {"created"}
+    recent = []
     for quest_dir in sorted(active_dir.iterdir()) if active_dir.exists() else []:
         if not quest_dir.is_dir():
             continue
@@ -847,14 +857,34 @@ def build_messages() -> dict:
                 e = json.loads(raw)
             except Exception:
                 continue
-            if e.get("event") not in _OUTBOUND_EVENTS:
+            ev = e.get("event")
+            if not ev or ev in _SKIP_EVENTS:
                 continue
-            rec = _normalize_msg_event(e, appr_by_id)
-            if rec is None:
-                if e.get("event") in _SENT_EVENTS:
-                    summary_only += 1
+            # For outbound events, try to recover message body from approval index
+            body = e.get("message_text") or ""
+            if ev in _OUTBOUND_EVENTS and not body:
+                appr_id = e.get("approval_id")
+                if appr_id and appr_id in appr_by_id:
+                    body = appr_by_id[appr_id]
+            note = e.get("note") or ""
+            # Skip non-outbound events that carry no displayable content
+            if ev not in _OUTBOUND_EVENTS and not body and not note:
                 continue
-            rec["quest_id"], rec["quest_title"] = quest_dir.name, title
+            channel_id = _norm_channel(e)
+            rec = {
+                "ts":           e.get("ts"),
+                "event":        ev,
+                "kind":         _OUTBOUND_EVENTS.get(ev),
+                "channel_id":   channel_id,
+                "thread_ts":    e.get("thread_ts"),
+                "message_text": _clip(body, 2000) if body else "",
+                "note":         _clip(note, 300),
+                **_link_fields(e),
+                "action_type":  e.get("action_type"),
+                "awaiting_send": False,
+                "quest_id":     quest_dir.name,
+                "quest_title":  title,
+            }
             recent.append(rec)
 
     for i in pending:  # awaiting-send drafts (message types only)
@@ -864,11 +894,27 @@ def build_messages() -> dict:
     recent.sort(key=lambda r: r.get("ts") or "", reverse=True)
     recent = recent[:40]
 
+    # Queued items: approved but not yet sent by the worker.
+    queued_items = [
+        {
+            "id":           i.get("id"),
+            "quest_id":     i.get("quest_id"),
+            "quest_title":  i.get("quest_title", i.get("quest_id")),
+            "action_type":  i.get("action_type", "slack_message"),
+            "reviewed_at":  i.get("reviewed_at"),
+            "executing_at": i.get("executing_at"),
+            "status":       i.get("status"),
+            "message_text": i.get("message_text", ""),
+        }
+        for i in appr_data.get("items", [])
+        if i.get("status") in ("reviewed", "executing")
+    ]
+
     return {
-        "needs_you":          needs_you,
-        "other_actions":      other_actions,
-        "recent_messages":    recent,
-        "summary_only_count": summary_only,
+        "needs_you":       needs_you,
+        "other_actions":   other_actions,
+        "recent_activity": recent,
+        "queued_items":    queued_items,
     }
 
 
@@ -937,29 +983,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
         except Exception:
             pass
 
-    # conversation: verbatim-only outbound messages for THIS quest (newest-first)
-    # + this quest's pending/reviewed message-type approvals as awaiting-send
-    # drafts. Same recoverable-body filter as build_messages(); the full timeline
-    # above still lists every event (including summary-only ones).
     appr_data  = _read_approvals() if APPROVALS_FILE.exists() else {"items": []}
-    appr_by_id = _approvals_index(appr_data)
-    conversation = []
-    for raw in reversed(lines[-_TIMELINE_CAP:]):
-        try:
-            e = json.loads(raw)
-        except Exception:
-            continue
-        if not isinstance(e, dict) or e.get("event") not in _OUTBOUND_EVENTS:
-            continue
-        rec = _normalize_msg_event(e, appr_by_id)
-        if rec:
-            conversation.append(rec)
-    for i in appr_data.get("items", []):
-        if (i.get("quest_id") == quest_id
-                and i.get("status") in ("pending_review", "needs_reply", "reviewed")
-                and i.get("action_type", "slack_message") in _MSG_ACTION_TYPES):
-            conversation.append(_approval_draft_record(i))
-    conversation.sort(key=lambda r: r.get("ts") or "", reverse=True)
 
     # ── Per-quest open items: the durable "what is THIS quest still waiting on"
     #    summary. Open threads come from watch.json (each watch = a thread/inbox
@@ -1027,7 +1051,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
          "action_type": i.get("action_type", "slack_message"),
          "message_text": _clip(i.get("message_text", ""), 2000)}
         for i in appr_data.get("items", [])
-        if i.get("quest_id") == quest_id and i.get("status") in ("pending_review", "needs_reply")
+        if i.get("quest_id") == quest_id and i.get("status") not in TERMINAL_APPROVAL_STATUSES
     ]
 
     commitments = []
@@ -1055,7 +1079,6 @@ def build_quest_detail(quest_id: str) -> dict | None:
         "watches":        watches,
         "timeline":       timeline,
         "timeline_total": total,
-        "conversation":   conversation,
         "open_items":     open_items,
     }
 
@@ -1361,7 +1384,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         now = datetime.now(timezone.utc).isoformat()
 
-        if action == "revise":
+        if action == "edit":
+            # In-place text edit on an already-reviewed item — stays reviewed,
+            # just updates the message_text the worker will send.
+            new_text = payload.get("message_text", "").strip()
+            if not new_text:
+                self._send_json({"error": "message_text required"}, 400)
+                return
+            updates = {"message_text": new_text, "human_edited": True}
+            try:
+                item = _update_approval(approval_id, updates, from_status=("reviewed",))
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+                return
+            if item is None:
+                self._send_json({"error": "approval not found"}, 404)
+                return
+            if item is _CONFLICT:
+                self._send_json({"error": "item is no longer in reviewed state"}, 409)
+                return
+            self._send_json({"ok": True, "status": item["status"]})
+            return
+        elif action == "revise":
             # Explicit "Submit for revision": send the draft back to the worker
             # for another pass, no matter what. Reuses the needs_reply loop the
             # '?' heuristic below relies on, so the worker revises + re-surfaces

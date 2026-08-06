@@ -51,11 +51,18 @@ Watch entry fields by type:
                  warning in checkers/github_pr.py first: repeated qualifiers AND
                  rather than OR, so a bad one silently matches nothing forever.
 
-Optional bash-layer filters (slack_channel + slack_thread only) — set these to avoid
-waking the worker on irrelevant messages; triage.sh applies them before any dispatch:
+Optional pre-dispatch filters (slack_channel + slack_thread only) — set these to avoid
+waking the worker on irrelevant messages; evaluated inside the checker scripts
+(checkers/slack_channel.py, checkers/slack_thread.py) before any dispatch decision:
   filter_user_ids:  [<user_id>, ...]  only these authors wake the worker
   filter_keywords:  [<str>, ...]      message must contain >=1 (case-insensitive substring)
-  (both set → AND-ed. Passed through verbatim; spell exactly — unknown keys are ignored.)
+  (both set → AND-ed. Passed through verbatim; spell exactly — unknown keys are silently ignored.)
+
+Optional watch behaviour:
+  watch_mode:  "read_only"  — monitor only; worker must not reply in this thread.
+               Use for internal escalation threads (#help-*, #cpn-se-questions, etc.)
+               where you post a question and want outcome notifications without bot chatter.
+               Any value other than "read_only" is rejected by this script.
 
 Example spec:
   {
@@ -110,7 +117,7 @@ KNOWN_TYPES = set(REQUIRED_FIELDS)
 # Canonical field order for each type (for readable output)
 FIELD_ORDER = ["type", "channel_id", "thread_ts", "user_id", "cron", "tz", "id", "query",
                "jql", "repo", "search", "limit",
-               "last_checked_ts", "filter_user_ids", "filter_keywords", "reason"]
+               "watch_mode", "last_checked_ts", "filter_user_ids", "filter_keywords", "reason"]
 
 
 def die(msg):
@@ -178,7 +185,9 @@ def validate_watches(watches):
             die(f"watches[{i}] (type={t!r}) missing 'reason'")
         for field in REQUIRED_FIELDS.get(t, []):
             if not w.get(field):
-                die(f"watches[{i}] (type={t!r}) missing required field '{field!r}'")
+                die(f"watches[{i}] (type={t!r}) missing required field '{field}'")
+        if "watch_mode" in w and w["watch_mode"] not in ("read_only",):
+            die(f"watches[{i}] watch_mode must be 'read_only' if set, got: {w['watch_mode']!r}")
         if "last_checked_ts" in w:
             die(f"watches[{i}] must not include 'last_checked_ts' — this script sets it")
 

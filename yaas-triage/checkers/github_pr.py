@@ -91,6 +91,9 @@ class Transient(Exception):
     """Retryable upstream condition — skip the tick, don't dispatch."""
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import result
+
 def gh_search(repo, extra, limit, timeout=30):
     cmd = [GH, "search", "prs", "--repo", repo,
            "--sort", "updated", "--order", "desc",
@@ -145,7 +148,7 @@ def main():
             break
 
     if not changed:
-        print("0|")
+        result.counted(0, "", complete=len(prs) < limit)
         return
 
     top = changed[0]
@@ -154,7 +157,9 @@ def main():
     # non-numeric decoration makes the test fail and the quest read clean,
     # silently swallowing the dispatch. Truncation warning goes in the preview.
     more = f" (+more, limit {limit} hit)" if len(changed) >= limit else ""
-    print(f"{len(changed)}|#{top.get('number','?')} [{top.get('state','?')}] {title}{more}")
+    result.counted(len(changed),
+                   f"#{top.get('number','?')} [{top.get('state','?')}] {title}{more}",
+                   advance_to=updated_epoch(top), complete=len(prs) < limit)
 
 
 if __name__ == "__main__":
@@ -162,6 +167,6 @@ if __name__ == "__main__":
         main()
     except Transient as e:
         # Not dirty: skip the tick. Watermark is held, so nothing is lost.
-        print(f"ratelimited|{e}")
+        result.ratelimited(str(e))
     except Exception as e:
-        print(f"error|{e}")
+        result.error(f"{type(e).__name__}: {e}")

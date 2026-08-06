@@ -21,14 +21,14 @@ You're in one of two modes. Infer from context:
 
 ### Mode A — Triage dispatch (automated)
 
-- Triggered by `triage.sh` calling `claude --model opus -p "YaaS worker dispatch: dirty targets: ..."` (headless mode — no REPL)
-- The prompt includes a comma-separated list of dirty **targets**. A target is either a quest ID (e.g., `quest-my-quest-2026-04-28`) or the literal string `reactions`.
-- The prompt also includes `Exact dirty watches (JSON)`, with the persistent `watch_id` and `type` that triggered each quest. For every quest target, process every listed watch ID. Select each entry directly with `jq --arg id '<watch_id>' '.watches[] | select(.watch_id == $id)' state/quests/active/<quest_id>/watch.json`; never scan or truncate `watch.json` to guess what fired.
+- Triggered by `triage.sh` calling `claude --model opus -p "YaaS worker dispatch: dirty target: ..."` (headless mode — no REPL)
+- **One dispatch handles exactly ONE target.** A target is either a single quest ID (e.g., `quest-my-quest-2026-04-28`) or the literal string `reactions`. If a tick finds several dirty quests, triage runs a separate dispatch per quest, sequentially, each with its own commit. So your run is scoped to one quest: never touch another quest's folder.
+- The prompt includes `Exact dirty watches (JSON)`, with the persistent `watch_id` and `type` of every watch that fired for this target, plus a `run_id`. Process every listed watch ID (select each entry with `jq --arg id '<watch_id>' '.watches[] | select(.watch_id == $id)' state/quests/active/<quest_id>/watch.json`; never scan or truncate `watch.json` to guess what fired) and close each one in the ack ledger before exiting — see § 4a.
 - Target-specific protocol:
   - `reactions` → **Reactions Fast Path** (§ Reactions). Self-contained. Do NOT read any quest folder.
   - quest ID → **Quest Activation Protocol** (below). Read only what you need.
-- After processing all targets, emit the **Output Contract** summary and exit.
-- Do NOT scan for activity anywhere else — triage.sh already did that. Act only on the specified targets.
+- After processing the target and acking every item, emit the **Output Contract** summary and exit.
+- Do NOT scan for activity anywhere else — triage.sh already did that. Act only on the specified target.
 
 **Token discipline.** Every tool call and every extra file read re-sends the conversation through the model, multiplying cost. Do the minimum. Read `context.md` before anything else; only read other files when you're about to act and actually need them.
 
@@ -45,7 +45,7 @@ You're in one of two modes. Infer from context:
 
 ### ⚠️ Invariant: you do NOT modify existing `watch.json` entries
 
-The triage.sh script is the **sole owner** of watermark state. It advances `last_checked_ts` for every watched target in every quest — clean ones immediately, dirty ones only after you exit successfully. **Never edit an existing entry in `watch.json`** (never change a `last_checked_ts`, never remove an entry). If you do, you'll corrupt the termination-safety guarantee.
+The triage.sh script is the **sole owner** of watermark state. It advances `last_checked_ts` for clean watches immediately, and for a dispatched watch only when you closed it in the ack ledger (§ 4a) AND the checker proved it drained its window. Your exit code alone advances nothing. **Never edit an existing entry in `watch.json`** (never change a `last_checked_ts`, never remove an entry). If you do, you'll corrupt the termination-safety guarantee.
 
 You **may** append new entries to `watch.json` — see the "Track what you touched" rule below. New entries start with `last_checked_ts` set to the response_ts of your reply so triage looks forward from there.
 
@@ -124,24 +124,17 @@ Reactions are never handled here — they are their own dispatch target, see § 
 
 ### 3a. Track what you touched (general rule — all quests)
 
-Any time you send a message, post a draft, or otherwise act on a specific Slack message, **append a new entry to `watch.json` `watches[]`** with `type: "slack_thread"`, so the next triage tick picks up replies independently. Skip this if the thread is already in `watches[]`.
+Any time you send a message or post a draft, watch the thread so the next tick picks up replies:
 
-```json
-{
-  "type": "slack_thread",
-  "channel_id": "<channel_id>",
-  "thread_ts": "<parent_message_ts>",
-  "last_checked_ts": "<response_ts from your reply>",
-  "watch_mode": "read_only",
-  "reason": "escalation in #channel-name — watching for resolution to relay to customer"
-}
+```bash
+python3 yaas-triage/add-watch.py <quest_id> '{"type":"slack_thread","channel_id":"C...","thread_ts":"<parent_ts>","last_checked_ts":"<response_ts>","reason":"why","watch_mode":"read_only"}'
 ```
 
-`watch_mode` is optional. Omit it for customer-facing threads (the default is to engage). Set it to `"read_only"` for internal escalation threads — see § 3c below.
+`add-watch.py` is the only way to add a watch: Edit/Write on `watch.json` is blocked by a hook. It appends, validates the type's fields, assigns the `watch_id`, and prints `skip:duplicate` if the thread is already watched, so you can call it without checking first.
 
-**Critical:** set `last_checked_ts` to the `response_ts` of your own reply, NOT the current epoch. Using "now" would silently swallow any replies posted between your send and your watch.json write. Your reply's TS is the correct boundary: anything strictly newer is unseen.
+**Pass `last_checked_ts` explicitly, as the `response_ts` of your own reply.** This is the one thing the script cannot decide for you, and the default is wrong for your case: your reply's ts is the correct boundary, whereas "now" silently swallows any reply posted between your send and this call. With no send ts (a draft), omit it and the script falls back to the parent `thread_ts`; triage then re-surfaces your own draft next tick, which you ignore as self-authored.
 
-If you don't have a reply TS (e.g., draft save), use the parent `thread_ts` as `last_checked_ts`. Triage will re-surface your own draft on the next tick.
+`watch_mode: "read_only"` for internal escalation threads (§ 3c); omit it for customer-facing ones.
 
 **DMs need a second watch.** When you initiate a top-level DM (not a reply inside an existing thread), append BOTH a `slack_thread` watch on your outbound `message_ts` AND a `slack_channel` watch on the DM channel itself. In a 1-1 DM, the recipient's natural reply is a new top-level message in the channel, not a threaded reply, so a `slack_thread` watch alone will miss it. The `slack_channel` watch covers the top-level case. Set `last_checked_ts` to your outbound `response_ts` on both. This dual-watch rule applies only to DM channels (IM type); for public/private channels and existing threads, a single `slack_thread` watch is enough because the threading convention holds.
 
@@ -194,7 +187,7 @@ APPR_ID=$(python3 yaas-triage/approval-helper.py write \
     "message_text":"...","context":"...","risk_reason":"..."}')
 ```
 
-`write` **also arms the `approval` watch for you** — it appends `{"type":"approval","approval_id":...,"last_checked_ts":...}` to the quest's `watch.json` as part of the same call (additive, idempotent). You do NOT append it by hand. This coupling is deliberate: an approval with no watch is invisible to triage and never re-surfaces, so it would sit in `needs_reply` forever. It also means you must **never hand-write an item straight into `pending-approvals.json`** — always go through `write`, or the watch won't be armed. If `APPR_ID` is non-empty, just log `draft_posted` with `"approval_id": "$APPR_ID"` to `timeline.ndjson`. Do NOT add a `slack_thread` watch — see §3a exception.
+`write` also arms the `approval` watch in the same call, which is why it is the only supported path (Edit/Write on `pending-approvals.json` is blocked by a hook): an approval with no watch is invisible to triage and strands forever. If `APPR_ID` is non-empty, log `draft_posted` with `"approval_id": "$APPR_ID"` to `timeline.ndjson`. Do NOT add a `slack_thread` watch — see §3a exception.
 
 **Executing a reviewed item — when dispatched for a quest and you find `status: "reviewed"`:**
 
@@ -204,6 +197,8 @@ APPR_ID=$(python3 yaas-triage/approval-helper.py write \
 4. Mark done: `python3 yaas-triage/approval-helper.py done <id> <response_ts>`.
 5. Append a `slack_thread` watch to `watch.json` with `last_checked_ts = response_ts` (per §3a).
 6. Log `executed` to `timeline.ndjson` with `approval_id`, `response_ts`, and a note on any changes applied from `review_note`.
+
+**Executing item whose lease expired.** A previous dispatch claimed this item and never closed it, so the send may or may not have landed. Do NOT resend blind. Read the target thread and look for the message. Present → close it with `approval-helper.py done <id> <response_ts>` and log `executed`. Absent → execute normally. Can't tell → log `blocked` and surface under Attention needed.
 
 **Cancellation edge case:** `start` returns `skip:cancelled` if the user cancelled between triage's check and your dispatch — log a `note`, exit 0.
 
@@ -236,11 +231,22 @@ It sends (or drafts), then appends a timeline entry carrying the exact `message_
 When closing an approval whose action was a Jira/GitHub/Gmail post, pass that URL to `approval-helper.py done <id> <url>` instead of a Slack ts: it is stored as `result_url` and becomes the history link.
 
 
-If you **couldn't** complete an action (error, ambiguous situation, needed user input), log it as a `blocked` event in `timeline.ndjson` with details, and **stop without finishing the rest of the work**. Surface the blocker in the Output Contract under "Errors". Do NOT silently skip blocked work and exit clean — triage.sh interprets a clean exit as "everything handled" and will advance watermarks, burying the blocked activity.
+If you **couldn't** complete an action (error, ambiguous situation, needed user input), log it as a `blocked` event in `timeline.ndjson` with details, and **stop without finishing the rest of the work**. Surface the blocker in the Output Contract under "Errors". Ack the item as `blocked` (§ 4a) so triage holds its watermark.
 
-When the blocker is specifically a Slack MCP/tool availability failure, include `"blocker_kind":"slack_tooling_outage"`. Do not use that kind for Slack Connect access, missing channels/invites, unreachable people, or other business dependencies. Triage may automatically clear this structured infrastructure blocker only after a later dispatch records a successful Slack read from inside the worker.
+### 4a. Ack every dispatched item before you exit
 
-(Mechanism note: `claude -p` exits 0 whenever Claude completes its output normally, so you can't force a non-zero exit through prose. The best you can do is surface the failure clearly in the Output Contract — and avoid taking further actions that would suggest the dispatch was a success.)
+`claude -p` exits 0 even when you only did half the work, so triage does not commit on your exit code. It commits per item, and only for items you close:
+
+```bash
+python3 yaas-triage/ack-watch.py ack <run_id> <item_id> handled|nothing_to_do|blocked "<one-line note>"
+```
+
+One call per `watch_id` in `Exact dirty watches (JSON)` (item_id is `<emoji>:<msg_ts>` in a `reactions` dispatch). `handled` = you acted. `nothing_to_do` = you read it and it correctly needs no action. `blocked` = you couldn't finish. `handled` and `nothing_to_do` advance that watch's watermark; `blocked` and anything unacked hold it and come back next tick.
+
+Two things the ledger cannot check for you:
+
+- **An ack is a claim that you read the source.** A false `nothing_to_do` buries a real message, which is the failure this exists to prevent.
+- **Ack as you go, not in a batch at the end.** If the watchdog kills the dispatch at 30 min, what you already acked commits and the rest correctly re-surfaces.
 
 ### 5. Move completed quests
 
@@ -293,7 +299,8 @@ For the `reactions` target, execute exactly these steps:
    d. **Commitment check (§ 3b applies here).** Before sending, scan your draft reply for commitment phrases ("I'll", "will rerun", "will confirm", "let me"). If the thread asks you to DO something, do the work first and reply once with the result — never reply with a promise and exit. Verify capability (available tools, credentials in `.env`) before deciding you can't. If the action genuinely cannot complete in-tick, spawn a quest (§ New quests from reactions) before exiting so the promise has a trigger — a commitment tracked nowhere never resurfaces.
    e. **For action reactions, mark done:** once the action is complete and every in-tick commitment is done, swap `:claudeloading:` → `:updatedone:` (§ Reaction lifecycle). If blocked / spun into a quest / skipped, leave it at `:claudeloading:`.
    f. **Append `msg_ts`** to the emoji's state file. This is how we avoid re-processing.
-3. **Exit 0** when all entries are processed. Triage deletes `pending_reactions.json`.
+3. **Ack each `(emoji, msg_ts)` pair** in the ledger (§ 4a) using item_id `<emoji>:<msg_ts>` — `handled` when you replied / drafted / saved, `nothing_to_do` for a conscious skip, `blocked` if you couldn't. Triage keeps every unacked pair in `pending_reactions.json` for the next tick and deletes the file only once all of them are closed, so a reaction you silently skip is no longer lost.
+4. **Exit 0** when all entries are processed and acked.
 
 ### State file schemas
 
@@ -370,23 +377,21 @@ Rules for the shell path:
 
 ## Output contract (Mode A only)
 
-When the run finishes, emit exactly this shape and stop:
+**Emit nothing if nothing material happened.** No message sent, no draft created, no state or status changed → exit silently. Most ticks are this.
+
+When something did happen, emit at most 8 lines covering only what applies:
 
 ```
-Quests processed: <n dispatched>
-  completed:  <ids or "none">
-  in-progress: <ids or "none">
-  errored:    <ids or "none">
-Messages sent: <count>
-Drafts created: <count>
-Watermarks advanced: <count>
+Target: <quest_id or "reactions">
+Sent / drafted: <count or what>
+Status: <any quest status change>
 Attention needed:
-  - <bullet or "none">
+  - <what the user must act on, or omit this block>
 Errors:
-  - <bullet or "none">
+  - <what blocked, or omit this block>
 ```
 
-≤10 lines. No raw tool output, no full message bodies, no tokens. Anything the user needs to act on goes under **Attention needed**.
+No raw tool output, no message bodies, no token counts. Do not report watermarks: triage decides those after you exit, from your acks (§ 4a), so you cannot know them.
 
 ---
 
@@ -396,7 +401,7 @@ Errors:
 2. **Never modify existing `watch.json` entries.** Triage.sh owns watermark advancement. You MAY append new entries per § 3a; additive only.
 3. **Never send without authorization.** Draft first unless the quest explicitly says `allow_send: true` in `meta.json`.
 4. **Log every outbound action** to `timeline.ndjson` with a permalink/message ID.
-5. **Fail loud.** If you couldn't complete the dispatch, log a `blocked` event in the relevant `timeline.ndjson` and surface the failure in the Output Contract under "Errors". Don't continue as if it succeeded.
+5. **Fail loud.** If you couldn't complete the dispatch, ack the affected item as `blocked` (§ 4a), log a `blocked` event in the relevant `timeline.ndjson`, and surface the failure in the Output Contract under "Errors". Don't continue as if it succeeded.
 6. **Respect privacy absolutely.** Never share info about one person with another unless directly relevant or explicitly asked. When in doubt, share less.
 7. **Nothing persists in memory after you terminate.** Write to `state/` if it matters.
 8. **Honor in-tick commitments — in quest work AND reaction replies.** If your reply contains "I'll do X", do X in the same tick before exiting (see § 3b). `watch.json` does not track outbound promises, and reaction state files track nothing at all, so an unkept commitment never resurfaces on its own.

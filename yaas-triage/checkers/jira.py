@@ -82,6 +82,9 @@ class Transient(Exception):
     """Retryable upstream condition — skip the tick, don't dispatch."""
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import result
+
 def jira_get(path, timeout=30):
     r = subprocess.run([JIRA_CALL, "GET", path], capture_output=True, text=True, timeout=timeout)
     detail = (r.stderr or "").strip().splitlines()
@@ -149,8 +152,11 @@ def main():
             break
         token = d["nextPageToken"]
 
+    # `capped` means the paging loop stopped at its page cap, so older changed
+    # issues may be unseen. It used to only warn inside the human preview string,
+    # where nothing read it; now it blocks the cursor advance.
     if not changed:
-        print("0|")
+        result.counted(0, "", complete=not capped)
         return
 
     changed.sort(key=updated_epoch, reverse=True)
@@ -162,7 +168,8 @@ def main():
     # non-numeric decoration ("18+") fails that test and the quest reads clean,
     # silently swallowing the dispatch. Page-cap warning goes in the preview.
     more = f" (+more, page cap {MAX_PAGES} hit)" if capped else ""
-    print(f"{len(changed)}|{key} [{status}] — {summary}{more}")
+    result.counted(len(changed), f"{key} [{status}] — {summary}{more}",
+                   advance_to=updated_epoch(top), complete=not capped)
 
 
 if __name__ == "__main__":
@@ -170,6 +177,6 @@ if __name__ == "__main__":
         main()
     except Transient as e:
         # Not dirty: skip the tick. Watermark is held, so the change is not lost.
-        print(f"ratelimited|{e}")
+        result.ratelimited(str(e))
     except Exception as e:
-        print(f"error|{e}")
+        result.error(f"{type(e).__name__}: {e}")

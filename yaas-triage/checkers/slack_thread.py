@@ -22,13 +22,17 @@ Input:  watch entry JSON as argv[1]
         {"type":"slack_thread","channel_id":"C...","thread_ts":"1234.567",
          "last_checked_ts":"1234.567","reason":"..."}
 
-Output: count|preview   (preview = first 100 chars of newest new message body)
-        error|reason    (on MCP failure — triage treats this as dirty/retry)
+Output: one line of JSON per checkers/result.py. Pages the source (50/page, up to
+        5 pages) until a message at or below the watermark proves the gap is
+        covered; if it saturates first, emits complete=false so triage refuses to
+        advance the cursor past messages it never saw. Reports advance_to as the
+        newest message actually covered rather than letting triage guess "now".
 
 Env:    MCP_CALL  path to mcp-call.sh (falls back to ../mcp-call.sh)
 """
 import sys
 import os
+import re
 import json
 import subprocess
 
@@ -36,7 +40,8 @@ SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MCP_CALL = os.environ.get("MCP_CALL", os.path.join(SCRIPT_DIR, "mcp-call.sh"))
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from slack_utils import parse_slack_messages
+import result
+from slack_utils import PAGE_LIMIT, drain
 
 
 def main():
@@ -45,45 +50,61 @@ def main():
     thread_ts = entry["thread_ts"]
     since = float(entry.get("last_checked_ts", "0"))
 
-    r = subprocess.run(
-        [MCP_CALL, "slack_read_thread",
-         json.dumps({"channel_id": channel_id, "message_ts": thread_ts, "limit": 30})],
-        capture_output=True, text=True, timeout=30,
+    def fetch_page(cursor):
+        """One page, newest-first. Returns (text, next_cursor, transient_reason)."""
+        args = {"channel_id": channel_id, "message_ts": thread_ts, "limit": PAGE_LIMIT}
+        if cursor:
+            args["cursor"] = cursor
+        r = subprocess.run(
+            [MCP_CALL, "slack_read_thread", json.dumps(args)],
+            capture_output=True, text=True, timeout=30,
+        )
+        body = (r.stdout or "").strip()
+        # A non-zero exit is NOT automatically a hard error: mcp-call.sh exits 2 on
+        # any JSON-RPC .error, and a rate limit arrives that way. Inspect the body
+        # before classifying, or rate limits get misfiled as `error` and (before the
+        # backoff landed) dispatched a paid worker. ~1,380 lifetime occurrences of
+        # exactly that were visible in triage.log.
+        if "ratelimited" in body.lower():
+            return "", None, "slack ratelimited (transient); watermark held"
+        if r.returncode != 0 or not body:
+            return "", None, f"mcp slack_read_thread failed (exit {r.returncode}) {body[:60]}"
+        try:
+            d = json.loads(body)
+        except Exception:
+            # Permanent lookup failures arrive as plain text with exit 0. Those must
+            # read as clean-and-complete, else they wake the worker forever.
+            if "thread_not_found" in body or "channel_not_found" in body:
+                return "", None, None
+            return "", None, f"non-json response: {body[:80]}"
+        return d.get("messages", ""), _next_cursor(d), None
+
+    count, preview, newest, complete, transient = drain(
+        fetch_page, since,
+        entry.get("filter_user_ids") or None,
+        entry.get("filter_keywords") or None,
     )
-    if r.returncode != 0 or not r.stdout.strip():
-        print(f"error|mcp slack_read_thread failed (exit {r.returncode})")
-        return
 
-    try:
-        d = json.loads(r.stdout)
-    except Exception:
-        body = r.stdout.strip()
-        # Slack MCP returns some permanent lookup failures as plain text while
-        # still exiting 0. Retrying those would dispatch a worker every tick.
-        if "thread_not_found" in body or "channel_not_found" in body:
-            print("0|")
-        elif "ratelimited" in body:
-            # Transient: rate limits clear on their own. Never treat as clean
-            # (a "0" advances the watermark past unseen replies — silent
-            # burial), but never treat as `error` either — `error` marks the
-            # quest dirty and burns a full Opus dispatch that finds nothing,
-            # and the rate-limit was likely caused by the checker volume in the
-            # first place. Distinct `ratelimited` outcome: triage skips the
-            # quest this tick and holds the watermark. Retries next tick.
-            print("ratelimited|slack ratelimited (transient); skipping tick, watermark held")
+    if transient:
+        if "ratelimited" in transient:
+            result.ratelimited(transient)
         else:
-            print(f"error|non-json response: {body[:80]}")
+            result.error(transient)
         return
 
-    text = d.get("messages", "")
-    filter_user_ids = entry.get("filter_user_ids") or None
-    filter_keywords = entry.get("filter_keywords") or None
-    count, preview = parse_slack_messages(text, since, filter_user_ids, filter_keywords)
-    print(f"{count}|{preview}")
+    # advance_to is the newest message this check actually covered, not "now". If
+    # nothing new arrived there is nothing to prove, so leave it unset and let
+    # triage use its own clock.
+    result.counted(count, preview,
+                   advance_to=newest if newest > 0 else None,
+                   complete=complete)
+
+
+def _next_cursor(d):
+    """Slack MCP reports pagination in a human string; pull the cursor out of it."""
+    m = re.search(r"cursor `([^`]+)`", str(d.get("pagination_info") or ""))
+    return m.group(1) if m else None
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"error|{e}")
+    result.guard(main)

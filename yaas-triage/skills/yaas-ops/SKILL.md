@@ -271,10 +271,24 @@ tail -f logs/worker-latest.log
 
 ## Configurable knobs (in `.env`)
 
+`.env.example` is the canonical list with full reasoning. The knobs most likely to
+come up while debugging:
+
 | Variable | Default | Effect |
 |---|---|---|
+| `YAAS_MAX_SPEND_1H` | 40 | Hourly dollar ceiling. On breach, checks still run but the dispatch is withheld and `gate_budget_exceeded` is logged. This is the first thing to check when nothing is dispatching despite dirty quests. |
+| `YAAS_MAX_SPEND_24H` | 250 | Daily dollar ceiling. |
+| `YAAS_MAX_DISPATCH_6H` | 250 | Dispatch-count ceiling. The only ceiling that works under the codex/cursor backends, which report no cost. |
+| `YAAS_MAX_TARGET_DISPATCH_PER_HOUR` | 25 | Per-target breaker; logs `gate_target_breaker_open`. |
+| `YAAS_MAX_DISPATCH_FANOUT` | 4 | Max agent invocations per tick. Extra targets are deferred (`gate_dispatch_deferred`) with watermarks untouched. |
+| `YAAS_UNACKED_PROMOTE` | 3 | Dispatches a watch may go unacked in the ledger before promotion to `misconfig`. |
+| `YAAS_CHECKER_ERROR_PROMOTE` | 6 | Consecutive checker errors before backoff becomes `misconfig`. |
+| `YAAS_TRIAGE_MAX_PARALLEL` | 3 | Peak concurrent Slack calls. Raising this contributed to a runaway incident. |
 | `YAAS_LOG_RETAIN_DAYS` | 14 | Per-dispatch worker logs older than N days are deleted each tick. `0` disables. |
 | `YAAS_RETIRE_DEFAULT_DAYS` | 30 | Default age threshold for retiring stale `slack_thread` watches. Per-quest override via `retire_slack_threads_after_days` in meta.json. |
+
+Current spend against the ceilings:
+`python3 yaas-triage/spend-window.py state/run-log.ndjson | jq .`
 
 ---
 

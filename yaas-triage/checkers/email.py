@@ -67,6 +67,9 @@ class Transient(Exception):
     """Retryable upstream condition — skip the tick, don't dispatch."""
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import result
+
 def gws_run(*args, timeout=20):
     label = f"gws {' '.join(args[:3])}"
     try:
@@ -102,6 +105,9 @@ def gws_run(*args, timeout=20):
     raise RuntimeError(detail)
 
 
+PAGE_LIMIT = 50   # was 10. See the complete= note below.
+
+
 def main():
     entry = json.loads(sys.argv[1])
     query = entry["query"]
@@ -113,11 +119,11 @@ def main():
     full_query = f"{query} after:{since_date}"
 
     d = gws_run("gmail", "users", "messages", "list",
-                "--params", json.dumps({"userId": "me", "q": full_query, "maxResults": 10}))
+                "--params", json.dumps({"userId": "me", "q": full_query, "maxResults": PAGE_LIMIT}))
 
     msgs = d.get("messages", [])
     if not msgs:
-        print("0|")
+        result.counted(0, "")
         return
 
     new_msgs = []
@@ -133,6 +139,7 @@ def main():
                 new_msgs.append({
                     "from": hdrs.get("From", "")[:40],
                     "subject": hdrs.get("Subject", "")[:50],
+                    "ts": int(md.get("internalDate", "0")) / 1000.0,
                 })
         except Transient:
             # Must NOT be swallowed. Skipping a message here undercounts, and an
@@ -143,12 +150,17 @@ def main():
         except Exception:
             pass
 
+    # A full page does not prove there is nothing older: Gmail returns newest-first,
+    # so a saturated window means older matching messages may be unseen. Report
+    # complete=false and triage holds the cursor instead of skipping them.
+    complete = len(msgs) < PAGE_LIMIT
+    newest = max((m["ts"] for m in new_msgs), default=None)
     if not new_msgs:
-        print("0|")
+        result.counted(0, "", complete=complete)
         return
 
     preview = f"{new_msgs[0]['from']} — {new_msgs[0]['subject']}"
-    print(f"{len(new_msgs)}|{preview}")
+    result.counted(len(new_msgs), preview, advance_to=newest, complete=complete)
 
 
 if __name__ == "__main__":
@@ -156,6 +168,6 @@ if __name__ == "__main__":
         main()
     except Transient as e:
         # Not dirty: skip the tick. Watermark is held, so nothing is lost.
-        print(f"ratelimited|{e}")
+        result.ratelimited(str(e))
     except Exception as e:
-        print(f"error|{e}")
+        result.error(f"{type(e).__name__}: {e}")

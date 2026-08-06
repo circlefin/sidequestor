@@ -25,6 +25,8 @@
 #   - active quest timeline.ndjson  for message_sent / draft_posted / executed
 #   - claude_intensifies_replied.json  for new reaction replies
 #   - writing_hand_replied.json     for new draft reactions
+#   - run-log.ndjson                for triage health events (misconfigured watch,
+#                                   budget cap hit, saturated window, breaker open)
 
 set -euo pipefail
 
@@ -90,6 +92,52 @@ for timeline in active_dir.glob("*/timeline.ndjson"):
             notifications.append((ts, f"YAAS — {labels[event]}", title, note))
         except Exception:
             continue
+
+# ── Health events from the run log ────────────────────────────────────────────
+# These are the "the system quietly stopped working" signals. Before this, every
+# one of them reached exactly one place: a line in logs/triage.log that nobody
+# reads. gate_watch_misconfigured in particular had never fired even once, so the
+# path was both invisible and untested.
+RUNLOG_EVENTS = {
+    "gate_watch_misconfigured": ("watch misconfigured — needs a human",
+                                 lambda e: f"{e.get('quest','?')} [{e.get('type','?')}] {e.get('reason','')}"),
+    "gate_budget_exceeded":     ("BUDGET CAP HIT — dispatch withheld",
+                                 lambda e: e.get("reason", "")),
+    "gate_watch_backlog":       ("saturated window — cursor held",
+                                 lambda e: f"{e.get('quest','?')}: {e.get('watches','?')} watch(es) had more activity than one page"),
+    "gate_target_breaker_open": ("target breaker open — dispatch stopped",
+                                 lambda e: f"{e.get('target','?')} ran {e.get('dispatches_1h','?')}x in an hour"),
+    "gate_ack_manifest_unreadable": ("ack manifest unreadable — work held",
+                                 lambda e: f"{e.get('quest','?')} run {e.get('run_id','?')}"),
+}
+runlog = repo / "state" / "run-log.ndjson"
+if runlog.exists():
+    # Collapse to one notification per event type per run, otherwise a persistent
+    # misconfiguration would fire on every tick forever. The watermark handles
+    # across-run dedup; this handles within-run.
+    seen_kinds = {}
+    for raw in runlog.read_text().splitlines():
+        if not raw.strip().startswith("{"):
+            continue
+        try:
+            entry = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("event", "")
+        if kind not in RUNLOG_EVENTS:
+            continue
+        ts = parse_ts(entry.get("ts", ""))
+        if ts is None or ts <= watermark:
+            continue
+        label, detail = RUNLOG_EVENTS[kind]
+        try:
+            body = detail(entry)[:110]
+        except Exception:
+            body = ""
+        seen_kinds[kind] = (ts, f"YAAS — {label}", "triage health", body)
+    notifications.extend(seen_kinds.values())
 
 # ── Reaction state files ──────────────────────────────────────────────────────
 REACTION_FILES = {

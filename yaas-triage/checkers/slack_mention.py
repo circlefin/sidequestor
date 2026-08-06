@@ -28,6 +28,9 @@ SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MCP_CALL = os.environ.get("MCP_CALL", os.path.join(SCRIPT_DIR, "mcp-call.sh"))
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import result
+
 def parse_search_results(text, since, self_user_id):
     """Parse Slack MCP search result text (### Result N of M / Message_ts: format).
     Returns (count, preview) — preview from the first (most recent) new result block.
@@ -53,6 +56,9 @@ def parse_search_results(text, since, self_user_id):
     return count, preview
 
 
+SEARCH_LIMIT = 50   # was 20; a saturated page cannot prove nothing is older.
+
+
 def main():
     entry = json.loads(sys.argv[1])
     user_id = entry["user_id"]
@@ -64,12 +70,18 @@ def main():
 
     r = subprocess.run(
         [MCP_CALL, "slack_search_public_and_private",
-         json.dumps({"query": query, "limit": 20,
+         json.dumps({"query": query, "limit": SEARCH_LIMIT,
                      "sort": "timestamp", "sort_dir": "desc"})],
         capture_output=True, text=True, timeout=30,
     )
     if r.returncode != 0 or not r.stdout.strip():
-        print(f"error|mcp slack_search_public_and_private failed (exit {r.returncode})")
+        # Inspect the body before classifying: mcp-call.sh exits 2 on any JSON-RPC
+        # .error, and a rate limit arrives that way.
+        _b = (r.stdout or "").lower()
+        if "ratelimited" in _b:
+            result.ratelimited("slack ratelimited (transient); watermark held")
+        else:
+            result.error(f"mcp slack_search_public_and_private failed (exit {r.returncode})")
         return
 
     try:
@@ -84,18 +96,21 @@ def main():
             # and the rate-limit was likely caused by the checker volume in the
             # first place. Distinct `ratelimited` outcome: triage skips the
             # quest this tick and holds the watermark. Retries next tick.
-            print("ratelimited|slack ratelimited (transient); skipping tick, watermark held")
+            result.ratelimited("slack ratelimited (transient); watermark held")
         else:
-            print(f"error|non-json response: {body[:80]}")
+            result.error(f"non-json response: {body[:80]}")
         return
 
     text = d.get("results", "")
     count, preview = parse_search_results(text, since, user_id)
-    print(f"{count}|{preview}")
+    # Saturation: Slack search returns newest-first, so a full page means older
+    # matching hits may be unseen. Hold the cursor rather than skip them.
+    hits = text.count("Message_ts:") + text.count("Message TS:")
+    result.counted(count, preview, complete=hits < SEARCH_LIMIT)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"error|{e}")
+        result.error(f"{type(e).__name__}: {e}")

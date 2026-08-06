@@ -32,16 +32,17 @@ Ask the user for, in order:
    - **`slack_dm`** — Slack user IDs or names of people whose new DMs should trigger this quest. Resolve names → IDs via `mcp__slack__slack_search_users` if needed.
    - **`slack_mention`** — a Slack `user_id`. Fires on any new message that @mentions that user, anywhere the searcher can see (global, not channel-scoped). No channel field; the worker re-runs the mention search to locate each hit. Use for "back me up: respond when anyone @mentions me." Skips `[BOT]` authors and the watched user's own messages.
    - **`schedule`** — a 5-field cron expression + IANA timezone. Fires the quest at the scheduled time.
-   - **`email`** — a Gmail search query string. Matches any email matching the query that arrived after the watermark.
+   - **`email`** — field name is `query` (a Gmail search string, e.g. `from:partner@example.com subject:invoice`). Matches any email matching the query that arrived after the watermark.
    - **`jira`** — a JQL string (e.g. `labels=my-label`, `project=PROJ AND assignee=currentUser()`). Fires when any issue in that set changes: status transition, new comment, or any field edit. Reads through `yaas-triage/jira-call.sh`, so it works headless (the Atlassian MCP does not). Requires the Keychain API token `jira-api-token`/`yaas`. Do NOT include `ORDER BY` in the JQL: the checker adds its own ordering, and a caller-supplied one disables its early stop and makes every tick page to the cap.
    - **`github_pr`** — a `repo` as `owner/name`. Fires on any PR update in that repo: new PR, new commit, review, comment, or merge. Use it alongside `jira` when a fix lands as a PR, because **a PR review comment does not bump the linked Jira issue**, so the `jira` watch cannot see it. Optional `search` (extra GitHub qualifiers) and `limit` (default 100). Two traps before you add a `search`: repeated qualifiers AND rather than OR (`author:a author:b` matches nothing and the watch reports clean forever), and full-text terms only match what a PR happens to say. Also avoid `is:open`, which hides merges. Verify recall against a known PR set first; the details are in `checkers/github_pr.py`'s docstring.
 
    Both of the above are repo/project-wide by nature, so they can fire on items unrelated to the quest. Say so in the `reason`, and make the quest's `context.md` tell the worker to exit immediately without acting when the changed item is out of scope.
+   - **`approval`** — runtime-only. The worker appends this automatically when it queues a manual-review item (§3d of CLAUDE.md). Do NOT include it in a creation spec; there is no approval to track at creation time.
    - **Other types** (e.g. `telegram_chat`) — see `yaas-triage/skills/yaas-ops/SKILL.md` for required fields.
 
-   **Prefer a bash-layer filter over waking Opus to decide relevance.** `slack_channel`
-   and `slack_thread` watches accept two optional filter fields, both evaluated inside
-   triage.sh *before* any dispatch — so a non-matching message costs nothing:
+   **Prefer a pre-dispatch filter over waking Opus to decide relevance.** `slack_channel`
+   and `slack_thread` watches accept two optional filter fields, evaluated inside the
+   checker scripts (not triage.sh) before the worker is woken — so a non-matching message costs nothing:
    - **`filter_user_ids`** — list of Slack user IDs; only messages authored by one of
      them wake the worker.
    - **`filter_keywords`** — list of strings; a message must contain at least one
@@ -58,6 +59,13 @@ Ask the user for, in order:
    `startswith` in the worker after wake; (b) extra watch fields are passed through
    verbatim and NOT validated, so a typo like `filter_keyword` (singular) is silently
    written and silently ignored — spell them exactly.
+
+   **`watch_mode: "read_only"`** — add this to any watch on a thread in an internal routing or
+   expert channel (`#help-*`, `#cpn-se-questions`, `#cpn-*`, `#api-key-permissions`, any
+   `#oncall-*` or `#eng-*` escalation channel). It tells the worker to read replies and relay
+   outcomes, but never post back into that thread. Without it, the bot will reply in expert
+   channels and annoy the humans there. `new-quest.py` validates that the only legal value is
+   `"read_only"` — any typo is caught at creation time.
 
    **Note:** reactions (`:claude-intensifies:`, `:writing_hand:`, `:floppy_disk:`) are tracked globally by triage.sh and are NOT a per-quest watch input. Do not include them in `watches[]`.
 3. **Priority** — high / normal / low. Default to normal if unspecified.
@@ -76,7 +84,7 @@ Full example: `quest-correct-eurc-usdc-mechanism-2026-04-27`
 
 **Always use `yaas-triage/skills/yaas-quest-creation/new-quest.py` — never write the files manually.**
 
-The script handles all timestamps, ID generation, and full schema. Manual `Write` calls have caused bugs (wrong `id` in meta.json, incomplete watch.json schema). The script prevents all of that.
+The script handles all timestamps, ID generation, and correctly-shaped files. Manual `Write` calls have caused bugs (wrong `id` in meta.json, missing fields in watch.json). The script prevents all of that. Note: `watch_id` values are NOT in the scaffolded output — `ensure-watch-ids.py` injects them on the first triage tick. That is intentional and safe.
 
 Build a JSON spec and pass it to the script via Bash:
 
@@ -158,7 +166,7 @@ Always watch the **parent thread_ts**, not a reply's ts.
 - `watches[]` must have at least one entry.
 - Channel IDs start with `C` (public), `G` (private group), `D` (DM), or `MP` (mpim). Flag unexpected prefixes to the user.
 - User IDs start with `U`. Flag anything else.
-- Every entry must have `type` and `last_checked_ts`.
+- Every entry must have `type` and `reason`. Do NOT include `last_checked_ts` — the script injects it and will reject any entry that already has one.
 
 ## Error handling
 

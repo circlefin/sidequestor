@@ -36,7 +36,21 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INTERVAL="${YAAS_TRIAGE_INTERVAL:-60}"
 
+# `|| true` is required — a worker failure legitimately makes triage.sh exit non-zero
+# and this loop must not die on it. But discarding the code outright is what let the
+# 2026-06-30 crash loop run 6.5 hours while launchd reported a healthy job. So count
+# consecutive failures to a file that health-monitor.py reads. The threshold there is
+# several ticks, precisely because a single non-zero exit is normal.
+FAILFILE="$SCRIPT_DIR/../state/triage/consecutive-tick-failures"
+mkdir -p "$(dirname "$FAILFILE")" 2>/dev/null || true
+
 while true; do
-  "$SCRIPT_DIR/triage.sh" || true
+  if "$SCRIPT_DIR/triage.sh"; then
+    echo 0 > "$FAILFILE" 2>/dev/null || true
+  else
+    _prev=$(cat "$FAILFILE" 2>/dev/null || echo 0)
+    case "$_prev" in ''|*[!0-9]*) _prev=0 ;; esac
+    echo $((_prev + 1)) > "$FAILFILE" 2>/dev/null || true
+  fi
   sleep "$INTERVAL"
 done

@@ -48,6 +48,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CRON_DUE = os.path.join(SCRIPT_DIR, "cron-due.py")
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import result
+
 def main():
     entry = json.loads(sys.argv[1])
 
@@ -57,9 +60,9 @@ def main():
         now = time.time()
         last = float(entry.get("last_checked_ts") or 0)
         if now >= next_fire and last < next_fire:
-            print("1|one-shot schedule due")
+            result.counted(1, "one-shot schedule due")
         else:
-            print("0|")
+            result.counted(0, "")
         return
 
     cron_expr = str(entry["cron"])
@@ -71,18 +74,18 @@ def main():
         capture_output=True, text=True, timeout=10,
     )
     if r.returncode == 2:
-        print(f"error|bad cron expression: {r.stderr.strip()}")
+        result.misconfig(f"bad cron expression: {r.stderr.strip()}")
         return
 
-    result = r.stdout.strip()
-    if result == "due":
-        print(f"1|schedule due '{cron_expr} ({tz})'")
+    cron_verdict = r.stdout.strip()
+    if cron_verdict == "due":
+        result.counted(1, f"schedule due '{cron_expr} ({tz})'")
     else:
-        print("0|")
+        result.counted(0, "")
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"error|{e}")
+        result.error(f"{type(e).__name__}: {e}")

@@ -57,15 +57,20 @@ done <id> [response_ts | result_url]
 
 import fcntl
 import json
+import os
 import random
 import string
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT      = Path(__file__).parent.parent
 APPROVALS_FILE = REPO_ROOT / "state" / "pending-approvals.json"
 QUESTS_DIR     = REPO_ROOT / "state" / "quests"
+
+# Long enough to cover the 30-minute worker watchdog plus slack, short enough that a
+# lost approval is recovered the same hour.
+LEASE_MINUTES  = int(os.environ.get("YAAS_APPROVAL_LEASE_MIN", "45"))
 
 
 def _find_watch_json(quest_id: str) -> Path | None:
@@ -87,7 +92,10 @@ def _arm_approval_watch(quest_id: str, approval_id: str):
     stderr and swallowed."""
     watch_path = _find_watch_json(quest_id)
     if watch_path is None:
+        # The likeliest arming failure of all, and it returns rather than raising, so
+        # it must flag explicitly or it slips past the except below.
         print(f"warn:no_watch_json_for_quest:{quest_id}", file=sys.stderr)
+        _flag_unarmed(approval_id, f"no watch.json for quest {quest_id}")
         return
     try:
         with open(watch_path, "r+") as wf:
@@ -111,6 +119,28 @@ def _arm_approval_watch(quest_id: str, approval_id: str):
                 fcntl.flock(wf, fcntl.LOCK_UN)
     except Exception as e:  # never strand the already-written approval
         print(f"warn:arm_watch_failed:{approval_id}:{e}", file=sys.stderr)
+        _flag_unarmed(approval_id, str(e))
+
+
+def _flag_unarmed(approval_id: str, reason: str):
+    """Mark an approval whose watch could not be armed. Swallowing the arming error is
+    correct (losing the approval would be worse) but it must not be silent: triage
+    cannot see an unarmed approval at all, so the dashboard is the only backstop, and
+    it reads pending-approvals.json directly without needing the watch."""
+    try:
+        with open(APPROVALS_FILE, "r+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                data = _load_locked(f)
+                item = next((i for i in data.get("items", []) if i["id"] == approval_id), None)
+                if item is not None:
+                    item["watch_armed"] = False
+                    item["watch_arm_error"] = reason[:200]
+                    _save_locked(f, data)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    except Exception:
+        pass
 
 
 def _load_locked(f) -> dict:
@@ -195,8 +225,15 @@ def cmd_start(approval_id: str):
             if item["status"] in ("executing", "executed", "cancelled"):
                 print(f"skip:{item['status']}")
                 return
-            item["status"]      = "executing"
-            item["executing_at"] = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(timezone.utc)
+            item["status"]       = "executing"
+            item["executing_at"] = now.isoformat()
+            # A claim without an expiry is a claim forever. If the worker dies between
+            # `start` and `done` (watchdog kill, mac sleep, MCP failure mid-send) the
+            # item used to sit in `executing` where the checker reads it as clean and
+            # the dashboard did not render it at all — an approved message lost with no
+            # surface anywhere. The lease lets approval.py re-surface it.
+            item["lease_expires_at"] = (now + timedelta(minutes=LEASE_MINUTES)).isoformat()
             _save_locked(f, data)
             print("ok")
         finally:

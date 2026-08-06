@@ -30,6 +30,7 @@ import sys
 import os
 import json
 import fcntl
+from datetime import datetime, timezone
 
 CHECKERS_DIR = os.path.dirname(os.path.abspath(__file__))
 YAAS_DIR     = os.path.dirname(CHECKERS_DIR)
@@ -37,28 +38,31 @@ REPO_ROOT    = os.path.dirname(YAAS_DIR)
 APPROVALS    = os.path.join(REPO_ROOT, "state", "pending-approvals.json")
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import result
+
 def main():
     if len(sys.argv) < 2:
         print("error|missing watch entry argument", file=sys.stderr)
-        print("error|missing argument")
+        result.error("missing watch entry argument")
         return
 
     try:
         entry = json.loads(sys.argv[1])
     except Exception as e:
         print(f"error|bad watch entry JSON: {e}", file=sys.stderr)
-        print("error|bad watch entry JSON")
+        result.error("bad watch entry JSON")
         return
 
     approval_id = entry.get("approval_id")
     if not approval_id:
         print("error|approval_id missing from watch entry", file=sys.stderr)
-        print("error|missing approval_id")
+        result.misconfig("approval_id missing from watch entry")
         return
 
     if not os.path.exists(APPROVALS):
         # File not yet created — not dirty
-        print("0|pending-approvals.json not found")
+        result.counted(0, "pending-approvals.json not found")
         return
 
     try:
@@ -73,27 +77,40 @@ def main():
                 fcntl.flock(f, fcntl.LOCK_UN)
     except Exception as e:
         print(f"error|could not read pending-approvals.json: {e}", file=sys.stderr)
-        print("error|could not read approvals file")
+        result.error("could not read pending-approvals.json")
         return
 
     item = next((i for i in data.get("items", []) if i.get("id") == approval_id), None)
 
     if item is None:
         # Item pruned by rotate-logs — treat as clean (already handled)
-        print(f"0|{approval_id} not found (pruned or never written)")
+        result.counted(0, f"{approval_id} not found (pruned or never written)")
         return
 
     status = item.get("status", "pending_review")
 
     if status == "reviewed":
-        print(f"1|manual review complete — {approval_id}")
+        result.counted(1, f"manual review complete — {approval_id}")
     elif status == "needs_reply":
-        print(f"1|reviewer asked a question — {approval_id}")
+        result.counted(1, f"reviewer asked a question — {approval_id}")
     elif status == "executing":
-        # Worker is mid-execution; don't re-dispatch
-        print(f"0|already executing — {approval_id}")
+        # A live claim: the worker is mid-execution, don't re-dispatch. An EXPIRED
+        # claim means the worker died between `start` and `done`, so the send may or
+        # may not have landed. Re-surface it — the worker's job then is to reconcile
+        # (read the thread, look for the message) and NOT to blindly resend.
+        lease = item.get("lease_expires_at")
+        expired = False
+        if lease:
+            try:
+                expired = datetime.fromisoformat(lease) < datetime.now(timezone.utc)
+            except (TypeError, ValueError):
+                expired = False
+        if expired:
+            result.counted(1, f"lease expired, outcome unknown — {approval_id}")
+        else:
+            result.counted(0, f"already executing — {approval_id}")
     else:
-        print(f"0|status={status}")
+        result.counted(0, f"status={status}")
 
 
 if __name__ == "__main__":
