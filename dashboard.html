@@ -183,6 +183,7 @@ input.field-error { border-color:var(--amber); }
 .oi-draft { background:#fdf3e1; color:var(--amber); border:1px solid #f1dcb6; }
 .oi-wait { background:#f2ebfc; color:var(--violet); border:1px solid #e2d3f8; }
 .oi-promise { background:#fdeff0; color:var(--red); border:1px solid #f6d3dc; }
+.oi-misconfig { background:#fdeff0; color:var(--red); border:1px solid #f6d3dc; }
 .oi-row { display:flex; align-items:center; gap:9px; padding:8px 12px; border:1px solid var(--border); border-left-width:3px; border-radius:7px; background:var(--surface); font-size:12.5px; margin-bottom:5px; cursor:pointer; }
 .oi-row:hover { background:var(--surface2); }
 .oi-row.r-blocked { border-left-color:var(--amber); }
@@ -190,6 +191,7 @@ input.field-error { border-color:var(--amber); }
 .oi-row.r-draft { border-left-color:var(--amber); }
 .oi-row.r-wait { border-left-color:var(--violet); }
 .oi-row.r-promise { border-left-color:var(--red); }
+.oi-row.r-misconfig { border-left-color:var(--red); }
 .oi-qtitle { font-weight:600; }
 .oi-reason { color:var(--text2); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .oi-row.expanded { align-items:flex-start; }
@@ -244,9 +246,11 @@ tbody tr { border-bottom:1px solid var(--border); cursor:pointer; }
 tbody tr:hover td { background:var(--surface2); }
 tbody td { padding:9px 14px 9px 0; vertical-align:top; }
 .row-blocked td:first-child { border-left:2px solid var(--amber); padding-left:8px; }
+.row-misconfig td:first-child { border-left:2px solid var(--red); padding-left:8px; }
 .quest-title { font-weight:600; }
 .action-note { color:var(--text2); font-size:12px; margin-top:4px; }
 .blocked-badge { font-size:11px; color:var(--amber); margin-top:4px; }
+.misconfig-badge { font-size:11px; color:var(--red); margin-top:4px; }
 
 /* ── activity feed ── */
 .feed-item { display:grid; grid-template-columns:78px 1fr; gap:0 12px; padding:8px 0; border-bottom:1px solid var(--border); }
@@ -545,7 +549,11 @@ function renderMeta(){
     // end-of-tick.
     ['last triage',agoSpan(tr.last_triage_completed_utc,'stat-ago'),staleTriage(tr.last_triage_completed_utc)],
   ];
-  const html=strip.map(([l,v,w])=>`<div class="stat${w?' stat-warn':''}"><div class="stat-n">${typeof v==='string'?v:v}</div><div class="stat-l">${l}</div></div>`).join('');
+  const html=strip.map(([l,v,w])=>{
+    const warn=w?' stat-warn':'';
+    const click=(w&&l==='misconfigured')?' onclick="switchTab(\'quests\')" style="cursor:pointer" title="Click to see affected quests"':'';
+    return `<div class="stat${warn}"${click}><div class="stat-n">${typeof v==='string'?v:v}</div><div class="stat-l">${l}</div></div>`;
+  }).join('');
   if(changed('meta',html)) document.getElementById('meta').innerHTML=html;
   document.getElementById('history-count').textContent=(needs+other)||'';
   renderLive(dashData&&dashData.live_run);
@@ -765,14 +773,22 @@ async function submitReview(card,action){
 // ── Quests tab ──
 const PRI={high:0,normal:1,low:2};
 function renderQuests(quests){
-  const sorted=[...quests].sort((a,b)=>{ const ba=isBlockedNow(a)?0:1,bb=isBlockedNow(b)?0:1; if(ba!==bb) return ba-bb; const pa=PRI[a.priority]??1,pb=PRI[b.priority]??1; if(pa!==pb) return pa-pb; return (b.last_action?.ts||'').localeCompare(a.last_action?.ts||''); });
+  const sorted=[...quests].sort((a,b)=>{
+    const ba=isBlockedNow(a)?0:1,bb=isBlockedNow(b)?0:1; if(ba!==bb) return ba-bb;
+    const ma=(a.misconfig_count||0)>0?0:1,mb=(b.misconfig_count||0)>0?0:1; if(ma!==mb) return ma-mb;
+    const pa=PRI[a.priority]??1,pb=PRI[b.priority]??1; if(pa!==pb) return pa-pb;
+    return (b.last_action?.ts||'').localeCompare(a.last_action?.ts||'');
+  });
   if(!changed('quests',sorted)) return;
   document.getElementById('quest-tbody').innerHTML=sorted.map(q=>{
-    const bl=isBlockedNow(q); const dot=bl?'dot-blocked':'dot-active'; const st=bl?'status-text status-warn':'status-text';
+    const bl=isBlockedNow(q); const mc=(q.misconfig_count||0)>0;
+    const dot=bl?'dot-blocked':'dot-active'; const st=bl?'status-text status-warn':'status-text';
     const mode=q.allow_send?'<span class="tag tag-send">send</span>':'<span class="tag tag-draft">draft</span>';
     const la=q.last_action; const lb=bl?q.last_blocked:null;
-    const cell=la?`<div class="feed-top">${badge(la.event)}${agoSpan(la.ts)}</div>${la.note?`<div class="action-note">${esc(la.note)}</div>`:''}${lb?`<div class="blocked-badge">⚠ blocked ${ago(lb.ts)}</div>`:''}`:(lb?`<div class="blocked-badge">⚠ blocked ${ago(lb.ts)}</div>`:'<span class="ago">-</span>');
-    return `<tr data-quest-id="${esc(q.id)}"${bl?' class="row-blocked"':''}><td class="quest-title">${esc(q.title)}</td><td><span class="dot ${dot}"></span><span class="${st}">${esc(q.status)}</span></td><td><span class="pri-${esc(q.priority||'normal')}">${esc(q.priority||'normal')}</span></td><td>${mode}</td><td>${cell}</td></tr>`;
+    const mcBadge=mc?`<div class="misconfig-badge">⚠ misconfig${q.misconfig_count>1?` (${q.misconfig_count})`:''}</div>`:'';
+    const cell=la?`<div class="feed-top">${badge(la.event)}${agoSpan(la.ts)}</div>${la.note?`<div class="action-note">${esc(la.note)}</div>`:''}${lb?`<div class="blocked-badge">⚠ blocked ${ago(lb.ts)}</div>`:''}${mcBadge}`:(lb?`<div class="blocked-badge">⚠ blocked ${ago(lb.ts)}</div>${mcBadge}`:(mc?mcBadge:'<span class="ago">-</span>'));
+    const rowCls=[bl?'row-blocked':'',mc?'row-misconfig':''].filter(Boolean).join(' ');
+    return `<tr data-quest-id="${esc(q.id)}"${rowCls?` class="${rowCls}"`:''}><td class="quest-title">${esc(q.title)}</td><td><span class="dot ${dot}"></span><span class="${st}">${esc(q.status)}</span></td><td><span class="pri-${esc(q.priority||'normal')}">${esc(q.priority||'normal')}</span></td><td>${mode}</td><td>${cell}</td></tr>`;
   }).join('')||'<tr><td colspan="5" class="empty">no active quests</td></tr>';
 }
 function renderFeed(feed){
@@ -794,10 +810,15 @@ function oiThreadRow(t){
 function fireTime(ts){ const f=parseFloat(ts); if(!isFinite(f)||f<=0) return ''; const d=new Date(f*1000),now=Date.now(); const past=d.getTime()<now; const s=d.toLocaleDateString(undefined,{month:'short',day:'numeric'}); return `<span class="oi-age${past?' oi-overdue':''}">${past?'due ':'fires '}${esc(s)}</span>`; }
 function renderQuestOpenItems(oi){
   if(!oi) return '';
-  const threads=oi.threads||[], sched=oi.scheduled||[], review=oi.review||[], commits=oi.commitments||[], blocked=oi.blocked;
+  const threads=oi.threads||[], sched=oi.scheduled||[], review=oi.review||[], commits=oi.commitments||[], blocked=oi.blocked, misconfig=oi.misconfig_watches||[];
   const total=oi.threads_total||threads.length;
-  const n=(blocked?1:0)+total+sched.length+review.length+commits.length;
+  const n=(blocked?1:0)+misconfig.length+total+sched.length+review.length+commits.length;
   let body='';
+  misconfig.forEach(w=>{
+    const detail=`${esc(w.type)} · dispatched ${w.count}× with no progress · last: ${esc(w.last_status||'?')}`;
+    const age=w.last_utc?`<span class="oi-age" data-ts="${esc(w.last_utc)}">${ago(w.last_utc)}</span>`:'';
+    body+=oiRow(`<span class="oi-badge oi-misconfig">misconfig</span><span class="oi-reason" title="${esc(w.watch_id)}">${detail}</span>${age}`,'r-misconfig');
+  });
   if(blocked) body+=oiRow(`<span class="oi-badge oi-blocked">blocked</span><span class="oi-reason">${esc(blocked.reason||'(no reason logged)')}</span>${blocked.ts?`<span class="oi-age" data-ts="${esc(blocked.ts)}">${ago(blocked.ts)}</span>`:''}`,'r-blocked');
   review.forEach(r=>{ body+=oiRow(`<span class="oi-badge oi-review">${esc(r.status)}</span><span class="oi-reason">${esc(r.message_text||r.action_type||'awaiting your review')}</span>`,'r-review'); });
   commits.forEach(c=>{ body+=oiRow(`<span class="oi-badge oi-promise">promised</span><span class="oi-reason">${esc(c.text||c.note||'')}</span>${c.ts?`<span class="oi-age" data-ts="${esc(c.ts)}">${ago(c.ts)}</span>`:''}`,'r-promise'); });
