@@ -274,18 +274,16 @@ Reactions are their own dispatch target, **handled independently from quests**. 
 Every reaction where you **take action** carries a visible three-state lifecycle on the message: `:claude-intensifies:` (reply), `:writing_hand:` (draft), and `:incoming_envelope:` (adopt into a quest). **Each transition unchecks the previous reaction and adds the next one** — never leave two lifecycle emojis on the message at once. `:floppy_disk:` is the sole exception: it saves silently and has no lifecycle.
 
 1. **Marked for processing** — the user applies the trigger reaction. This is what the checker detects; it is the only lifecycle reaction the user adds.
-2. **Processing** — the moment you pick the message up (before doing the work), swap it: remove the trigger reaction, add `:claudeloading:`.
+2. **Processing** — the moment you pick the message up (before doing the work), advance it to `:claudeloading:` with the ONE lifecycle verb:
    ```bash
-   ./yaas-triage/surfaces/slack-react.sh remove <channel_id> <msg_ts> <trigger_emoji>   # claude-intensifies | writing_hand | incoming_envelope
-   ./yaas-triage/surfaces/slack-react.sh add    <channel_id> <msg_ts> claudeloading
+   ./yaas-triage/surfaces/react-lifecycle.py advance <channel_id> <msg_ts> loading
    ```
-3. **Done actioning** — once the action is complete (reply sent / draft posted / message adopted) and every in-tick commitment is done, swap again: remove `:claudeloading:`, add `:updatedone:`.
+3. **Done actioning** — once the action is complete (reply sent / draft posted / message adopted) and every in-tick commitment is done, advance to `:updatedone:`:
    ```bash
-   ./yaas-triage/surfaces/slack-react.sh remove <channel_id> <msg_ts> claudeloading
-   ./yaas-triage/surfaces/slack-react.sh add    <channel_id> <msg_ts> updatedone
+   ./yaas-triage/surfaces/react-lifecycle.py advance <channel_id> <msg_ts> done
    ```
 
-The Slack MCP surface has no remove-reaction tool, so removals go through `slack-react.sh` (Slack Web API, same user token). If the action genuinely can't complete this tick (blocked, needs a quest; or `:incoming_envelope:` found no owning quest and got skipped), leave it at `:claudeloading:` — do NOT advance to `:updatedone:`, since that signals completion.
+**Always use `react-lifecycle.py advance`, never hand-composed `slack-react.sh remove`/`add` pairs.** `advance` removes every OTHER lifecycle emoji and adds the target in one step, so the message can never show two lifecycle emojis at once, a half-applied previous run self-heals, and every transition is logged. It exits non-zero if the add fails, in which case the emoji did NOT advance and the step is not done. If the action genuinely can't complete this tick (blocked, needs a quest; or `:incoming_envelope:` found no owning quest and got skipped), leave it at `:claudeloading:` — do NOT advance to `done`, since that signals completion. `slack-react.sh` still exists for one-off manual reactions, but the lifecycle goes through `advance`.
 
 ### Minimum run loop
 

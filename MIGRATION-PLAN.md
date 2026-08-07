@@ -422,27 +422,73 @@ All 9 mutations caught, 0 survived.
 Prune rules (worker logs, manifests, reaction state) remain uncovered. They are lower risk:
 they delete LOGS rather than watches, so a mistake costs disk or history, not tracking.
 
-### [ ] C2. Copy `tests/` into v3 FIRST
+### [~] C2/C3. The port — in-place pure cores live, `tick.py` modules building (2026-08-07)
 
-Before any new code. The suites and the 18 goldens **are** the specification. They encode
-roughly twenty production incidents as executable facts rather than folklore — the exit-4
-transient marker (45 watches into backoff without it), `complete` on the clean path (14 live
-watches), `_covered()` (a 14-hour stall), ack-as-you-go ordering, watch-guard's sidecar lock,
-the rate-limit skip that starved approvals. A blank canvas re-learns every one of those in
-production, on live customer threads.
+**Phase 1 — pure cores extracted in place and wired into the live `triage.sh`** (each a pure,
+unit-tested, Codex-reviewed-where-risky module; behaviour-verified by the goldens, committed):
 
-### [ ] C3. Build against the gate
+| Module | Owns | Live in triage.sh |
+|---|---|---|
+| `ledger/commit.py` | the commit predicate (which watermarks move) | ✓ |
+| `dispatch/plan.py` | fairness rotation + per-target breaker | ✓ |
+| `ledger/housekeep.py` | the three retire rules | ✓ |
 
-`differential/run.sh check tick.py`. v3 is done when it reproduces all 18 goldens. This is
-also what makes "fully backward compatible with existing state files" **mechanical** rather
-than promised: `snapshot.py` compares watch.json watermark semantics, the run-log event
-sequence, and ack manifests.
+This tightened `triage.sh` but did NOT shrink it much (~1,800 → ~1,700): in-place extraction
+moves logic out but leaves the call site. A small `triage.sh` needs the full rewrite below.
 
-### [ ] C4. Cutover
+**Phase 2 — the genuine `tick.py` rewrite: new orchestrator modules, one per phase.** These are
+NOT wired into the live shell; they are the replacement being built and held to the SAME 30
+goldens as `triage.sh` (`run.sh check tick.py`), so the port is behaviour-preserving by
+construction. Each is pure where the logic lives and thin where it only sequences:
 
-One line in `triage-loop.sh`, with v2 sitting there to switch back to.
+| Module | Phase it replaces | Status | Commit |
+|---|---|---|---|
+| `tick_state.py` | config/loading: repo root, knobs (refuse-on-garbage), lag map, sorted quests | done, 12 tests | `a16f3ac` |
+| `tick_check.py` | analyze: the six-way `classify()` verdict (misconfig/backoff/skip/hold/dirty/clean) + parallel fan-out | done, 21 tests | `e02d74c` |
+| `tick_dispatch.py` | dispatch gates: `slack_gate` (per-target Slack-need) + `slice_plan` (budget/fanout/MIN_SLICE) | done, 14 tests | `571c723` |
+| `tick.py` | the main flow that sequences all of the above + commit | **done: 30/30 goldens, 9/9 mutations** | `cf73ebf` |
 
----
+Porting the analyze phase into `tick_check.py` surfaced a **latent live bug** (`e02d74c`): the
+tie-safety fix (B1) made `github_pr`/`jira` emit `outcome=hold`, but the shell's analyze case
+recognized only clean/dirty/ratelimited/error/misconfig, so a real busy-repo hold was mismapped
+to error → backoff → misconfig. Fixed in both `classify()` and the live shell; a new
+`checker_emits_hold` golden pins it end to end. This is the payoff of porting carefully rather
+than mechanically.
+
+**Step 4 done (`cf73ebf`).** `tick.py` is the assembled orchestrator: 30/30 goldens, 9/9
+mutations, byte-identical decisions to `triage.sh`. It is NOT wired live — `triage-loop.sh`
+still runs `triage.sh`.
+
+**Remaining: the cutover — the one step that needs a human present (rules 3/4).** Sequence:
+1. **Shadow.** Confirm `tick.py` agrees with `triage.sh` on LIVE state, not just fixtures. The
+   safe way is a read-only comparison (a `--plan-only`/dry mode that prints the decision without
+   writing watch.json / dispatching), run beside a real tick and diffed. A plain `tick.py` run
+   against the live repo is NOT safe to shadow with — its check phase advances clean watermarks,
+   calls checker-health, and housekeeps, all mutating live state.
+2. **Flip.** Point `triage-loop.sh` line 48 at `tick.py`, kickstart the loop (the KeepAlive
+   loop must be re-kickstarted after any loop edit — see [[project_triage_keepalive_loop]]), and
+   watch the first several ticks live.
+3. **Keep the shell.** Do not delete `triage.sh`; leave it as the instant rollback until
+   `tick.py` has run clean for a stretch. Only then reduce `triage.sh` to a thin driver or
+   retire it.
+The cutover is the user's call and a supervised action, not an overnight/unattended one.
+
+## Phase R — reaction path hardening (2026-08-07, unplanned, from live incidents)
+
+Three live issues surfaced and were fixed with the same discipline (unit test + Codex on the
+risky one + full gate):
+
+- **R1. Stale-reply guard read the wrong param.** It called `slack_read_thread` with
+  `thread_ts` instead of `message_ts`, so the read raised and the guard failed CLOSED — silently
+  holding EVERY threaded reply as "unreadable". Fixed + static regression assertion. (`2de5e37`)
+- **R2. Reaction lifecycle was unreliable prose.** `trigger -> claudeloading -> updatedone` was
+  hand-composed remove+add pairs, unlogged, decoupled from the state file, so it drifted. Now
+  one atomic logged verb `surfaces/react-lifecycle.py advance`; CLAUDE(.example).md call it.
+  (`b5374db`, `421c3f6`)
+- **R3. Reaction approvals could never self-execute.** quest_id="reactions" has no quest folder,
+  so the approval watch never armed and reviewed drafts stranded. Routed to a durable
+  executor-only host quest. (`ec3db9e`)
+
 
 ## Do not
 

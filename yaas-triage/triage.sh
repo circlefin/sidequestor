@@ -485,7 +485,7 @@ check_quest() {
           dirty)  [ "${new_count:-0}" -gt 0 ] 2>/dev/null || new_count=1 ;;
           # The non-numeric outcomes keep flowing through new_count, which the
           # branches below already switch on.
-          ratelimited|error|misconfig) new_count="$outcome" ;;
+          ratelimited|error|misconfig|hold) new_count="$outcome" ;;
           *) new_count="error"; preview="unknown outcome '$outcome'" ;;
         esac
         ;;
@@ -514,6 +514,16 @@ check_quest() {
       # one request, further Slack calls in this quest only deepen the burst.
       # Stop here; unexamined watches retain their old watermarks and retry.
       break
+    fi
+    if [ "$new_count" = "hold" ]; then
+      # The checker held its OWN watermark (github_pr/jira on a saturated or tie-boundary
+      # page). Before this, outcome=hold hit the "unknown outcome" path and was mismapped to
+      # error -> backoff -> misconfig. Emit a proper hold row: cursor held, no dispatch, and
+      # it feeds the no-progress counter like the derived-hold case below.
+      echo -e "${qid}\thold\t${watch_id}\t${type}\t-\tfalse\t[$type] ${preview:-window not drained; cursor held}"
+      had_skip=1
+      case "$type" in slack_*) slack_succeeded=$((slack_succeeded + 1)) ;; esac
+      continue
     fi
     if [ "$new_count" = "error" ]; then
       # An LLM dispatch is NEVER the retry mechanism for a checker failure. This
@@ -868,115 +878,22 @@ d['watches_truncated']     = $WATCHES_TRUNCATED_COUNT
 json.dump(d, open(p, 'w'), indent=2)
 "
 
-# ── Retire stale slack_thread watches per-quest ─────────────────────────────
-# Each quest's meta.json may set "retire_slack_threads_after_days":
-#   <positive int> — drop slack_thread watches whose parent thread_ts is older than N days
-#   0 / false / "never" / null — never retire (use for partner conversations etc.)
-#   missing — defaults to 30 days
-# Other watch types (slack_channel, slack_dm, schedule, email) are never retired here —
-# they have semantic permanence.
-RETIRE_DEFAULT_DAYS="${YAAS_RETIRE_DEFAULT_DAYS:-30}"
-NOW_EPOCH_INT=$(date +%s)
+# ── Retire watch entries that can never fire again ──────────────────────────
+# The three retire rules (stale slack_thread, completed approval, fired one-shot schedule)
+# are pure predicates in ledger/housekeep.py now, unit-tested and covered by the differential
+# goldens. This loop is just the per-quest driver; housekeep.py owns the decision and the
+# atomic write. Retiring DELETES a watch, so the predicates fail toward KEEPING an entry on
+# any ambiguity — see the module docstring and the non-integer window gate.
+_APPROVALS_FILE="$REPO_ROOT/state/pending-approvals.json"
 for qd in "${QUEST_DIRS[@]}"; do
-  qid=$(basename "$qd")
   meta="$qd/meta.json"
   watch="$qd/watch.json"
-  [ -f "$meta" ] && [ -f "$watch" ] || continue
-
-  _days=$(jq -r "(.retire_slack_threads_after_days // $RETIRE_DEFAULT_DAYS) | tostring" "$meta")
-  case "$_days" in
-    0|false|never|null|"") continue ;;
-    # Reject any non-integer. _days flows into $(( )) below, where bash
-    # evaluates array subscripts — a poisoned meta.json value like
-    # "1[$(cmd)]" would execute cmd in this (unsandboxed) triage process.
-    *[!0-9]*) continue ;;
-  esac
-
-  _cutoff=$((NOW_EPOCH_INT - _days * 86400))
-  _retired=$(jq --argjson cutoff "$_cutoff" '
-    [.watches[]? | select(
-      .type == "slack_thread"
-      and ((.thread_ts // "0") | tonumber) < $cutoff
-    )] | length
-  ' "$watch")
-
-  if [ "${_retired:-0}" -gt 0 ]; then
-    TMP=$(mktemp)
-    jq --argjson cutoff "$_cutoff" '
-      .watches = [.watches[]? | select(
-        .type != "slack_thread"
-        or ((.thread_ts // "0") | tonumber) >= $cutoff
-      )]
-    ' "$watch" > "$TMP" && mv "$TMP" "$watch"
-    log "Retired $_retired stale slack_thread watch(es) from $qid (thread_ts older than ${_days}d)"
-  fi
-done
-
-# ── Retire completed approval watches ────────────────────────────────────────
-# Drop approval watch entries whose corresponding pending-approvals.json item
-# has status "executed" or "cancelled" — they will never fire again.
-_APPROVALS_FILE="$REPO_ROOT/state/pending-approvals.json"
-if [ -f "$_APPROVALS_FILE" ]; then
-  for qd in "${QUEST_DIRS[@]}"; do
-    watch="$qd/watch.json"
-    [ -f "$watch" ] || continue
-    _has=$(jq '[.watches[]? | select(.type == "approval")] | length' "$watch" 2>/dev/null || echo 0)
-    [ "${_has:-0}" -gt 0 ] || continue
-    TMP=$(mktemp)
-    python3 - "$watch" "$_APPROVALS_FILE" "$TMP" <<'PYEOF' && mv "$TMP" "$watch" || { rm -f "$TMP"; true; }
-import json, sys
-watch_path, approvals_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
-watch    = json.load(open(watch_path))
-approvals = json.load(open(approvals_path))
-done_ids  = {i["id"] for i in approvals.get("items", [])
-             if i.get("status") in ("executed", "cancelled")}
-before = len(watch.get("watches", []))
-watch["watches"] = [
-    w for w in watch.get("watches", [])
-    if not (w.get("type") == "approval" and w.get("approval_id") in done_ids)
-]
-after = len(watch["watches"])
-json.dump(watch, open(out_path, "w"), indent=2)
-if before != after:
-    print(f"Retired {before - after} approval watch(es) from {watch_path}")
-PYEOF
-  done
-fi
-
-# ── Retire fired one-shot schedule watches ──────────────────────────────────
-# A one-shot schedule (next_fire_ts, no cron) fires exactly once: schedule.py
-# gates on `last_checked_ts < next_fire_ts`, and triage advances the watermark
-# past next_fire_ts on the firing tick, so the entry can never fire again.
-# Nothing removed it, so every fired backstop stayed in watch.json forever and
-# surfaced as a permanent "scheduled" open item — one re-armed promise showing
-# as N duplicates (a conversion-limit backstop re-armed weekly showed as 5; a
-# sandbox-onboarding quest had 15). Drop one-shot schedules whose next_fire_ts
-# is already behind the watermark. Recurring cron schedules (have `cron`) are
-# never touched — they fire repeatedly by design.
-for qd in "${QUEST_DIRS[@]}"; do
-  watch="$qd/watch.json"
   [ -f "$watch" ] || continue
-  _has=$(jq '[.watches[]? | select(.type == "schedule" and (has("cron") | not) and has("next_fire_ts"))] | length' "$watch" 2>/dev/null || echo 0)
-  [ "${_has:-0}" -gt 0 ] || continue
-  TMP=$(mktemp)
-  python3 - "$watch" "$TMP" <<'PYEOF' && mv "$TMP" "$watch" || { rm -f "$TMP"; true; }
-import json, sys
-watch_path, out_path = sys.argv[1], sys.argv[2]
-watch = json.load(open(watch_path))
-def fired(w):
-    if w.get("type") != "schedule" or "cron" in w or "next_fire_ts" not in w:
-        return False
-    try:
-        return float(w.get("last_checked_ts") or 0) >= float(w["next_fire_ts"])
-    except (TypeError, ValueError):
-        return False
-before = len(watch.get("watches", []))
-watch["watches"] = [w for w in watch.get("watches", []) if not fired(w)]
-after = len(watch["watches"])
-json.dump(watch, open(out_path, "w"), indent=2)
-if before != after:
-    print(f"Retired {before - after} fired one-shot schedule watch(es) from {watch_path}")
-PYEOF
+  _retired=$(python3 "$SCRIPT_DIR/ledger/housekeep.py" retire \
+               "$watch" "${meta:-/nonexistent}" "$_APPROVALS_FILE" 2>>"$LOG_FILE" || true)
+  [ -n "$_retired" ] && while IFS= read -r _line; do
+    [ -n "$_line" ] && log "$_line ($(basename "$qd"))"
+  done <<< "$_retired"
 done
 
 # ── Prune reaction state files (keep newest 1000 timestamps) ─────────────────
@@ -1490,89 +1407,79 @@ commit_quest() {
   fi
   acked_json=$(printf '%s\n' "$acked_ids" | jq -R 'select(length > 0)' | jq -sc .)
 
-  # ── Source-evidence check on acks: OBSERVE ONLY by default ───────────────────
-  # `nothing_to_do` claims "I read the source and it needed no action". It is the only status
-  # that advances a watermark leaving no other trace, so a worker that skips the read and acks
-  # it anyway buries the message. This compares the acked items against the channels the
-  # worker's own event stream shows it successfully read.
+  # ── The commit decision now lives in ledger/commit.py (a pure, tested function) ──────
+  # It used to be several inline jq expressions plus the evidence veto, all here. That is
+  # exactly the code where two silent-loss bugs hid, because it could not be unit-tested.
+  # This shell now only ASSEMBLES the snapshot, CALLS the decider, and does the I/O the
+  # decider deliberately does not: the watch.json write, the logging, the run-log events.
   #
-  # It does NOT hold anything unless YAAS_ACK_EVIDENCE_ENFORCE=1, and that default is a
-  # deliberate decision after review, not timidity:
-  #
-  #   1. A false negative is NOT merely a one-tick delay, which is what I first assumed. Three
-  #      no-progress dispatches promote the watch to `misconfig`, which stops automatic
-  #      retries entirely. So enforcing on imperfect evidence trades silent loss for eventual
-  #      manual-recovery loss, and that is not obviously the better trade.
-  #   2. The known false-negative surface is wide: a `slack_search` whose channel appears only
-  #      in the results, a read by permalink or thread ts with no channel argument, a DM read
-  #      by user id, any tool returning the channel only in its response, and Codex/Cursor
-  #      event schemas this parser does not model.
-  #   3. It is bypassable anyway. A worker can ack `handled` instead and skip the check, since
-  #      `handled` is not verified. "handled leaves another trace" is only sound if the commit
-  #      code checks that trace and ties it to this watch and run, which it does not yet.
-  #
-  # So it runs in observation mode and logs `gate_ack_unverified`. Once live data shows how
-  # often the evidence is genuinely absent, enforcement becomes an informed switch rather than
-  # a guess. Coverage today is SLACK, CHANNEL-ATTRIBUTABLE ONLY: absence of these events does
-  # not mean every ack was verified.
+  # Evidence inputs mirror the old guard precisely: the veto only runs when a worker event
+  # stream exists (evidence_available), enforcement is YAAS_ACK_EVIDENCE_ENFORCE, and the
+  # read channels come from the same source-evidence.py.
+  local _enforce _ntd _read_channels _evidence_available _decision
+  _enforce="${YAAS_ACK_EVIDENCE_ENFORCE:-0}"
+  _ntd='[]'; _read_channels='[]'; _evidence_available=false
   if [ -n "${DISPATCH_NDJSON:-}" ] && [ -f "${DISPATCH_NDJSON:-/nonexistent}" ]; then
-    local _ntd _read_channels _unverified_json _enforce
-    _enforce="${YAAS_ACK_EVIDENCE_ENFORCE:-0}"
-    _ntd=$(python3 "$SCRIPT_DIR/ledger/ack-watch.py" acked-as "$DISPATCH_RUN_ID" nothing_to_do 2>>"$LOG_FILE")
-    if [ -n "$_ntd" ]; then
-      _read_channels=$(python3 "$SCRIPT_DIR/dispatch/source-evidence.py" sources "$DISPATCH_NDJSON" 2>>"$LOG_FILE")
-      # One pass over watch.json rather than two per item.
-      _unverified_json=$(jq -c --arg ids "$_ntd" --arg chans "$_read_channels" '
-          ($ids | split("\n") | map(select(length > 0))) as $want
-        | ($chans | split("\n") | map(select(length > 0))) as $read
-        | [ .watches[]?
-            | select(.watch_id as $i | $want | index($i))
-            | select((.type // "") | startswith("slack_"))
-            | select((.channel_id // "") != "")
-            | select((.channel_id | IN($read[])) | not)
-            | .watch_id ]' "$watch" 2>/dev/null || echo '[]')
+    _evidence_available=true
+    _ntd=$(python3 "$SCRIPT_DIR/ledger/ack-watch.py" acked-as "$DISPATCH_RUN_ID" nothing_to_do 2>>"$LOG_FILE" \
+           | jq -R 'select(length>0)' | jq -sc . || echo '[]')
+    _read_channels=$(python3 "$SCRIPT_DIR/dispatch/source-evidence.py" sources "$DISPATCH_NDJSON" 2>>"$LOG_FILE" \
+           | jq -R 'select(length>0)' | jq -sc . || echo '[]')
+  fi
 
-      if [ "$_unverified_json" != "[]" ] && [ -n "$_unverified_json" ]; then
-        jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg quest "$qid" \
-          --argjson items "$_unverified_json" --arg enforced "$_enforce" \
-          '{ts:$ts,event:"gate_ack_unverified",quest:$quest,items:$items,enforced:$enforced}' \
-          >> "$RUN_LOG" || true
-        if [ "$_enforce" = "1" ]; then
-          acked_json=$(jq -c --argjson drop "$_unverified_json" '. - $drop' <<< "$acked_json")
-          log "UNVERIFIED ACK [$qid] — $_unverified_json acked nothing_to_do with no observed read of that channel; watermark HELD (YAAS_ACK_EVIDENCE_ENFORCE=1)."
-        else
-          log "UNVERIFIED ACK [$qid] (observing only) — $_unverified_json acked nothing_to_do with no observed read of that channel. Watermark advanced as usual; set YAAS_ACK_EVIDENCE_ENFORCE=1 to hold instead."
-        fi
-      fi
+  _decision=$(jq -nc \
+      --arg qid "$qid" \
+      --argjson acked "$acked_json" \
+      --argjson acked_ntd "$_ntd" \
+      --argjson dirty "$DIRTY_WATCHES_JSON" \
+      --argjson watches "$(jq -c '.watches // []' "$watch" 2>/dev/null || echo '[]')" \
+      --argjson read_channels "$_read_channels" \
+      --argjson evidence_available "$_evidence_available" \
+      --arg enforce "$_enforce" \
+      '{quest_id:$qid, acked:$acked, acked_ntd:$acked_ntd, dirty_watches:$dirty,
+        watch_entries:$watches, read_channels:$read_channels,
+        evidence_available:$evidence_available, enforce:$enforce}')
+  _decision=$(python3 "$SCRIPT_DIR/ledger/commit.py" "$_decision" 2>>"$LOG_FILE" || echo '{}')
+
+  # ── Evidence veto logging (observe-only unless enforced) ─────────────────────────────
+  local _unverified _unverified_enforced
+  _unverified=$(jq -c '.unverified // []' <<< "$_decision" 2>/dev/null || echo '[]')
+  _unverified_enforced=$(jq -r '.unverified_enforced // false' <<< "$_decision" 2>/dev/null || echo false)
+  if [ "$_unverified" != "[]" ] && [ -n "$_unverified" ]; then
+    jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg quest "$qid" \
+      --argjson items "$_unverified" --arg enforced "$_enforce" \
+      '{ts:$ts,event:"gate_ack_unverified",quest:$quest,items:$items,enforced:$enforced}' \
+      >> "$RUN_LOG" || true
+    if [ "$_unverified_enforced" = "true" ]; then
+      log "UNVERIFIED ACK [$qid] — $_unverified acked nothing_to_do with no observed read of that channel; watermark HELD (YAAS_ACK_EVIDENCE_ENFORCE=1)."
+    else
+      log "UNVERIFIED ACK [$qid] (observing only) — $_unverified acked nothing_to_do with no observed read of that channel. Watermark advanced as usual; set YAAS_ACK_EVIDENCE_ENFORCE=1 to hold instead."
     fi
   fi
 
   log "ACK SUMMARY [$qid] $(python3 "$SCRIPT_DIR/ledger/ack-watch.py" summary "$DISPATCH_RUN_ID" 2>/dev/null || echo '{}')"
 
-  if [ "$acked_json" = "[]" ]; then
-    log "NO ACKS [$qid] — worker exited 0 without closing any item; every watermark held (next tick re-surfaces)."
+  # gate_dispatch_unacked when NOTHING remains committable after the veto — same quantity the
+  # old code routed on (acked_json empty), which the decider returns as acked_after_veto.
+  local _acked_after_veto
+  _acked_after_veto=$(jq -c '.acked_after_veto // []' <<< "$_decision" 2>/dev/null || echo '[]')
+  if [ "$_acked_after_veto" = "[]" ]; then
+    log "NO ACKS [$qid] — worker exited 0 without a committable item; every watermark held (next tick re-surfaces)."
     jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg quest "$qid" --arg run_id "$DISPATCH_RUN_ID" \
       '{ts:$ts,event:"gate_dispatch_unacked",quest:$quest,run_id:$run_id}' >> "$RUN_LOG"
     _record_progress "$qid" "$DISPATCH_RUN_ID" ""
     return 0
   fi
 
-  local moves
-  moves=$(jq -c --arg qid "$qid" --argjson acked "$acked_json" \
-    '[.[] | select(.quest_id == $qid and .complete != false and (.watch_id as $i | any($acked[]; . == $i)))
-          | {watch_id, advance_to}]' <<< "$DIRTY_WATCHES_JSON" 2>/dev/null || echo '[]')
+  local moves committed_ids truncated advanced
+  moves=$(jq -c '.moves // []' <<< "$_decision" 2>/dev/null || echo '[]')
   if ! _advance_watches "$qid" "$moves"; then
     _record_progress "$qid" "$DISPATCH_RUN_ID" ""
     return 0
   fi
 
-  local committed_ids truncated
-  committed_ids=$(jq -r --arg qid "$qid" --argjson acked "$acked_json" \
-    '.[] | select(.quest_id == $qid and .complete != false and (.watch_id as $i | any($acked[]; . == $i))) | .watch_id' \
-    <<< "$DIRTY_WATCHES_JSON" 2>/dev/null || true)
-  truncated=$(jq --arg qid "$qid" --argjson acked "$acked_json" \
-    '[.[] | select(.quest_id == $qid and .complete == false and (.watch_id as $i | any($acked[]; . == $i)))] | length' \
-    <<< "$DIRTY_WATCHES_JSON" 2>/dev/null || echo 0)
+  committed_ids=$(jq -r '.committed_ids[]? // empty' <<< "$_decision" 2>/dev/null || true)
+  truncated=$(jq -r '.truncated // 0' <<< "$_decision" 2>/dev/null || echo 0)
   if [ "${truncated:-0}" -gt 0 ]; then
     log "BACKLOG [$qid] — $truncated acked watch(es) had a saturated window; cursor held so unseen older items are not skipped."
     jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg quest "$qid" --argjson n "$truncated" \
@@ -1715,14 +1622,20 @@ if [ -f "$TRIAGE_STATE" ]; then
   _CURSOR=$(jq -r '.dispatch_cursor // 0' "$TRIAGE_STATE" 2>/dev/null || echo 0)
   case "$_CURSOR" in ''|*[!0-9]*) _CURSOR=0 ;; esac
 fi
-_NTARGETS=${#DISPATCH_TARGETS[@]}
-_OFFSET=$(( _CURSOR % _NTARGETS ))
+# The rotation is dispatch/plan.py rotate() now — a pure, tested function. It assumes a
+# STABLE input order (DISPATCH_TARGETS is sorted above); rotating an unsorted list shuffles
+# rather than distributes, which is the bug that made the fairness golden flaky.
+_targets_json=$(printf '%s\n' "${DISPATCH_TARGETS[@]}" | jq -R . | jq -sc .)
+_rotation=$(python3 "$SCRIPT_DIR/dispatch/plan.py" rotate "$_targets_json" "$_CURSOR" 2>>"$LOG_FILE" \
+            || echo '{}')
 ROTATED_TARGETS=()
-_ri=0
-while [ "$_ri" -lt "$_NTARGETS" ]; do
-  ROTATED_TARGETS+=("${DISPATCH_TARGETS[$(( (_OFFSET + _ri) % _NTARGETS ))]}")
-  _ri=$(( _ri + 1 ))
-done
+while IFS= read -r _rt; do
+  [ -n "$_rt" ] && ROTATED_TARGETS+=("$_rt")
+done < <(printf '%s' "$_rotation" | jq -r '.order[]? // empty' 2>/dev/null)
+# Fall back to the unrotated order if plan.py produced nothing, so a planner failure never
+# drops the whole dispatch set.
+[ "${#ROTATED_TARGETS[@]}" -eq 0 ] && ROTATED_TARGETS=("${DISPATCH_TARGETS[@]}")
+_OFFSET=$(printf '%s' "$_rotation" | jq -r '.offset // 0' 2>/dev/null || echo 0)
 [ "$_OFFSET" != "0" ] && log "Rotated dispatch order by $_OFFSET for fairness: ${ROTATED_TARGETS[*]}"
 
 # ── The dispatch loop ───────────────────────────────────────────────────────
@@ -1750,7 +1663,9 @@ for _target in "${ROTATED_TARGETS[@]}"; do
   # 60), so a tighter cap would block real work.
   _tgt_recent=$(python3 "$SCRIPT_DIR/dispatch/spend-window.py" "$RUN_LOG" --target "$_target" 2>/dev/null | jq -r '.target_dispatches_1h // 0' 2>/dev/null || echo 0)
   case "$_tgt_recent" in ''|*[!0-9]*) _tgt_recent=0 ;; esac
-  if [ "$_tgt_recent" -ge "${YAAS_MAX_TARGET_DISPATCH_PER_HOUR:-25}" ]; then
+  # dispatch/plan.py breaker-open is the (tested) predicate; exit 0 = open/blocked. It fails
+  # CLOSED on an unreadable count, so a possible loop is withheld rather than run.
+  if python3 "$SCRIPT_DIR/dispatch/plan.py" breaker-open "$_tgt_recent" "${YAAS_MAX_TARGET_DISPATCH_PER_HOUR:-25}" >/dev/null 2>&1; then
     log "TARGET BREAKER OPEN: $_target dispatched $_tgt_recent time(s) in the last hour; skipping. Watermarks held."
     jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg target "$_target" --argjson n "$_tgt_recent" \
       '{ts:$ts,event:"gate_target_breaker_open",target:$target,dispatches_1h:$n}' >> "$RUN_LOG"

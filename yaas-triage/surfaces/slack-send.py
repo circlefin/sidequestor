@@ -153,8 +153,13 @@ def _thread_last_activity(channel_id: str, thread_ts: str):
     replies are covered by the same rule, with nothing to remember.
     """
     try:
+        # slack_read_thread names the parent ts `message_ts`, not `thread_ts` (see
+        # checkers/slack_thread.py, the canonical caller). Passing `thread_ts` makes the tool
+        # reject the call with "Missing value for parameter message_ts", the read raises, and
+        # the guard fails CLOSED — silently holding every threaded reply as "unreadable". That
+        # is what stranded a reviewed self-DM draft.
         body = _call_slack("slack_read_thread",
-                           {"channel_id": channel_id, "thread_ts": thread_ts})
+                           {"channel_id": channel_id, "message_ts": thread_ts})
     except Exception:
         return None
     newest = None

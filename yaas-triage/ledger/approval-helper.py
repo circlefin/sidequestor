@@ -206,10 +206,67 @@ def _uid() -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
 
 
+# Reaction-sourced drafts arrive with quest_id "reactions", which is the fast-path target and
+# has no quest folder — so the approval watch could never arm and the item stranded at
+# "reviewed" forever (a real incident). They are routed to a durable executor-only host quest
+# instead. This is a SPECIFIC map for the one known non-quest target, NOT a generic
+# "missing quest -> fallback" (that would hide typos and funnel unrelated broken approvals
+# into the host, per review).
+REACTIONS_TARGET = "reactions"
+HOST_QUEST = "quest-reactions-approvals"
+
+_HOST_CONTEXT = """# Reaction approval executor
+
+This quest exists for ONE job: hold the `approval` watches for drafts that originated from a
+Slack reaction (`:writing_hand:`), which have no quest of their own, and let the normal
+reviewed-approval execution path (CLAUDE.md §3d) send them once a human approves.
+
+Rules for the worker dispatched here:
+- Execute the reviewed approval item(s) per §3d (`approval-helper.py start` -> send -> `done`).
+  That is the whole task.
+- Do NOT append a `slack_thread` watch afterward. The conversation lives in its original
+  thread, not here; this quest must stay an executor and never accrue follow-up watches.
+- Never mark this quest completed or archived. It is permanent and usually empty.
+"""
+
+
+def _ensure_host_quest():
+    """Create the durable executor-only host quest if absent. Returns its watch.json path.
+
+    Self-bootstrapping so a fresh install and this machine both work with no manual step. The
+    quest starts with an empty watches[] (so it is dispatch-inert until an approval arms one)
+    and allow_send:false (executing a reviewed approval is already the human-authorized action;
+    the quest itself opens no new sends).
+    """
+    qdir = QUESTS_DIR / "active" / HOST_QUEST
+    watch = qdir / "watch.json"
+    if watch.exists():
+        return watch
+    qdir.mkdir(parents=True, exist_ok=True)
+    (qdir / "meta.json").write_text(json.dumps({
+        "id": HOST_QUEST,
+        "title": "Reaction approval executor",
+        "status": "active",
+        "priority": "normal",
+        "allow_send": False,
+        "retire_slack_threads_after_days": "never",
+    }, indent=2) + "\n")
+    watch.write_text('{"watches": []}\n')
+    (qdir / "context.md").write_text(_HOST_CONTEXT)
+    (qdir / "timeline.ndjson").touch()
+    return watch
+
+
 def cmd_write(payload_json: str):
     payload = json.loads(payload_json)
 
     quest_id   = payload["quest_id"]
+    source     = None
+    if quest_id == REACTIONS_TARGET:
+        # Route to the durable host quest; keep the origin in `source` for provenance.
+        _ensure_host_quest()
+        source = REACTIONS_TARGET
+        quest_id = HOST_QUEST
     target     = payload.get("target", {})
     channel_id = target.get("channel_id")
     thread_ts  = target.get("thread_ts")
@@ -248,6 +305,8 @@ def cmd_write(payload_json: str):
                 "context":      payload.get("context", ""),
                 "risk_reason":  payload.get("risk_reason", ""),
             }
+            if source:
+                item["source"] = source
             data.setdefault("items", []).append(item)
             _write_queue(data)
             new_id = item["id"]

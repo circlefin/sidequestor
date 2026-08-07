@@ -75,12 +75,14 @@ for sc in "$SCENARIOS"/*.json; do
   # The orchestrator runs against the fixture as if it were the repo. YAAS_SCENARIO is
   # what the stubs read; YAAS_TRIAGE_DIR is how the stub agent finds the real
   # ack-watch.py. Nothing else about the environment is special, which is the point:
-  # this is the real tick, not a simulation of one.
+  # this is the real tick, not a simulation of one. The runner is chosen by extension so the
+  # rewritten Python orchestrator (tick.py) is held to the identical goldens as triage.sh.
+  case "$ORCH" in *.py) RUNNER=python3 ;; *) RUNNER=bash ;; esac
   ( cd "$fixture" \
       && YAAS_SCENARIO="$fixture/scenario.json" \
          YAAS_TRIAGE_DIR="$fixture/yaas-triage" \
          REPO_ROOT="$fixture" \
-         bash "$fixture/yaas-triage/$ORCH" \
+         "$RUNNER" "$fixture/yaas-triage/$ORCH" \
       >"$fixture/tick.out" 2>"$fixture/tick.err" )
   rc=$?
 

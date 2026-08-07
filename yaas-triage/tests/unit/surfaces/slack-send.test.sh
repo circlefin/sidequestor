@@ -175,6 +175,20 @@ grep -q 'approval_id' "$TL" && ok "...and the approval id for the dashboard" \
   || bad "no approval_id in the timeline entry"
 
 echo
+echo "── regression: the guard reads the thread with the RIGHT param name ───────"
+# slack_read_thread requires the parent ts under `message_ts`, not `thread_ts` (see
+# checkers/slack_thread.py, the canonical caller). The guard once passed `thread_ts`, so the
+# read raised and the guard failed CLOSED, silently holding every threaded reply in
+# production. The functional cases above cannot catch this because the stub ignores the param
+# name, so this pins it statically.
+if grep -q 'slack_read_thread' "$SCRIPT_DIR/surfaces/slack-send.py" \
+   && grep -A2 '_call_slack("slack_read_thread"' "$SCRIPT_DIR/surfaces/slack-send.py" | grep -q 'message_ts' \
+   && ! grep -A2 '_call_slack("slack_read_thread"' "$SCRIPT_DIR/surfaces/slack-send.py" | grep -q '"thread_ts": thread_ts'; then
+  ok "the guard reads slack_read_thread with message_ts, not thread_ts"
+else
+  bad "the guard's slack_read_thread call uses the wrong param name (must be message_ts)"
+fi
+
 echo "────────────────────────────────────────────────────────────────────────────"
 echo "stale-reply guard: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

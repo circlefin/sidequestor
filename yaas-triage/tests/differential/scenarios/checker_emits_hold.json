@@ -1,0 +1,30 @@
+{
+  "name": "checker_emits_hold",
+  "why": "A checker can hold its OWN watermark by returning outcome=hold (github_pr and jira do this on a saturated or tie-boundary page, added in B1). The shell only recognized clean/dirty/ratelimited/error/misconfig, so outcome=hold hit the 'unknown outcome' path and was mismapped to error -> backoff -> eventually misconfig \u2014 a latent live bug from B1, surfaced while porting the analyze phase to tick_check.py. Correct behaviour: the watch HOLDS (watermark unmoved, no dispatch), exactly like the derived saturation hold.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\n",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "type": "slack_thread",
+          "channel_id": "C1",
+          "thread_ts": "@now-7200.000100",
+          "last_checked_ts": "@now-3600",
+          "reason": "test"
+        }
+      ]
+    }
+  },
+  "checkers": {
+    "w1": {
+      "outcome": "hold",
+      "count": 2,
+      "complete": false,
+      "preview": "tie boundary; cursor held"
+    }
+  },
+  "agent": {
+    "exit": 0
+  }
+}
