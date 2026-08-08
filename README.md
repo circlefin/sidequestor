@@ -26,6 +26,11 @@ schedules you care about. When one of them genuinely moves, it wakes your agent,
 that one thing, and writes down what happened. When nothing moves, it costs **nothing** —
 the watching is shell and Python, about 150ms a tick.
 
+Every piece of that work is a **quest** — an isolated compartment with one objective, its own
+permission to send, and its own written-down storyline. That is the safety model: the agent only
+ever acts inside a compartment, so you always know what it is watching, why it acted, and that a
+mistake can't escape the quest it happened in. See [Everything is a quest](#everything-is-a-quest).
+
 **$0 idle. Tokens only on dispatch.**
 
 ---
@@ -49,18 +54,37 @@ Every one of those exists because its absence caused a real incident. The storie
 
 ## Everything is a quest
 
-A **quest** is one thing you care about, with its own objective, its own watchers, and its own
-memory. It is a folder with four files. That's the whole data model.
+The quest is the safety harness. An autonomous agent left to "watch my Slack and help out" is a
+blob you cannot audit: you never quite know what it is tracking, why it acted, or whether it is
+about to act on something it misread. Sidequestor refuses that. **Every piece of work is a quest:
+a compartment with one objective, its own watchers, its own send permission, and its own memory.**
+The agent only ever acts inside a compartment — never on the world at large.
+
+That compartmentalisation is what makes it safe to leave running:
+
+- **You always know what it's doing.** The active quests *are* the complete list of what your
+  Sidequestor is paying attention to. Nothing is watched that isn't a quest; nothing is acted on
+  outside the quest that triggered it. To audit the whole system, you list one directory.
+- **You always know which storyline it's following.** Each quest's `context.md` is its script —
+  the objective and the decision rules — and its `timeline.ndjson` is everything it has ever done
+  on that storyline, in order. When it replies, you can trace exactly which quest drove it and why.
+- **A mistake stays in its compartment.** Permission to send is per quest (`allow_send`). A watch
+  that breaks, a thread that goes stale, a rate-limit — each is contained to its own quest and
+  held there; it cannot bleed into the others or advance anything it didn't earn. The dashboard
+  surfaces a stuck or throttled quest by name instead of letting it fail silently.
+
+A quest is just a folder with four files. That's the whole data model.
 
 ```
 state/quests/active/watch-my-channel/
-├── context.md        why this exists, and how to decide      ← the agent reads this first
+├── context.md        the storyline: why this exists, and how to decide   ← the agent reads this first
 ├── meta.json         status, priority, may-it-send
-├── watch.json        where to look, and how far it has got
-└── timeline.ndjson   everything it has ever done
+├── watch.json        where to look, and how far it has got (the watermark)
+└── timeline.ndjson   everything it has ever done on this quest
 ```
 
-No database. No migrations. You can read your agent's entire memory with `cat`.
+No database. No migrations. You can read your agent's entire memory — everything it watches and
+everything it has done — with `cat`.
 
 ---
 
@@ -270,6 +294,9 @@ to see your own rate rather than guessing.
 
 ## Safety
 
+- **The quest is the compartment.** The agent only ever acts inside one, so what it watches is
+  auditable (list the active quests), why it acted is traceable (that quest's storyline), and a
+  failure is contained to the quest it happened in. See [Everything is a quest](#everything-is-a-quest).
 - **Nothing sends by surprise.** `allow_send: false` per quest, a 24-hour staleness guard, and
   an approval queue for anything held back.
 - **Tokens live in the Keychain**, never in `.env` and never in the repo.
