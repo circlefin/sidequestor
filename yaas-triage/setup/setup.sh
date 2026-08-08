@@ -288,6 +288,22 @@ else
   echo "  python3 $TRIAGE_DIR/tick.py"
 fi
 
+# ── Offer launchd install for the heartbeat monitor ─────────────────────────
+# Watches the triage loop from OUTSIDE it — a health check inside the loop can't
+# notice the loop being dead. Strongly recommended alongside the triage job.
+echo
+read -p "Install the heartbeat monitor that watches the triage loop from outside? (recommended) [y/N]: " INSTALL_HEARTBEAT
+if [[ "$INSTALL_HEARTBEAT" =~ ^[Yy] ]]; then
+  if [ -x "$SCRIPT_DIR/install-launchd-heartbeat.sh" ]; then
+    "$SCRIPT_DIR/install-launchd-heartbeat.sh"
+  else
+    echo "install-launchd-heartbeat.sh not found yet — skipping. Run it later when available."
+  fi
+else
+  echo "Skipped. Without it, a dead triage loop can go unnoticed. Install later with:"
+  echo "  $SCRIPT_DIR/install-launchd-heartbeat.sh"
+fi
+
 # ── Offer launchd install for the dashboard ─────────────────────────────────
 echo
 read -p "Install the launchd job to keep the dashboard running continuously? [y/N]: " INSTALL_DASHBOARD

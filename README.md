@@ -107,7 +107,7 @@ macOS only for now: it leans on `launchd` and the Keychain.
 ### 2. Clone and configure
 
 ```bash
-git clone https://github.com/<your-org>/yourself-as-a-service-v2.git sidequestor
+git clone https://github.com/circlefin/sidequestor.git
 cd sidequestor
 cp .env.example .env
 cp CLAUDE.example.md CLAUDE.md

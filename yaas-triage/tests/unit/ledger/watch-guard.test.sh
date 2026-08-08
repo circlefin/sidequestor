@@ -146,11 +146,21 @@ grep -q 'watch-guard.py"), "verify"' "$SCRIPT_DIR/tick.py" && ok "tick.py verifi
   || bad "tick.py never verifies"
 [ -f "$(dirname "$SCRIPT_DIR")/.claude/hooks/deny-state-writes.sh" ] \
   && bad "the old command-text hook still exists" || ok "the old command-text hook is deleted"
-python3 -c "
+# The legacy PreToolUse hook lived in .claude/settings.json — a LOCAL, gitignored file the public
+# template does not ship. On a fresh clone it is simply absent, which by definition means the old
+# hook is not registered, so treat a missing file as clean rather than failing the read. (Without
+# this guard a fresh clone reports "PreToolUse is still registered" because json.load throws on the
+# missing file — a false failure the clean-room test surfaced.)
+_SETTINGS="$(dirname "$SCRIPT_DIR")/.claude/settings.json"
+if [ -f "$_SETTINGS" ]; then
+  python3 -c "
 import json,sys
-d=json.load(open('$(dirname "$SCRIPT_DIR")/.claude/settings.json'))
+d=json.load(open('$_SETTINGS'))
 sys.exit(0 if 'PreToolUse' not in d.get('hooks',{}) else 1)" \
-  && ok "...and is no longer registered" || bad "PreToolUse is still registered"
+    && ok "...and is no longer registered" || bad "PreToolUse is still registered"
+else
+  ok "...and is no longer registered (no .claude/settings.json — fresh clone)"
+fi
 
 echo
 echo "────────────────────────────────────────────────────────────────────────────"

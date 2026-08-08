@@ -1,4 +1,4 @@
-# Contributing to yourself-as-a-service-v2
+# Contributing to Sidequestor
 
 Thank you for your interest in contributing to this project!
 

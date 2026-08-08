@@ -17,7 +17,7 @@
 
 # install-launchd-heartbeat.sh — install the yaas triage launchd agent
 #
-# Installs ~/Library/LaunchAgents/com.yaas.triage.plist pointing at the checked-out
+# Installs ~/Library/LaunchAgents/com.yaas.heartbeat.plist pointing at the checked-out
 # repo's triage loop (tick.py). After install, it runs every ~60 seconds until uninstalled.
 #
 # Usage:
