@@ -127,8 +127,29 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
         f.write("=" * 56 + "\n")
 
     env = dict(os.environ, REPO_ROOT=str(REPO_ROOT))
+    # When YAAS_CLAUDE_DEBUG is set, give the worker a per-invocation debug file beside its
+    # logs so dispatch-agent.sh routes claude --debug-file there (root-cause view of a stall:
+    # API request/retry/timing, MCP traffic). Harmless when debug is off — the var is only
+    # consumed if YAAS_CLAUDE_DEBUG is also set.
+    debug = log_dir / f"worker-{stamp}-{slug}.debug"
+    env["YAAS_WORKER_DEBUG_FILE"] = str(debug)
     started = time.time()
-    state = {"timed_out": False}
+    # last_line is the wall-clock of the most recent stream line. The stall monitor
+    # (below) compares against it; the read loop stamps it on every line.
+    state = {"timed_out": False, "stalled": False, "last_line": started}
+
+    # Inactivity watchdog threshold. A model/transport round-trip can hang after emitting
+    # a tool_use with no further stream output, in which case the only thing that fires is
+    # the outer `timeout` watchdog — burning the whole slot (incident 2026-08-08: a worker
+    # stalled 29 min after one tool_use and was killed only at the 1800s ceiling). This
+    # catches that gap sooner AND timestamps it. Must exceed the longest LEGITIMATE silence
+    # between stream lines, which is a single tool call's runtime — the Bash tool's own cap
+    # is 600s — so the default (900s) sits safely above that and well under the 1800s ceiling.
+    # 0 disables it (falls back to the outer watchdog only).
+    try:
+        stall_seconds = int(os.environ.get("YAAS_WORKER_STALL_SECONDS", "900") or "900")
+    except ValueError:
+        stall_seconds = 900
 
     agent = subprocess.Popen(
         ["bash", str(SCRIPT_DIR / "dispatch-agent.sh"), prompt],
@@ -141,12 +162,21 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
         stdin=subprocess.PIPE, stdout=open(human, "a"),
         stderr=subprocess.DEVNULL, env=env)
 
+    def _mark(msg):
+        """Append a timestamped diagnostic line to the human-readable worker log."""
+        try:
+            with open(human, "a") as f:
+                f.write(f"\n=== {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {msg} ===\n")
+        except Exception:
+            pass
+
     # A real timer, not a clock check inside the read loop. An agent that emits one
     # line and then hangs leaves the loop blocked in readline forever, so the check
     # never runs — which is exactly what the first version of this did. The shell
     # version used a background subshell with `sleep` for the same reason.
     def on_timeout():
         state["timed_out"] = True
+        _mark(f"WORKER TIMEOUT — no completion within {timeout}s ceiling; killing tree")
         kill_tree(agent.pid, signal.SIGTERM)
         time.sleep(3)
         kill_tree(agent.pid, signal.SIGKILL)
@@ -155,11 +185,38 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
     watchdog.daemon = True
     watchdog.start()
 
+    # Inactivity monitor: a light polling thread (not a per-line Timer, which would churn
+    # once per streamed token). It wakes periodically and kills the tree if no stream line
+    # has arrived for stall_seconds. Reuses the timed_out flag so triage sees the same 124
+    # recovery path, but logs a distinct STALL marker so the cause is unambiguous in the log.
+    stop_event = threading.Event()
+
+    def stall_monitor():
+        if stall_seconds <= 0:
+            return
+        # Poll frequently enough to fire close to the threshold without busy-waiting.
+        tick = max(5, min(30, stall_seconds // 4))
+        while not stop_event.wait(tick):
+            idle = time.time() - state["last_line"]
+            if idle >= stall_seconds:
+                state["stalled"] = True
+                state["timed_out"] = True
+                _mark(f"WORKER STALL — no stream output for {int(idle)}s "
+                      f"(threshold {stall_seconds}s); killing tree for fast recovery")
+                kill_tree(agent.pid, signal.SIGTERM)
+                time.sleep(3)
+                kill_tree(agent.pid, signal.SIGKILL)
+                return
+
+    monitor = threading.Thread(target=stall_monitor, daemon=True)
+    monitor.start()
+
     # tee: every line goes to the raw ndjson AND to the formatter, streaming, so the
     # live panel updates while the agent is still working.
     try:
         with open(ndjson, "w") as raw:
             for line in agent.stdout:
+                state["last_line"] = time.time()
                 raw.write(line.decode("utf-8", "replace"))
                 raw.flush()
                 try:
@@ -169,6 +226,8 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
                     pass
     except Exception:
         pass
+
+    stop_event.set()
 
     try:
         fmt.stdin.close()
@@ -181,6 +240,7 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
         state["timed_out"] = True
         kill_tree(agent.pid, signal.SIGKILL)
     watchdog.cancel()
+    stop_event.set()
 
     try:
         fmt.wait(timeout=10)
@@ -188,10 +248,12 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
         kill_tree(fmt.pid, signal.SIGKILL)
 
     # 124 matches timeout(1). triage treats it specially: an ack is written only AFTER
-    # its item's work completed, so acks banked before the kill still commit.
+    # its item's work completed, so acks banked before the kill still commit. A stall kill
+    # uses the same code/path — the STALL marker in the human log is what distinguishes it.
     code = 124 if state["timed_out"] else (agent.returncode if agent.returncode is not None else 1)
     return {"exit": code, "wall_sec": int(time.time() - started),
-            "log": str(human), "ndjson": str(ndjson), "timed_out": state["timed_out"]}
+            "log": str(human), "ndjson": str(ndjson),
+            "timed_out": state["timed_out"], "stalled": state["stalled"]}
 
 
 def main():

@@ -92,7 +92,7 @@ class Tick:
         self.max_fanout = self.cfg.knob("YAAS_MAX_DISPATCH_FANOUT")
         self.tick_budget = int(self.env.get("YAAS_TICK_DISPATCH_BUDGET", "3600") or "3600")
         self.min_slice = int(self.env.get("YAAS_MIN_DISPATCH_SLICE", "300") or "300")
-        self.worker_timeout = 1800
+        self.worker_timeout = int(self.env.get("YAAS_WORKER_TIMEOUT", "1800") or "1800")
         self.now_utc = _now_utc()
         self.now_ts = time.time()
         # subprocess env: mirror the exports triage.sh makes.

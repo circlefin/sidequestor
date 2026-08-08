@@ -78,6 +78,19 @@ case "$BACKEND" in
     MODEL="${YAAS_CLAUDE_MODEL:-opus}"
     EFFORT="${YAAS_CLAUDE_EFFORT:-}"
     PERMISSION_MODE="${YAAS_CLAUDE_PERMISSION_MODE:-${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}}"
+    # Optional debug logging. YAAS_CLAUDE_DEBUG selects the category filter passed to
+    # claude --debug (e.g. "api,mcp"); "all"/"1"/"true" means the bare flag (everything).
+    # Off by default (empty) — debug output is large. run-agent.py sets YAAS_WORKER_DEBUG_FILE
+    # to a per-worker path so the debug stream lands beside that worker's log instead of on
+    # stderr. This is the layer that shows a hung model/transport round-trip from the inside.
+    DBG=()
+    if [ -n "${YAAS_CLAUDE_DEBUG:-}" ]; then
+      case "$YAAS_CLAUDE_DEBUG" in
+        all|1|true) DBG=(--debug) ;;
+        *)          DBG=(--debug "$YAAS_CLAUDE_DEBUG") ;;
+      esac
+      [ -n "${YAAS_WORKER_DEBUG_FILE:-}" ] && DBG+=(--debug-file "$YAAS_WORKER_DEBUG_FILE")
+    fi
     exec claude --model "$MODEL" \
       ${EFFORT:+--effort "$EFFORT"} \
       --permission-mode "$PERMISSION_MODE" \
@@ -85,6 +98,7 @@ case "$BACKEND" in
       --strict-mcp-config \
       --tools "Read,Edit,Write,Bash,Glob,Grep,WebFetch,WebSearch" \
       --output-format stream-json --verbose \
+      ${DBG[@]+"${DBG[@]}"} \
       -p "$PROMPT"
     ;;
   codex)
