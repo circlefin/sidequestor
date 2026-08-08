@@ -406,12 +406,12 @@ def run_tick(t):
     quest_count = len(quest_dirs)
     t.log(f"Triage starting. Active quests: {quest_count}")
 
-    if quest_count == 0:
-        t._bump_state(**{"runs_total+": 1, "runs_idle+": 1})
-        t.event({"event": "gate_idle_no_quests"})
-        t.log("IDLE — no active quests. Exit 0.")
-        t.slog("Run OK — idle. 0 active quests, 0 checks performed.")
-        return 0
+    # NOTE: zero active quests does NOT mean the tick is idle — the global reaction
+    # sweep (below) is independent of quests. Returning here would silently stop the
+    # bot from ever answering an emoji-triggered message whenever no quest is active
+    # (bug: 2026-08-08, a :claude-intensifies: DM went unanswered while quest_count==0).
+    # With an empty quest_dirs the check block below is a natural no-op, so we fall
+    # through to the reaction sweep and the normal dispatch decision.
 
     # Ensure watch_ids (migrate legacy files); a failure marks the quest unreadable.
     unreadable = set()

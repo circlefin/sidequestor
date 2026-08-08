@@ -3,7 +3,13 @@
   "dispatches": [],
   "events": [
     {
-      "event": "gate_idle_no_quests"
+      "event": "gate_idle",
+      "quests_checked": 0,
+      "quests_skipped": 0,
+      "watches_in_backoff": 0,
+      "watches_misconfigured": 0,
+      "watches_skipped": 0,
+      "watches_truncated": 0
     }
   ],
   "exit": 0,

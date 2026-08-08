@@ -33,15 +33,15 @@ Both modes share the same quest folders and state files, and the loop can dispat
 you're mid-conversation about it. These rules keep the two coherent and apply in **both** modes:
 
 1. **The loop owns watermarks.** Never edit an existing `watch.json` entry or any `last_checked_ts`
-   — a hook blocks raw edits and `ledger/watch-guard.py` reverts them. Add a watch only via
-   `ledger/add-watch.py` (append-only, safe mid-tick).
+   — a hook blocks raw edits and `yaas-triage/ledger/watch-guard.py` reverts them. Add a watch only via
+   `yaas-triage/ledger/add-watch.py` (append-only, safe mid-tick).
 2. **Touch shared state only through the helpers.** Each locks and writes atomically, so it is safe
    to run concurrently with a tick. Never hand-edit the underlying JSON:
-   - watches → `ledger/add-watch.py`
-   - ack ledger → `ledger/ack-watch.py` — **Mode A only**; never ack items you weren't dispatched
-   - review queue → `ledger/approval-helper.py`
-   - reaction emojis → `surfaces/react-lifecycle.py advance`
-   - Slack sends (auto-logged) → `surfaces/slack-send.py`
+   - watches → `yaas-triage/ledger/add-watch.py`
+   - ack ledger → `yaas-triage/ledger/ack-watch.py` — **Mode A only**; never ack items you weren't dispatched
+   - review queue → `yaas-triage/ledger/approval-helper.py`
+   - reaction emojis → `yaas-triage/surfaces/react-lifecycle.py advance`
+   - Slack sends (auto-logged) → `yaas-triage/surfaces/slack-send.py`
 3. **Don't act on a quest the loop is mid-handling.** A tick holds a flock and writes a
    `state/triage/dispatch-*.json` manifest while a worker runs. In Mode B, before sending into a
    watched thread or editing a quest's `context.md` / `meta.json`, confirm there's no in-flight
@@ -62,7 +62,7 @@ you're mid-conversation about it. These rules keep the two coherent and apply in
 ## More
 
 Per-watch-type querying, logging, approvals, and quest completion live in the dispatch skill above.
-Slack access (native MCP tool, or the `surfaces/mcp-call.sh` shell fallback) and the wider state
+Slack access (native MCP tool, or the `yaas-triage/surfaces/mcp-call.sh` shell fallback) and the wider state
 layout live in `yaas-triage/skills/yaas-ops/SKILL.md`.
 
 ---
