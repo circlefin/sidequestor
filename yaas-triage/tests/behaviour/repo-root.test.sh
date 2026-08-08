@@ -178,15 +178,23 @@ done
 
 echo
 echo "── the shell helper agrees with the Python one ───────────────────────────"
-SH=$(sed -n '/^_repo_root()/,/^}/p' "$SCRIPT_DIR/triage.sh")
-if [ -z "$SH" ]; then
-  bad "no _repo_root() in triage.sh"
+# The bash _repo_root lives in triage.sh, retired after the tick.py cutover (the live
+# implementation is tick_state.py's _repo_root, checked in tick_state.test.sh). Only run this
+# cross-language agreement check where triage.sh is still on disk (the private rollback copy);
+# in a triage.sh-free checkout it is correctly skipped, not a failure.
+if [ -f "$SCRIPT_DIR/triage.sh" ]; then
+  SH=$(sed -n '/^_repo_root()/,/^}/p' "$SCRIPT_DIR/triage.sh")
+  if [ -z "$SH" ]; then
+    bad "no _repo_root() in triage.sh"
+  else
+    ok "extracted the shell helper from triage.sh"
+    RES=$( printf '%s\n' "$SH" > "$TMP/h.sh"
+           echo '_repo_root "$1"' >> "$TMP/h.sh"
+           unset REPO_ROOT; bash "$TMP/h.sh" "$FAKE/yaas-triage/ledger" )
+    eq "shell resolves the same root as Python" "$RES" "$FAKE"
+  fi
 else
-  ok "extracted the shell helper from triage.sh"
-  RES=$( printf '%s\n' "$SH" > "$TMP/h.sh"
-         echo '_repo_root "$1"' >> "$TMP/h.sh"
-         unset REPO_ROOT; bash "$TMP/h.sh" "$FAKE/yaas-triage/ledger" )
-  eq "shell resolves the same root as Python" "$RES" "$FAKE"
+  ok "triage.sh retired; tick_state.py _repo_root is canonical (see tick_state.test.sh)"
 fi
 
 echo

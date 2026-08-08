@@ -96,7 +96,7 @@ has a working default, and `.env.example` explains each one and why it's set whe
 a glance at the spend ceilings before you leave them alone.
 
 **`CLAUDE.md`** — your agent's rules: who it is, how it writes, what it must never do. Add your
-voice here. Leave the protocol sections alone; `triage.sh` has a contract with them.
+voice here. Leave the protocol sections alone; the orchestrator has a contract with them.
 
 > If you already have a `CLAUDE.md` in this repo for your own interactive use, that's the point
 > — the sleeve reads the same file your agent already reads.
@@ -130,7 +130,7 @@ yaas-triage/tests/run-all.sh                   # is the CODE correct?
 Three different questions, three different tools. The tests use throwaway fixtures and touch
 none of your real state, so they're safe to run whenever.
 
-Expect: `All checks passed`, `healthy`, and `20 suite(s) passed`.
+Expect: `All checks passed`, `healthy`, and `28 suite(s) passed`.
 
 ---
 
@@ -173,7 +173,11 @@ Once installed, there is nothing to do. It ticks every 60 seconds.
 ```
 
 That's where drafts wait for you, every quest's messages are one click from Slack, and a pulsing
-pill appears when a worker is running — click it to watch the agent think in real time.
+pill appears when a worker is running — click it to watch the agent think in real time. Quests
+that are stuck (misconfigured) or being throttled (rate limited) sort to the top with a badge,
+and the **Config** tab shows the knobs that shape a tick — how many quests are checked at once
+(the peak Slack ping rate), the dispatch and spend ceilings, the promotion thresholds — each as
+its live value with its default.
 
 When you want to look under the hood:
 
@@ -183,8 +187,8 @@ tail -f logs/worker-latest.log           # what the agent is doing right now
 python3 yaas-triage/ops/health-monitor.py            # anything silently stuck?
 python3 yaas-triage/dispatch/spend-window.py state/run-log.ndjson | jq .   # what it's costing
 
-./yaas-triage/triage.sh                  # run one tick now
-DRY_RUN=1 VERBOSE=1 ./yaas-triage/triage.sh   # look, don't touch
+python3 yaas-triage/tick.py              # run one tick now
+DRY_RUN=1 VERBOSE=1 python3 yaas-triage/tick.py   # look, don't touch
 ```
 
 **Nothing dispatching despite obvious activity?** Every gate says so in
@@ -197,12 +201,14 @@ DRY_RUN=1 VERBOSE=1 ./yaas-triage/triage.sh   # look, don't touch
 | `gate_dispatch_deferred` | too many at once; next tick |
 | `gate_target_breaker_open` | one quest is hogging the hour |
 | `gate_watch_misconfigured` | a watch has stopped being checked and needs you |
+| `gate_watch_ratelimited` | Slack throttled a watch this tick; held, retries next tick (shows on the dashboard as "rate limited") |
 | `gate_catchup_hold` | it's been quiet a long time — see below |
 | `gate_bad_env_knob` | a value in `.env` isn't a number, so a ceiling would silently be no ceiling |
 
 **One gotcha:** editing `triage-loop.sh` or `dashboard-server.py` does nothing until that job
 restarts, because launchd holds one long-lived process and neither bash nor Python re-reads a
-running file. Edits to `triage.sh` and the checkers apply on the very next tick.
+running file. Edits to `tick.py` (and its `tick_*.py` imports) and the checkers apply on the very
+next tick, because the loop re-invokes `tick.py` fresh each time.
 
 ```bash
 launchctl kickstart -k "gui/$(id -u)/com.yaas.triage"
@@ -281,13 +287,15 @@ Worth reading before you hand it anything sensitive.
 
 ```
 yaas-triage/
-├── triage.sh          one tick
+├── tick.py            one tick (the live orchestrator)
+├── tick_state.py      config/loading   tick_check.py  the six-way verdict   tick_dispatch.py  the gates
+├── triage.sh          the previous bash orchestrator, kept as instant rollback
 ├── checkers/          "is there anything new?"     one plugin per watch type
 ├── dispatch/          "run a worker"
 ├── ledger/            "owns a state file, atomically"
 ├── surfaces/          "talk to the outside"
 ├── ops/               "keep it alive and visible"
-└── tests/             20 suites + 29 goldens + 9 mutations
+└── tests/             28 suites + 31 goldens + 9 mutations
 ```
 
 Adding a watch type means dropping one file in `checkers/`. Nothing else changes.

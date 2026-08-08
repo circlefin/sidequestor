@@ -21,7 +21,7 @@ Everything below is downstream of that.
                 │                watcher)             approval queue)
                 ▼
         ┌───────────────┐
-        │  triage.sh    │   ONE TICK
+        │   tick.py     │   ONE TICK  (triage.sh is the frozen bash predecessor, kept as rollback)
         │               │
         │  1. CHECK ────┼──▶ checkers/<type>.py, one per watch, in parallel
         │               │    "is there anything new?"  → clean | dirty | error
@@ -55,8 +55,9 @@ Moving that mark forward is the only irreversible act in the system. Move it too
 message is buried **silently** — no error, no retry, no trace. Every mechanism below exists to
 make that impossible.
 
-**Who may move it:** `triage.sh`, and only `triage.sh`. A worker may *append* new watches but
-never edit an existing one, and `ledger/watch-guard.py` reverts it if it tries.
+**Who may move it:** the orchestrator (`tick.py`), and only the orchestrator. A worker may
+*append* new watches but never edit an existing one, and `ledger/watch-guard.py` reverts it if
+it tries.
 
 ---
 
@@ -282,8 +283,12 @@ Grouped by **the question each part answers**.
 
 ```
 yaas-triage/
-├── triage.sh              one tick
-├── triage-loop.sh         the launchd wrapper that sleeps between ticks
+├── tick.py                one tick — the live orchestrator
+│   ├── tick_state.py         config/loading (repo root, knobs, lag map, quests)
+│   ├── tick_check.py         the six-way per-watch verdict (classify)
+│   └── tick_dispatch.py      the dispatch gates (slack-need, budget/fanout/slice)
+├── triage.sh              the previous bash orchestrator, frozen as instant rollback
+├── triage-loop.sh         the launchd wrapper that sleeps between ticks (runs tick.py)
 │
 ├── checkers/       "IS THERE ANYTHING NEW?"    one plugin per watch type
 │   ├── result.py                 the contract every checker returns
@@ -372,11 +377,11 @@ answer. Notifications de-duplicate, so a persistent fault does not shout every f
 ## 12. How this is tested
 
 ```
-   20 suites ─┬─ tests/unit/        mirrors the source tree 1:1
+   28 suites ─┬─ tests/unit/        mirrors the source tree 1:1
               └─ tests/behaviour/   named by FAILURE CLASS, may span files
 
-   29 goldens ── tests/differential/   a REAL tick against a throwaway repo
-                     │
+   31 goldens ── tests/differential/   a REAL tick against a throwaway repo,
+                     │                  run against BOTH triage.sh and tick.py
                      └─ 9 mutations ── break the orchestrator on purpose,
                                        assert the goldens NOTICE
 ```

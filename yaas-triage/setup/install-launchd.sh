@@ -18,7 +18,7 @@
 # install-launchd.sh — install the yaas triage launchd agent
 #
 # Installs ~/Library/LaunchAgents/com.yaas.triage.plist pointing at the checked-out
-# repo's triage.sh. After install, triage.sh runs every 60 seconds until uninstalled.
+# repo's triage loop (tick.py). After install, it runs every ~60 seconds until uninstalled.
 #
 # Usage:
 #   ./install-launchd.sh            # install
@@ -62,7 +62,7 @@ case "$ACTION" in
     echo "Tail live: tail -f $REPO_ROOT/logs/triage.out.log"
     echo
     echo "First run will fire within 60s. To run now:"
-    echo "  $TRIAGE_DIR/triage.sh"
+    echo "  python3 $TRIAGE_DIR/tick.py"
     ;;
 
   uninstall)

@@ -199,7 +199,7 @@ if launchctl list com.yaas.triage >/dev/null 2>&1; then
       ;;
     512)
       # 2 << 8 — set -eu aborted
-      fail "Last exit was code 2 — set -eu aborted (often .env syntax). Run ./triage.sh manually to see the error."
+      fail "Last exit was code 2 — a bad numeric .env knob makes the orchestrator refuse to run. Run 'python3 yaas-triage/tick.py' manually to see the error."
       ;;
     *)
       warn "Unexpected LastExitStatus=$STATUS — check logs/triage.err.log"

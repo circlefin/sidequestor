@@ -62,7 +62,8 @@ exempt_reason() {
     checkers/slack_mention.py)  echo "contract-checked via behaviour/checker-contract" ;;
     surfaces/mcp-call.sh|surfaces/jira-call.sh|surfaces/slack-react.sh)
                                 echo "11-line shim; covered via unit/surfaces/client" ;;
-    triage.sh)                  echo "NOT unit testable inside 1,601 lines of shell — this is the argument for the port" ;;
+    tick.py)                    echo "the orchestrator; covered end-to-end by the 31 differential goldens + 9 mutations (differential/run.sh check tick.py), which run-all.sh now runs" ;;
+    triage.sh)                  echo "frozen bash predecessor kept as rollback; same 31 goldens (differential/run.sh check)" ;;
     *) return 1 ;;
   esac
 }

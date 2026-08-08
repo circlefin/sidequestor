@@ -43,7 +43,7 @@ WORK="${TMPDIR:-/tmp}/yaas-diff-$$"
 
 MODE="${1:-check}"
 shift || true
-ORCH="triage.sh"
+ORCH="tick.py"
 FILTER=""
 KEEP=0
 while [ $# -gt 0 ]; do

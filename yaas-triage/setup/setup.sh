@@ -271,12 +271,12 @@ if printf '%s' "$TEST_RESULT" | python3 -c "import sys,json; d=json.loads(sys.st
 else
   echo "⚠️  Slack MCP check returned unexpected output. Token may need rotation."
   echo "   Output: $(printf '%s' "$TEST_RESULT" | head -c 200)"
-  echo "   You can proceed — run triage.sh manually to test further."
+  echo "   You can proceed — run 'python3 yaas-triage/tick.py' manually to test further."
 fi
 
 # ── Offer launchd install ───────────────────────────────────────────────────
 echo
-read -p "Install the launchd job to run triage.sh every 60 seconds? [y/N]: " INSTALL_LAUNCHD
+read -p "Install the launchd job to run the triage loop (tick.py) every 60 seconds? [y/N]: " INSTALL_LAUNCHD
 if [[ "$INSTALL_LAUNCHD" =~ ^[Yy] ]]; then
   if [ -x "$SCRIPT_DIR/install-launchd.sh" ]; then
     "$SCRIPT_DIR/install-launchd.sh"
@@ -284,8 +284,8 @@ if [[ "$INSTALL_LAUNCHD" =~ ^[Yy] ]]; then
     echo "install-launchd.sh not found yet — skipping. Run it later when available."
   fi
 else
-  echo "Skipped. You can run triage.sh manually any time:"
-  echo "  $TRIAGE_DIR/triage.sh"
+  echo "Skipped. You can run the orchestrator manually any time:"
+  echo "  python3 $TRIAGE_DIR/tick.py"
 fi
 
 # ── Offer launchd install for the dashboard ─────────────────────────────────

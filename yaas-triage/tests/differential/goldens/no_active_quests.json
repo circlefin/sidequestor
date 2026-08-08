@@ -1,0 +1,13 @@
+{
+  "acks": {},
+  "dispatches": [],
+  "events": [
+    {
+      "event": "gate_idle_no_quests"
+    }
+  ],
+  "exit": 0,
+  "planned": [],
+  "quests": {},
+  "watches": {}
+}

@@ -717,6 +717,111 @@ def build_open_items() -> dict:
     }
 
 
+# A quest counts as "rate limited" if it produced a gate_watch_ratelimited event within this
+# window. Rate-limiting is transient (it recovers the next tick), so this is a recency window,
+# not a persisted flag. It changes the payload only at genuine transitions (a fresh ratelimit,
+# or one aging past the window) — a handful of times around an actual throttle — NOT on every
+# poll the way a generated_at timestamp would, so it does not defeat the ETag/304 path in the
+# spirit of the note below.
+RATELIMIT_WINDOW_SEC = 300
+
+
+def _recent_runlog_events(event_name: str, window_sec: int) -> list:
+    """Recent run-log events of one type within window_sec of now, newest first. Tail-reads the
+    run-log (bounded by _RUNLOG_TAIL_BYTES) so it stays cheap on a large log.
+
+    Note the log is append-ordered by tick COMPLETION, but each line's `ts` is its logical start,
+    so timestamps jitter out of order by up to a tick (~60s). We therefore scan the whole tail
+    and filter by ts (`continue`), NOT break on the first out-of-window line — a break could drop
+    a still-in-window event that happens to sit just after a slightly-older-ts neighbour. The
+    tail-byte cap keeps this cheap regardless."""
+    runlog = STATE_DIR / "run-log.ndjson"
+    if not runlog.exists():
+        return []
+    now = datetime.now(timezone.utc)
+    out = []
+    try:
+        size = runlog.stat().st_size
+        with open(runlog, "rb") as f:
+            if size > _RUNLOG_TAIL_BYTES:
+                f.seek(size - _RUNLOG_TAIL_BYTES)
+                f.readline()
+            raw_lines = f.read().decode(errors="replace").splitlines()
+        for raw in reversed(raw_lines):
+            if not raw.strip():
+                continue
+            try:
+                e = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(e, dict) or e.get("event") != event_name:
+                continue
+            try:
+                t = datetime.fromisoformat(str(e.get("ts", "")).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if (now - t).total_seconds() > window_sec:
+                continue
+            out.append(e)
+    except Exception:
+        return []
+    return out
+
+
+# ── Config builder ─────────────────────────────────────────────────────────────
+# The knobs that shape a tick, read the same way the orchestrator reads them: env first, then
+# REPO_ROOT/.env, then the built-in default. `set` marks whether the value is overridden
+# anywhere (so the UI can show "default" vs a live override). Grouped for a readable Config tab.
+# Deterministic between state changes (it only moves when .env / env changes), so it does not
+# defeat the ETag/304 path.
+def build_config() -> dict:
+    def knob(key, default, desc):
+        raw = os.environ.get(key) or None
+        if raw is None:
+            try:
+                for line in (REPO_ROOT / ".env").read_text().splitlines():
+                    s = line.strip()
+                    if s.startswith(f"{key}="):
+                        raw = s.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+            except OSError:
+                pass
+        return {"key": key, "value": raw if raw not in (None, "") else str(default),
+                "default": str(default), "set": raw not in (None, ""), "desc": desc}
+
+    groups = [
+        {"title": "Concurrency", "items": [
+            knob("YAAS_TRIAGE_MAX_PARALLEL", 3,
+                 "Quests checked at once = peak simultaneous Slack calls. Low on purpose: "
+                 "burst concurrency is what trips Slack's rate limiter."),
+        ]},
+        {"title": "Dispatch limits", "items": [
+            knob("YAAS_MAX_DISPATCH_FANOUT", 4, "Max paid worker dispatches per tick."),
+            knob("YAAS_TICK_DISPATCH_BUDGET", 3600, "Wall-seconds the dispatch phase may spend per tick."),
+            knob("YAAS_MIN_DISPATCH_SLICE", 300, "A target needs at least this many seconds of budget or it's deferred."),
+            knob("YAAS_MAX_TARGET_DISPATCH_PER_HOUR", 25, "Per-target hourly breaker: skip a target dispatched more than this in the last hour."),
+        ]},
+        {"title": "Spend caps", "items": [
+            knob("YAAS_MAX_SPEND_1H", 40, "Dollar tripwire over a rolling hour (Claude backend)."),
+            knob("YAAS_MAX_SPEND_24H", 250, "Dollar backstop over a rolling day."),
+            knob("YAAS_MAX_DISPATCH_6H", 250, "Dispatch-count cap over 6h (covers Codex/Cursor, which report no cost)."),
+        ]},
+        {"title": "Promotion & backoff", "items": [
+            knob("YAAS_UNACKED_PROMOTE", 3, "Dispatches with no progress before a watch is held as misconfig."),
+            knob("YAAS_CHECKER_ERROR_PROMOTE", 6, "Consecutive checker errors before a watch is held as misconfig."),
+        ]},
+        {"title": "Timing", "items": [
+            knob("YAAS_STALE_REPLY_HOURS", 24, "Replies older than this are drafted, not sent (stale-reply guard)."),
+            knob("YAAS_CATCHUP_AFTER_HOURS", 6, "Silence longer than this arms a catch-up hold (read everything before answering)."),
+            knob("YAAS_RETIRE_DEFAULT_DAYS", 30, "Default age at which a stale slack_thread watch is retired."),
+        ]},
+        {"title": "Backend", "items": [
+            knob("YAAS_AGENT", "claude", "Which agent backend runs the worker dispatch (claude / codex / cursor)."),
+        ]},
+    ]
+    return {"orchestrator": "tick.py", "worker_timeout_sec": 1800, "groups": groups}
+
+
 # ── Dashboard payload builder ─────────────────────────────────────────────────
 # NOTE: the payload must be deterministic between state changes — the ETag/304
 # path in the handler hashes the serialized body, so any always-changing field
@@ -792,7 +897,9 @@ def build_dashboard() -> dict:
             "last_action":   last_action,
             "last_blocked":  last_blocked,
             "last_seen_ts":  last_seen_ts,
-            "misconfig_count": 0,  # filled in below
+            "misconfig_count": 0,   # filled in below
+            "ratelimited": False,   # filled in below (transient, from run-log)
+            "ratelimited_count": 0,
         })
 
     # Annotate quests with misconfig_count from unacked-counts.json
@@ -810,6 +917,17 @@ def build_dashboard() -> dict:
                 q["misconfig_count"] = misconfig_by_quest.get(q["id"], 0)
         except Exception:
             pass
+
+    # Annotate quests with recent rate-limiting (transient; from the run-log, not a state file).
+    rl_by_quest: dict[str, set] = {}
+    for e in _recent_runlog_events("gate_watch_ratelimited", RATELIMIT_WINDOW_SEC):
+        qid = e.get("quest")
+        if qid and e.get("watch_id"):
+            rl_by_quest.setdefault(qid, set()).add(e.get("watch_id"))
+    for q in quests:
+        wl = rl_by_quest.get(q["id"], set())
+        q["ratelimited"] = bool(wl)
+        q["ratelimited_count"] = len(wl)
 
     recent_activity.sort(key=lambda x: x.get("ts") or "", reverse=True)
     recent_activity = recent_activity[:20]
@@ -864,6 +982,7 @@ def build_dashboard() -> dict:
         "recent_activity": recent_activity,
         "pending_review": pending_review,
         "briefs":         briefs,
+        "config":         build_config(),
     }
 
 
@@ -1137,9 +1256,23 @@ def build_quest_detail(quest_id: str) -> dict | None:
         except Exception:
             pass
 
+    # Rate-limited watches: transient, from recent run-log events (not a state file).
+    ratelimited_watches = []
+    _rl_seen = set()
+    for e in _recent_runlog_events("gate_watch_ratelimited", RATELIMIT_WINDOW_SEC):
+        if e.get("quest") == quest_id and e.get("watch_id") and e["watch_id"] not in _rl_seen:
+            _rl_seen.add(e["watch_id"])
+            ratelimited_watches.append({
+                "watch_id":  e.get("watch_id"),
+                "type":      e.get("type", "unknown"),
+                "last_utc":  e.get("ts"),
+                "reason":    e.get("reason"),
+            })
+
     open_items = {
         "blocked":           blocked_now,
         "misconfig_watches": misconfig_watches,
+        "ratelimited_watches": ratelimited_watches,
         "threads":           open_threads,
         "threads_total":     threads_total,
         "scheduled":         scheduled,

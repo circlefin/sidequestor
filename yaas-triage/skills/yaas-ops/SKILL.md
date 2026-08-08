@@ -14,29 +14,34 @@ full architecture, see `ARCHITECTURE.md` at the repo root.
 
 ```
 yaas-triage/
-├── triage.sh                 ← launchd-driven main loop (every 60s)
-├── mcp-call.sh               ← Slack MCP HTTP helper (used by Slack checkers)
-├── format-stream.py          ← formats claude --output-format stream-json for human logs
-├── extract-tokens.py         ← parses worker ndjson, writes cost event to run-log
-├── worker.mcp.json           ← MCP server config for the claude worker process
-├── doctor.sh                 ← is this MACHINE configured (setup validation)
-├── README.md
+├── tick.py                   ← launchd-driven main loop, one tick (every ~60s) — THE ORCHESTRATOR
+│   ├── tick_state.py         ←   config/loading: repo root, knobs, lag map, active quests
+│   ├── tick_check.py         ←   classify(): the six-way per-watch verdict
+│   └── tick_dispatch.py      ←   the dispatch gates: slack-need, budget/fanout/slice
+├── triage.sh                 ← the previous bash orchestrator, frozen as instant rollback
+├── triage-loop.sh            ← the launchd wrapper that sleeps between ticks (runs tick.py)
 ├── checkers/                 ← one script per watch type (plugin directory)
-│   ├── slack_thread.py · slack_channel.py · slack_dm.py
+│   ├── slack_thread.py · slack_channel.py · slack_dm.py · slack_mention.py
 │   ├── schedule.py · email.py
-│   ├── jira.py               ← Jira issues via ../jira-call.sh (no MCP needed)
+│   ├── jira.py               ← Jira issues via ../surfaces/jira-call.sh (no MCP needed)
 │   ├── github_pr.py          ← PR activity via `gh search prs`
 │   ├── reactions.py          ← global reaction sweep (not per-quest)
-│   ├── slack_utils.py        ← shared parse_slack_messages()
+│   ├── result.py             ← the outcome contract every checker returns
+│   ├── slack_utils.py        ← shared drain()/parse helpers
 │   ├── cron-due.py           ← cron evaluation logic (used by schedule.py)
-│   └── *.lag                 ← per-type watermark lag in seconds:
-│                               email 120 · slack_mention 90 · github_pr 30 · jira 15
-├── setup/                    ← one-time install
-│   ├── setup.sh              ← first-time Slack OAuth + keychain + optional launchd install
-│   ├── install-launchd.sh    ← install / reload / uninstall the launchd job
-│   ├── com.yaas.triage.plist.template
-│   └── yaas-app-config.json  ← generic Slack scopes & PKCE flow config
-└── skills/                   ← four generic worker skills (loaded on demand)
+│   └── *.lag                 ← per-type watermark lag in seconds
+├── dispatch/                 ← "run a worker": run-agent.py, plan.py, spend-window.py,
+│                               source-evidence.py, extract/translate-stream.py, worker.mcp.json
+├── ledger/                   ← "owns a state file, atomically": ack-watch.py, commit.py,
+│                               housekeep.py, checker-health.py, watch-guard.py, add-watch.py,
+│                               approval-helper.py, ensure-watch-ids.py
+├── surfaces/                 ← "talk to the outside": mcp-call.sh, jira-call.sh,
+│                               slack-send.py, slack-react.sh, react-lifecycle.py
+├── ops/                      ← "keep it alive and visible": dashboard-server.py, health-monitor.py,
+│                               catchup.py, rotate-logs.py, notify.py, doctor.sh, sync-yaas-v2.sh
+├── tests/                    ← unit/ + behaviour/ + differential/ (goldens + mutations)
+├── setup/                    ← one-time install (setup.sh, install-launchd*.sh, plist templates)
+└── skills/                   ← generic worker skills (loaded on demand)
     ├── yaas-quest-creation/  ← scaffolds new quest folders (new-quest.py)
     ├── yaas-gmail-reply/     ← threaded Gmail reply utility (gmail-reply.py)
     ├── yaas-answering-quality/ ← bot reply quality rules
@@ -76,7 +81,7 @@ ARCHITECTURE.md               ← full system design
 
 ### How it works
 
-`triage.sh`'s `check_quest()` iterates over every entry in a quest's `watches[]` array. For each entry it looks up `yaas-triage/checkers/<type>.py` and runs it:
+The orchestrator's `check_quest` (`tick.py`, ported from `triage.sh`) iterates over every entry in a quest's `watches[]` array. For each entry it looks up `yaas-triage/checkers/<type>.py` and runs it:
 
 ```
 python3 checkers/<type>.py '<watch_entry_json>'
@@ -92,17 +97,17 @@ The checker outputs one line to stdout:
 
 For Slack checkers specifically: a non-JSON response is treated as `error|` and surfaces in the log, except for the carve-outs `thread_not_found` / `channel_not_found` (permanent conditions) which return `0|`.
 
-Environment variables available to all checkers (exported by triage.sh after sourcing `.env`):
+Environment variables available to all checkers (exported by the orchestrator after merging `.env`):
 - `MCP_CALL` — path to `mcp-call.sh`
 - `GWS_BIN` — path to `gws` CLI
 
 ### The reactions sweep
 
-`checkers/reactions.py` is special — it doesn't follow the per-entry interface. It runs once per triage tick (called directly by triage.sh with 4 positional args) and sweeps Slack globally for `:claude-intensifies:`, `:writing_hand:`, `:floppy_disk:` reactions across a 60-day window. Diffs against `state/*_replied.json` / `state/*_saved.json`. New reactions → writes `state/triage/pending_reactions.json`.
+`checkers/reactions.py` is special — it doesn't follow the per-entry interface. It runs once per triage tick (called directly by the orchestrator with 4 positional args) and sweeps Slack globally for `:claude-intensifies:`, `:writing_hand:`, `:floppy_disk:` reactions across a 60-day window. Diffs against `state/*_replied.json` / `state/*_saved.json`. New reactions → writes `state/triage/pending_reactions.json`.
 
 ### Watermark lag
 
-If a channel type has indexing latency (e.g. Gmail's search index takes ~60s to reflect new mail), create a companion file `checkers/<type>.lag` containing the lag in integer seconds. triage.sh reads these at startup and subtracts the lag when advancing watermarks, so clean ticks never claim "I've seen everything up to now" when the source hasn't indexed it yet.
+If a channel type has indexing latency (e.g. Gmail's search index takes ~60s to reflect new mail), create a companion file `checkers/<type>.lag` containing the lag in integer seconds. the orchestrator reads these at startup and subtracts the lag when advancing watermarks, so clean ticks never claim "I've seen everything up to now" when the source hasn't indexed it yet.
 
 Currently: `email.lag = 120` (Gmail's index is slow), `slack_mention.lag = 90`, `github_pr.lag = 30` (GitHub's search index is eventually consistent), `jira.lag = 15`. Types with no `.lag` file get lag = 0.
 
@@ -127,7 +132,7 @@ Keep the lag as small as the source allows. Every second of lag widens the windo
 
 `jira` needs the REST bridge (`yaas-triage/surfaces/jira-call.sh`, Basic-auth API token in Keychain `jira-api-token`/`yaas`) because the Atlassian MCP is interactive-OAuth only and is absent in headless dispatch. `github_pr` accepts optional `search` (extra GitHub qualifiers) and `limit` (default 100) — read the warning in `checkers/github_pr.py`'s docstring before adding a `search`, since repeated qualifiers AND rather than OR and can silently match nothing.
 
-`last_checked_ts` is always a Unix epoch float string. triage.sh is the sole owner of this field — the worker must never modify existing entries (it may only append new ones).
+`last_checked_ts` is always a Unix epoch float string. The orchestrator is the sole owner of this field — the worker must never modify existing entries (it may only append new ones).
 
 Old quests may carry six dead arrays at the bottom (`threads`, `dm_partners`, `channels`, `schedules`, `emails`, `reactions`) — harmless legacy. New quests created via `new-quest.py` only have `watches[]`.
 
@@ -214,7 +219,7 @@ if __name__ == "__main__":
 
 **5. Document in the quest's `context.md`** how the worker should fetch full message content and reply (typically via `curl` to the Telegram Bot API).
 
-That's the entire change. triage.sh requires no modification — it autodiscovers the new checker by filename.
+That's the entire change. The orchestrator requires no modification — it autodiscovers the new checker by filename.
 
 ---
 
@@ -263,7 +268,7 @@ yaas-triage/tests/run-all.sh     # is the code correct (fixtures, safe any time)
 launchctl unload ~/Library/LaunchAgents/com.yaas.triage.plist   # temp disable
 launchctl load   ~/Library/LaunchAgents/com.yaas.triage.plist   # temp enable
 
-DRY_RUN=1 VERBOSE=1 bash yaas-triage/triage.sh   # one tick, no dispatch
+DRY_RUN=1 VERBOSE=1 python3 yaas-triage/tick.py   # one tick, no dispatch
 
 tail -f logs/triage.log
 tail -f logs/worker-latest.log
@@ -298,10 +303,10 @@ Current spend against the ceilings:
 
 | Symptom | Check |
 |---|---|
-| Quest never fires | `DRY_RUN=1 VERBOSE=1 bash yaas-triage/triage.sh` — see per-type checker output |
+| Quest never fires | `DRY_RUN=1 VERBOSE=1 python3 yaas-triage/tick.py` — see per-type checker output |
 | Checker returns `0\|` when it should find messages | Run checker directly: `MCP_CALL=yaas-triage/surfaces/mcp-call.sh python3 yaas-triage/checkers/slack_thread.py '<entry_json>'` |
 | Email quest misses messages | Watermark too far ahead? Check `watches[].last_checked_ts` in the quest's `watch.json`. Gmail indexes ~60s after delivery; `email.lag=120` gives a 2-min buffer |
 | Worker keeps retrying the same error | Check `logs/worker-latest.log`. If the quest has a permanently-deleted thread, remove it from `watches[]` |
 | Triage lock stuck | Check `logs/triage.lock.holder`. If PID is dead, the OS releases the lock automatically on next tick |
-| `LastExitStatus = 512` on launchd | Exit code 2 — `set -eu` aborted. Almost always `.env` syntax (unquoted `<` `>` `&` etc.). Run triage.sh manually for the error. |
+| `LastExitStatus = 512` on launchd | Exit code 2 — a bad `.env` knob (a spend/limit value that isn't numeric) makes the orchestrator refuse to run (`gate_bad_env_knob`). Fix the value in `.env`; run `python3 yaas-triage/tick.py` manually to see it. (The old bash orchestrator exited 2 the same way on `.env` syntax errors under `set -eu`.) |
 | `LastExitStatus = 36608` on launchd | Exit 143 (SIGTERM). Expected if the worker watchdog killed a runaway dispatch; or if macOS slept mid-run. |

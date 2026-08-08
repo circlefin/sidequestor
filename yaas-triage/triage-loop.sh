@@ -45,7 +45,12 @@ FAILFILE="$SCRIPT_DIR/../state/triage/consecutive-tick-failures"
 mkdir -p "$(dirname "$FAILFILE")" 2>/dev/null || true
 
 while true; do
-  if "$SCRIPT_DIR/triage.sh"; then
+  # CUTOVER 2026-08-07: the loop now drives tick.py (the Python orchestrator), not triage.sh.
+  # tick.py passes the full differential harness (30 goldens, 9 mutations) and a live DRY_RUN
+  # smoke test. triage.sh is kept on disk as instant rollback: revert this one line and
+  # re-kickstart. This edit is intentionally left UNCOMMITTED during the shadow window so the
+  # canonical default in git stays triage.sh until tick.py has run clean for a stretch.
+  if python3 "$SCRIPT_DIR/tick.py"; then
     echo 0 > "$FAILFILE" 2>/dev/null || true
   else
     _prev=$(cat "$FAILFILE" 2>/dev/null || echo 0)

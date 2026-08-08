@@ -35,7 +35,8 @@ mkdir -p "$TRIAGE/checkers" "$QUEST" "$BROKEN_QUEST" "$CLEAN_QUEST" "$BUSINESS_Q
 # the reorganisation; now it is a broken one, since triage.sh looks for its collaborators
 # in ledger/ and dispatch/.
 mkdir -p "$TRIAGE/ledger" "$TRIAGE/dispatch" "$TRIAGE/ops"
-cp "$SCRIPT_DIR/triage.sh" "$TRIAGE/"
+cp "$SCRIPT_DIR/tick.py" "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR/tick_check.py" \
+   "$SCRIPT_DIR/tick_dispatch.py" "$TRIAGE/"
 cp "$SCRIPT_DIR/ledger/ensure-watch-ids.py" "$SCRIPT_DIR/ledger/ack-watch.py" \
    "$SCRIPT_DIR/ledger/checker-health.py" "$SCRIPT_DIR/ledger/watch-guard.py" \
    "$SCRIPT_DIR/ledger/commit.py" "$SCRIPT_DIR/ledger/housekeep.py" "$TRIAGE/ledger/"
@@ -248,7 +249,7 @@ done
 cat > "$TRIAGE/dispatch/extract-tokens.py" <<'PY'
 #!/usr/bin/env python3
 PY
-chmod +x "$TRIAGE"/*.sh "$TRIAGE"/checkers/*.py
+chmod +x "$TRIAGE"/tick.py "$TRIAGE"/checkers/*.py
 
 # Pre-assign watch IDs (deterministic, idempotent — triage re-runs this as a
 # no-op) so the fixture can name the exact watch whose ack it will withhold.
@@ -264,7 +265,7 @@ BLOCKED_ACK_ID=$(jq -r '.watches[3].watch_id' "$CONTRACT_QUEST/watch.json")
 printf '%s\n' "quest-isolation-fail" > "$ROOT/state/fail-targets.txt"
 
 YAAS_AGENT=claude YAAS_TRIAGE_MAX_PARALLEL=1 YAAS_MAX_DISPATCH_FANOUT=10 \
-  bash "$TRIAGE/triage.sh" >"$TMP_DIR/triage.out" 2>&1 || true
+  python3 "$TRIAGE/tick.py" >"$TMP_DIR/triage.out" 2>&1 || true
 
 if [ ! -f "$ROOT/state/captured-prompt.txt" ]; then
   cat "$TMP_DIR/triage.out" >&2

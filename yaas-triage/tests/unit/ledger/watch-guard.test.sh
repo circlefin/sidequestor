@@ -139,11 +139,11 @@ G snapshot nosuchquest >/dev/null 2>&1 && ok "snapshotting an unknown quest is h
   || bad "snapshotting an unknown quest errored"
 
 echo
-echo "── it is wired into triage, and the old hook is gone ──────────────────────"
-grep -q 'watch-guard.py" snapshot' "$SCRIPT_DIR/triage.sh" && ok "triage snapshots before dispatch" \
-  || bad "triage never snapshots"
-grep -q 'watch-guard.py" verify' "$SCRIPT_DIR/triage.sh" && ok "triage verifies after dispatch" \
-  || bad "triage never verifies"
+echo "── it is wired into the orchestrator, and the old hook is gone ────────────"
+grep -q 'watch-guard.py"), "snapshot"' "$SCRIPT_DIR/tick.py" && ok "tick.py snapshots before dispatch" \
+  || bad "tick.py never snapshots"
+grep -q 'watch-guard.py"), "verify"' "$SCRIPT_DIR/tick.py" && ok "tick.py verifies after dispatch" \
+  || bad "tick.py never verifies"
 [ -f "$(dirname "$SCRIPT_DIR")/.claude/hooks/deny-state-writes.sh" ] \
   && bad "the old command-text hook still exists" || ok "the old command-text hook is deleted"
 python3 -c "

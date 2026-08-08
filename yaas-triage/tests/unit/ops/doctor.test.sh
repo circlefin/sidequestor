@@ -170,8 +170,8 @@ printf '%s' "$(D)" | grep -q "Slack token not in Keychain" \
 echo
 echo "── launchd exit codes are interpreted, not just printed ───────────────────"
 reset_env; mklaunchctl 512
-printf '%s' "$(D)" | grep -q "set -eu aborted" \
-  && ok "512 is explained as a set -eu abort" || bad "512 not explained"
+printf '%s' "$(D)" | grep -q "code 2" \
+  && ok "512 is explained as an exit-code-2 (bad .env knob) abort" || bad "512 not explained"
 
 reset_env; mklaunchctl 36608
 printf '%s' "$(D)" | grep -q "SIGTERM (143)" \

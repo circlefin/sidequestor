@@ -209,7 +209,7 @@ def main():
     context    = spec.get("context", "")
     watches_in = spec.get("watches", [])
     note_raw   = spec.get("note", context[:80] if context else "Quest created")
-    retire_days = spec.get("retire_slack_threads_after_days", None)  # None → default (30 in triage.sh)
+    retire_days = spec.get("retire_slack_threads_after_days", None)  # None → default (30 in the orchestrator)
 
     if not title:
         die("'title' is required")
@@ -307,7 +307,7 @@ _Add Slack permalinks, Coda docs, Jira tickets as they emerge._
     print(f"  Priority:   {priority}  allow_send: {allow_send}")
     print()
     print("Triage will pick this up on its next tick.")
-    print(f"Dry-run check: DRY_RUN=1 bash yaas-triage/triage.sh")
+    print(f"Dry-run check: DRY_RUN=1 python3 yaas-triage/tick.py")
 
 
 if __name__ == "__main__":

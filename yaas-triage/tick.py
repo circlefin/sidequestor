@@ -136,12 +136,14 @@ class Tick:
         print(f"{time.strftime('%Y-%m-%dT%H:%M:%S+00:00', time.gmtime())}  {msg}")
 
     def event(self, obj):
-        """Append one run-log event. `ts` is stamped here so callers pass only the payload."""
+        """Append one run-log event. `ts` is stamped here so callers pass only the payload.
+        Compact separators to match triage.sh's `jq -c`/`echo` output, so the run-log stays a
+        single uniform format and grep-based consumers keep working."""
         rec = {"ts": self.now_utc}
         rec.update(obj)
         try:
             with open(self.run_log, "a") as f:
-                f.write(json.dumps(rec) + "\n")
+                f.write(json.dumps(rec, separators=(",", ":")) + "\n")
         except OSError:
             pass
 
@@ -308,13 +310,19 @@ def check_quest(t, qid):
                 t.run(t.py(t.helper("ledger", "checker-health.py"), "fail", wid, reason))
             continue
         if v == tick_check.SKIP:
+            # `ratelimited: True` distinguishes a genuine Slack rate-limit skip from the other
+            # skip rows (watch_id migration failure, unreadable watch.json), so analyze() emits
+            # gate_watch_ratelimited only for the real thing — the signal the dashboard surfaces.
             rows.append({"qid": qid, "status": "skip", "watch_id": wid,
-                              "type": wtype, "reason": reason})
+                              "type": wtype, "reason": reason, "ratelimited": True})
             had_skip = True
             break  # a rate-limit stops further slack calls in this quest
         if v == tick_check.HOLD:
+            # complete=False so the watches_truncated counter (which keys off complete is False)
+            # counts held-undrained windows, matching triage.sh — a hold is by definition an
+            # undrained window.
             rows.append({"qid": qid, "status": "hold", "watch_id": wid,
-                              "type": wtype, "reason": reason})
+                              "type": wtype, "reason": reason, "complete": False})
             had_skip = True
             if str(wtype).startswith("slack_"):
                 slack_succeeded += 1
@@ -518,7 +526,7 @@ def run_tick(t):
         dispatch_targets.append("reactions")
     targets_json = dispatch_targets
 
-    if os.environ.get("DRY_RUN", "0") == "1":
+    if t.env.get("DRY_RUN", "0") == "1":
         t.event({"event": "gate_dirty_dry_run", "targets": targets_json,
                  "dirty_watches": t.dirty_watches})
         t.log(f"DRY_RUN=1 — would dispatch for {' '.join(dispatch_targets)}.")
@@ -579,6 +587,15 @@ def analyze(t):
             if qid not in t.skipped_quests:
                 t.skipped_quests.append(qid)
             t.log(f"SKIP: {qid} — {r.get('reason','')}")
+            # A genuine Slack rate-limit skip leaves no persisted state (the watermark is just
+            # held), so without a run-log event the dashboard cannot tell a quest is throttled.
+            # Emit one — the dashboard reads recent ones as a transient "rate limited" flag,
+            # the same shape as gate_watch_misconfigured. Only for real ratelimits, not the
+            # migration/unreadable skips (which carry no `ratelimited` tag).
+            if r.get("ratelimited"):
+                t.event({"event": "gate_watch_ratelimited", "quest": qid,
+                         "watch_id": r.get("watch_id"), "type": r.get("type"),
+                         "reason": r.get("reason", "")})
         elif status == "misconfig":
             if qid not in t.skipped_quests:
                 t.skipped_quests.append(qid)
@@ -632,6 +649,54 @@ def housekeep(t, quest_dirs):
                t.env.get("YAAS_MANIFEST_RETAIN_DAYS", "7")))
     t.run(t.py(t.helper("ledger", "checker-health.py"), "prune",
                t.env.get("YAAS_CHECKER_HEALTH_RETAIN_DAYS", "30")))
+    _prune_reaction_state(t)
+    _prune_worker_logs(t)
+
+
+def _prune_reaction_state(t):
+    """Cap each reaction state file to its newest 1000 timestamps. Mirrors triage.sh: without
+    this the replied/saved arrays grow unbounded and every reaction sweep pays to read them."""
+    for name in ("claude_intensifies_replied.json", "writing_hand_replied.json",
+                 "floppy_disk_saved.json", "incoming_envelope_adopted.json"):
+        p = t.repo_root / "state" / name
+        data = t._read_json(p, None)
+        if not isinstance(data, dict) or not data:
+            continue
+        key = next(iter(data))  # replied_timestamps or saved_timestamps
+        arr = data.get(key)
+        if isinstance(arr, list) and len(arr) > 1000:
+            data[key] = sorted(arr)[-1000:]
+            try:
+                tmp = str(p) + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(tmp, p)
+                t.log(f"Pruned {p} to 1000 entries (was {len(arr)})")
+            except OSError:
+                pass
+
+
+def _prune_worker_logs(t):
+    """Delete per-dispatch worker-*.{log,ndjson} older than YAAS_LOG_RETAIN_DAYS (default 14;
+    0 disables). Mirrors triage.sh; rotate-logs.py handles triage.log, not these."""
+    try:
+        days = int(t.env.get("YAAS_LOG_RETAIN_DAYS", "14") or "14")
+    except ValueError:
+        days = 14
+    if days <= 0:
+        return
+    cutoff = t.now_ts - days * 86400
+    pruned = 0
+    for pat in ("worker-*.log", "worker-*.ndjson"):
+        for f in t.log_dir.glob(pat):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    pruned += 1
+            except OSError:
+                pass
+    if pruned:
+        t.log(f"Pruned {pruned} worker log file(s) older than {days}d")
 
 
 def slack_health_ok(t):
@@ -670,6 +735,11 @@ def dispatch_loop(t, dispatch_targets, targets_json):
     """The per-target dispatch: emit the plan, rotate for fairness, then for each target apply
     the fanout/budget defer and per-target breaker, dispatch one worker, and commit. Mirrors
     triage.sh's dispatch section; returns the worst non-zero exit as the tick's code."""
+    # Match triage.sh's `cd "$REPO_ROOT"` before dispatching, so the worker subprocess (and any
+    # helper it shells out to) runs with the repo as cwd — some workers/helpers resolve state
+    # paths relative to it. Everything tick.py itself touches is an absolute path, so this is
+    # safe; it only fixes the child processes' working directory.
+    os.chdir(t.repo_root)
     dirty_watches_json = t.dirty_watches
     t.log(f"DISPATCH — {len(dispatch_targets)} target(s) (backend={t.agent}): {dispatch_targets}")
     t.event({"event": "gate_dispatch", "targets": targets_json,
@@ -773,7 +843,10 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
         t.log(f"DISPATCH SKIPPED: {target} — no dispatchable items in manifest")
         t.dispatch_exit = 8
         return
-    items_json = json.dumps(items)
+    # Compact separators to match triage.sh's `jq -c` output — the manifest JSON is embedded in
+    # the worker prompt verbatim, and consumers (and the worker's own eyes) expect the compact
+    # {"item_id":"..."} form, not json.dumps's spaced default.
+    items_json = json.dumps(items, separators=(",", ":"))
     cp = t.run(t.py(t.helper("ledger", "ack-watch.py"), "open", t.dispatch_run_id,
                     target, kind, items_json))
     if cp.returncode != 0:
@@ -904,6 +977,76 @@ def _record_progress(t, scope, committed_ids):
         pass
 
 
+import re as _re
+
+# The slack-tooling-outage recovery matcher, mirroring triage.sh's jq in mark_recovered_if_blocked.
+_SLACK_TOOL = _re.compile(r"slack[_ *-]+(mcp|tools?)")
+_OUTAGE = _re.compile(r"unavailable|outage|not (exposed|registered|authenticated|connected)|"
+                      r"absent|no[ -]such[ -]tool|protocol|malformed|failed to connect|"
+                      r"needs authentication")
+
+
+def quest_has_recovery_evidence(t, qid, source):
+    """True iff this tick saw all of the quest's `source` watches read cleanly (a source_recovered
+    row) AND nothing unsafe (skip/error/misconfig) for the quest — the same awk over the results
+    that triage.sh runs. Guards against clearing a blocker on a half-healthy tick."""
+    recovered = any(r["qid"] == qid and r["status"] == "source_recovered" and r.get("type") == source
+                    for r in t.results)
+    unsafe = any(r["qid"] == qid and r["status"] in ("skip", "error", "misconfig")
+                 for r in t.results)
+    return recovered and not unsafe
+
+
+def mark_recovered_if_blocked(t, qid, source, note, run_start_utc):
+    """If the quest's last timeline event is a `blocked` from BEFORE this dispatch, and it is a
+    Slack-tooling outage that the worker's successful Slack read now clears, append a recovery
+    `note` so the dashboard blocker lifts. Faithful port of triage.sh; fails closed on anything
+    ambiguous (missing/malformed ts, non-slack source, business-dependency blockers)."""
+    timeline = t.quests_dir / qid / "timeline.ndjson"
+    if not timeline.exists():
+        return
+    try:
+        last = [ln for ln in timeline.read_text().splitlines() if ln.strip()][-1]
+        rec = json.loads(last)
+    except (IndexError, ValueError, OSError):
+        return
+    if rec.get("event") != "blocked":
+        return
+    # Never let this dispatch's own evidence clear a blocker created during the same dispatch.
+    try:
+        bt = dt_fromiso(rec.get("ts", ""))
+        rs = dt_fromiso(run_start_utc)
+        if not (bt and rs and bt < rs):
+            return
+    except Exception:
+        return
+    if source != "slack":
+        return
+    kind = rec.get("blocker_kind", "")
+    if kind == "slack_tooling_outage":
+        recoverable = True
+    else:
+        text = " ".join(str(rec.get(k, "")) for k in ("reason", "note")).lower()
+        recoverable = bool(_SLACK_TOOL.search(text) and _OUTAGE.search(text))
+    if not recoverable:
+        return
+    try:
+        with open(timeline, "a") as f:
+            f.write(json.dumps({"ts": t.now_utc, "event": "note", "note": note,
+                                "recovered_from": "blocked", "recovered_source": source},
+                               separators=(",", ":")) + "\n")
+        t.log(f"RECOVERED: {qid} — {note}")
+    except OSError:
+        t.log(f"RECOVERY WRITE FAILED: {qid} — stale blocker left unchanged")
+
+
+def dt_fromiso(s):
+    try:
+        return __import__("datetime").datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
 def commit_quest(t, qid, dirty_watches_json):
     watch = t.quests_dir / qid / "watch.json"
     if not watch.exists():
@@ -985,6 +1128,15 @@ def commit_quest(t, qid, dirty_watches_json):
         t.event({"event": "gate_watch_backlog", "quest": qid, "watches": truncated})
     t.log(f"Advanced {len(moves)} acked watch watermark(s) for dirty quest {qid} (post-worker-success)")
     t.event({"event": "gate_dispatch_success", "targets": [qid], "acked": len(moves)})
+
+    # If the worker read Slack cleanly on a quest that was blocked by a Slack-tooling outage,
+    # clear the dashboard blocker with a recovery note (matches triage.sh).
+    if t.dispatch_slack_read_ok == 1 and quest_has_recovery_evidence(t, qid, "slack"):
+        mark_recovered_if_blocked(
+            t, qid, "slack",
+            "Every Slack watch was readable and the worker completed a successful Slack read "
+            "after the previous tooling outage.", t.dispatch_start_utc)
+
     _record_progress(t, qid, committed_ids)
 
 
@@ -1126,9 +1278,14 @@ def main():
     except OSError:
         pass
 
-    rc = run_tick(t)
-    _on_exit(t)
-    return rc
+    # _on_exit in a finally so log rotation / notify / v2-sync (and the completion stamp) run on
+    # ANY exit, including an unhandled exception mid-tick — matching triage.sh's `trap _on_exit
+    # EXIT`. Only a SIGKILL/hang skips it, which is exactly the "started but never completed"
+    # state health-monitor is built to catch.
+    try:
+        return run_tick(t)
+    finally:
+        _on_exit(t)
 
 
 def _on_exit(t):

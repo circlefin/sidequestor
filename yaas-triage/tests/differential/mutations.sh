@@ -39,7 +39,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TRIAGE="$(cd "$HERE/../.." && pwd)"
-ORCH="${1:-triage.sh}"
+ORCH="${1:-tick.py}"
 
 # Work on a COPY of the whole tree. Mutating the live triage.sh meant any concurrently
 # running suite tested deliberately-broken code, and a SIGKILL mid-run would leave the
@@ -151,6 +151,20 @@ case "$ORCH" in
           '  "$MCP_CALL" slack_search_public_and_private' \
           '  true "$MCP_CALL" slack_search_public_and_private' \
           "slack_down_gates_dispatch" ;;
+esac
+
+# 4b. A Slack rate-limit must route as its own outcome (held + gate_watch_ratelimited), NOT
+#     silently fall through — the 2026-07-24 storm came from ratelimited being mishandled. The
+#     routing lives in tick_check.classify() for tick.py and in triage.sh's analyze for the shell.
+case "$ORCH" in
+  *.py) run_mutation "ratelimited stops being handled as ratelimited" \
+          '    if outcome == "ratelimited":' '    if False and outcome == "ratelimited":' \
+          "watch_ratelimited_surfaces" \
+          "tick_check.py" ;;
+  *)    run_mutation "ratelimited stops being handled as ratelimited" \
+          '    if [ "$new_count" = "ratelimited" ]; then' \
+          '    if [ "$new_count" = "NEVERMATCH" ]; then' \
+          "watch_ratelimited_surfaces" ;;
 esac
 
 # ── The rules C1a added coverage for ─────────────────────────────────────────

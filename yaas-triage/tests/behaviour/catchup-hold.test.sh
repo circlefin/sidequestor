@@ -105,7 +105,7 @@ W="$FX/state/quests/active/q-demo/watch.json"
 BEFORE_DIRTY=$(jq -r '.watches[0].last_checked_ts' "$W")
 BEFORE_CLEAN=$(jq -r '.watches[1].last_checked_ts' "$W")
 OUT=$( cd "$FX" && YAAS_SCENARIO="$FX/scenario.json" YAAS_TRIAGE_DIR="$FX/yaas-triage" \
-         REPO_ROOT="$FX" bash yaas-triage/triage.sh 2>&1 )
+         REPO_ROOT="$FX" python3 yaas-triage/tick.py 2>&1 )
 printf '%s' "$OUT" | grep -q "CATCHUP HOLD" && ok "the tick reports a hold" || bad "no hold reported"
 printf '%s' "$OUT" | grep -q "DISPATCH DONE" && bad "it dispatched during a hold" || ok "no dispatch"
 eq "the DIRTY watermark did not move" "$(jq -r '.watches[0].last_checked_ts' "$W")" "$BEFORE_DIRTY"
@@ -133,7 +133,7 @@ echo
 echo "── release, then the SAME tick behaves normally ───────────────────────────"
 CU "$FX" release >/dev/null
 OUT=$( cd "$FX" && YAAS_SCENARIO="$FX/scenario.json" YAAS_TRIAGE_DIR="$FX/yaas-triage" \
-         REPO_ROOT="$FX" bash yaas-triage/triage.sh 2>&1 )
+         REPO_ROOT="$FX" python3 yaas-triage/tick.py 2>&1 )
 printf '%s' "$OUT" | grep -q "DISPATCH DONE" && ok "it dispatches after release" || bad "still held after release"
 AFTER=$(jq -r '.watches[0].last_checked_ts' "$W")
 [ "$AFTER" != "$BEFORE_DIRTY" ] && ok "...and the watermark advances ($AFTER)" \

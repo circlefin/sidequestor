@@ -90,7 +90,7 @@ mkdir -p "$TRIAGE/checkers" "$Q" "$ROOT/state/triage" "$ROOT/logs"
 # the reorganisation; now it is a broken one, since triage.sh looks for its collaborators
 # in ledger/ and dispatch/.
 mkdir -p "$TRIAGE/ledger" "$TRIAGE/dispatch" "$TRIAGE/ops"
-cp "$SCRIPT_DIR/triage.sh" "$TRIAGE/"
+cp "$SCRIPT_DIR/tick.py" "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR/tick_check.py" "$SCRIPT_DIR/tick_dispatch.py" "$TRIAGE/"
 cp "$SCRIPT_DIR/ledger/ensure-watch-ids.py" "$SCRIPT_DIR/ledger/ack-watch.py" \
    "$SCRIPT_DIR/ledger/checker-health.py" "$SCRIPT_DIR/ledger/watch-guard.py" "$SCRIPT_DIR/ledger/commit.py" "$SCRIPT_DIR/ledger/housekeep.py" "$TRIAGE/ledger/"
 cp "$SCRIPT_DIR/dispatch/source-evidence.py" "$SCRIPT_DIR/dispatch/spend-window.py" \
@@ -129,9 +129,9 @@ done
 printf '#!/usr/bin/env python3\n' > "$TRIAGE/dispatch/extract-tokens.py"
 printf '#!/usr/bin/env python3\n' > "$TRIAGE/ops/notify.py"
 printf '#!/usr/bin/env python3\n' > "$TRIAGE/ops/rotate-logs.py"
-chmod +x "$TRIAGE"/*.sh "$TRIAGE"/checkers/*.py
+chmod +x "$TRIAGE"/tick.py "$TRIAGE"/checkers/*.py
 
-YAAS_AGENT=claude YAAS_MAX_SPEND_1H=1 bash "$TRIAGE/triage.sh" >"$TMP_DIR/breach.out" 2>&1 || true
+YAAS_AGENT=claude YAAS_MAX_SPEND_1H=1 python3 "$TRIAGE/tick.py" >"$TMP_DIR/breach.out" 2>&1 || true
 
 if [ -f "$ROOT/state/DISPATCH_HAPPENED" ]; then
   bad "dispatch ran despite the hourly cap being breached"
@@ -152,7 +152,7 @@ eq "the dirty quest's watermark is HELD, so the work re-surfaces" \
 echo
 echo "── and with headroom, the same tick dispatches normally ───────────────────"
 rm -f "$ROOT/state/DISPATCH_HAPPENED"
-YAAS_AGENT=claude YAAS_MAX_SPEND_1H=500 bash "$TRIAGE/triage.sh" >"$TMP_DIR/ok.out" 2>&1 || true
+YAAS_AGENT=claude YAAS_MAX_SPEND_1H=500 python3 "$TRIAGE/tick.py" >"$TMP_DIR/ok.out" 2>&1 || true
 [ -f "$ROOT/state/DISPATCH_HAPPENED" ] && ok "dispatch proceeds when within the cap" \
   || bad "dispatch withheld even though the cap had headroom (gate is stuck closed)"
 

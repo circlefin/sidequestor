@@ -11,7 +11,7 @@ Scaffold a new yaas quest. A quest is a folder under `state/quests/active/` cont
 
 - User says "track this thread", "let's make a quest for X", "I want to follow up on Y"
 - User pastes a Slack permalink and asks to be reminded when someone replies
-- User mentions a recurring conversation they want the gate.sh to monitor
+- User mentions a recurring conversation they want the triage loop to monitor
 
 ## When NOT to invoke
 
@@ -42,7 +42,7 @@ Ask the user for, in order:
 
    **Prefer a pre-dispatch filter over waking Opus to decide relevance.** `slack_channel`
    and `slack_thread` watches accept two optional filter fields, evaluated inside the
-   checker scripts (not triage.sh) before the worker is woken — so a non-matching message costs nothing:
+   checker scripts (not the orchestrator) before the worker is woken — so a non-matching message costs nothing:
    - **`filter_user_ids`** — list of Slack user IDs; only messages authored by one of
      them wake the worker.
    - **`filter_keywords`** — list of strings; a message must contain at least one
@@ -67,7 +67,7 @@ Ask the user for, in order:
    channels and annoy the humans there. `new-quest.py` validates that the only legal value is
    `"read_only"` — any typo is caught at creation time.
 
-   **Note:** reactions (`:claude-intensifies:`, `:writing_hand:`, `:floppy_disk:`) are tracked globally by triage.sh and are NOT a per-quest watch input. Do not include them in `watches[]`.
+   **Note:** reactions (`:claude-intensifies:`, `:writing_hand:`, `:floppy_disk:`) are tracked globally by the triage orchestrator and are NOT a per-quest watch input. Do not include them in `watches[]`.
 3. **Priority** — high / normal / low. Default to normal if unspecified.
 4. **Context** — ask the user to paste or describe what this quest is about. This becomes the body of `context.md`. If they already gave context earlier in the conversation, use that; don't re-ask.
 

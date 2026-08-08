@@ -130,11 +130,11 @@ python3 "$RIG/run-agent.py" --prompt only >/dev/null 2>&1; eq "no label" "$?" "3
 
 echo
 echo "── both callers use it, so there is only one copy ─────────────────────────"
-grep -q "run-agent.py" "$SCRIPT_DIR/triage.sh" && ok "triage.sh uses it" \
-  || bad "triage.sh still has its own pipeline"
+grep -q "run-agent.py" "$SCRIPT_DIR/tick.py" && ok "tick.py uses it" \
+  || bad "tick.py still has its own pipeline"
 grep -q "run-agent.py" "$SCRIPT_DIR/dispatch/manual-dispatch.sh" && ok "manual-dispatch.sh uses it" \
   || bad "manual-dispatch.sh still has its own pipeline"
-for f in triage.sh manual-dispatch.sh; do
+for f in tick.py dispatch/manual-dispatch.sh; do
   if grep -q "_kill_tree" "$SCRIPT_DIR/$f"; then
     bad "$f still carries its own _kill_tree"
   else

@@ -10,7 +10,7 @@ customize:
 
 `CLAUDE.md` is what `claude -p` loads on every worker dispatch. Everything
 below is required for the triage worker to operate correctly — do not delete
-the section headers or the protocols; they're referenced by `yaas-triage/triage.sh`
+the section headers or the protocols; they're referenced by `yaas-triage/tick.py`
 via the dispatch prompt.
 
 ---
@@ -21,14 +21,14 @@ You're in one of two modes. Infer from context:
 
 ### Mode A — Triage dispatch (automated)
 
-- Triggered by `triage.sh` calling `claude --model opus -p "YaaS worker dispatch: dirty target: ..."` (headless mode — no REPL)
+- Triggered by the triage orchestrator (`tick.py`) calling `claude --model opus -p "YaaS worker dispatch: dirty target: ..."` (headless mode — no REPL)
 - **One dispatch handles exactly ONE target.** A target is either a single quest ID (e.g., `quest-my-quest-2026-04-28`) or the literal string `reactions`. If a tick finds several dirty quests, triage runs a separate dispatch per quest, sequentially, each with its own commit. So your run is scoped to one quest: never touch another quest's folder.
 - The prompt includes `Exact dirty watches (JSON)`, with the persistent `watch_id` and `type` of every watch that fired for this target, plus a `run_id`. Process every listed watch ID (select each entry with `jq --arg id '<watch_id>' '.watches[] | select(.watch_id == $id)' state/quests/active/<quest_id>/watch.json`; never scan or truncate `watch.json` to guess what fired) and close each one in the ack ledger before exiting — see § 4a.
 - Target-specific protocol:
   - `reactions` → **Reactions Fast Path** (§ Reactions). Self-contained. Do NOT read any quest folder.
   - quest ID → **Quest Activation Protocol** (below). Read only what you need.
 - After processing the target and acking every item, emit the **Output Contract** summary and exit.
-- Do NOT scan for activity anywhere else — triage.sh already did that. Act only on the specified target.
+- Do NOT scan for activity anywhere else — the orchestrator already did that. Act only on the specified target.
 
 **Token discipline.** Every tool call and every extra file read re-sends the conversation through the model, multiplying cost. Do the minimum. Read `context.md` before anything else; only read other files when you're about to act and actually need them.
 
@@ -45,7 +45,7 @@ You're in one of two modes. Infer from context:
 
 ### ⚠️ Invariant: you do NOT modify existing `watch.json` entries
 
-The triage.sh script is the **sole owner** of watermark state. It advances `last_checked_ts` for clean watches immediately, and for a dispatched watch only when you closed it in the ack ledger (§ 4a) AND the checker proved it drained its window. Your exit code alone advances nothing. **Never edit an existing entry in `watch.json`** (never change a `last_checked_ts`, never remove an entry). If you do, you'll corrupt the termination-safety guarantee.
+The triage orchestrator is the **sole owner** of watermark state. It advances `last_checked_ts` for clean watches immediately, and for a dispatched watch only when you closed it in the ack ledger (§ 4a) AND the checker proved it drained its window. Your exit code alone advances nothing. **Never edit an existing entry in `watch.json`** (never change a `last_checked_ts`, never remove an entry). If you do, you'll corrupt the termination-safety guarantee.
 
 You **may** append new entries to `watch.json` — see the "Track what you touched" rule below. New entries start with `last_checked_ts` set to the response_ts of your reply so triage looks forward from there.
 
@@ -68,7 +68,7 @@ Quest folder:
 state/quests/active/<quest_id>/
 ├── context.md      ← why this quest exists + state      (you may write)
 ├── meta.json       ← status, priority, allow_send       (you may write)
-├── watch.json      ← watermarks — READ ONLY for you     (triage.sh owns)
+├── watch.json      ← watermarks — READ ONLY for you     (the orchestrator owns)
 └── timeline.ndjson ← append-only log of prior actions   (you append)
 ```
 
