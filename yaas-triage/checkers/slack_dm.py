@@ -85,7 +85,7 @@ def main():
         # .error, and a rate limit arrives that way.
         # One exit taxonomy from client.py: 0 ok, 1 auth, 2 error, 3 args, 4 transient.
         if r.returncode == 4:
-            result.ratelimited("slack transient (rate limit or network); watermark held")
+            result.ratelimited(f"slack transient ({result.transient_cause(r.stderr, 'slack_dm')}); watermark held")
             return
         _b = (r.stdout or "").lower()
         if "ratelimited" in _b:

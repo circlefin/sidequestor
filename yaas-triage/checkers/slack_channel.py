@@ -73,7 +73,8 @@ def main():
         # came back as a generic failure and had to be guessed at from the body text,
         # which is how ~1,380 rate limits were misfiled as hard errors.
         if r.returncode == 4:
-            return "", None, "TRANSIENT: rate limit or network; watermark held"
+            cause = result.transient_cause(r.stderr, "slack_read_channel")
+            return "", None, f"TRANSIENT: {cause}; watermark held"
         if r.returncode == 1:
             return "", None, f"slack auth failure on slack_read_channel"
         # A non-zero exit is NOT automatically a hard error: mcp-call.sh exits 2 on

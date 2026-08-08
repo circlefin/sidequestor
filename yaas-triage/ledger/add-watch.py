@@ -143,6 +143,12 @@ def validate(entry):
     mode = entry.get("watch_mode")
     if mode is not None and mode != "read_only":
         die(f"bad_watch_mode:{mode}:only read_only is meaningful")
+    eph = entry.get("ephemeral")
+    if eph is not None and not isinstance(eph, bool):
+        # Strict: housekeep retires on `is True`, so a string "false" would be truthy to a
+        # careless reader while doing nothing here, and "true" would silently NOT expire.
+        # Both directions are silent, so reject anything that is not a real JSON boolean.
+        die(f"bad_ephemeral:{eph!r}:must be JSON true or false, not a string")
 
 
 def main():
@@ -169,6 +175,17 @@ def main():
         else:
             entry["last_checked_ts"] = f"{time.time():.6f}"
     entry["last_checked_ts"] = str(entry["last_checked_ts"])
+
+    # Stamp WHEN this watch was created, which is not derivable from anything else on the
+    # entry. last_checked_ts looks like an age but is a watermark: it advances every tick,
+    # so a watch that should expire looks permanently fresh. Without this field a
+    # slack_channel watch opened to catch one DM reply can never be aged out, and on
+    # two such watches were still waking on every self-DM message 12 and 3 days after their
+    # question was answered — one of them acted on an unrelated message and double-sent.
+    # housekeep.retire_ephemeral() ages against this field.
+    if not entry.get("created_ts"):
+        entry["created_ts"] = f"{time.time():.6f}"
+    entry["created_ts"] = str(entry["created_ts"])
 
     # Lock a SIDECAR, not the data file. We replace watch.json's inode below, and a
     # lock held on the old inode would not serialise pathname replacement: two writers

@@ -812,7 +812,8 @@ def build_config() -> dict:
         ]},
         {"title": "Timing", "items": [
             knob("YAAS_STALE_REPLY_HOURS", 24, "Replies older than this are drafted, not sent (stale-reply guard)."),
-            knob("YAAS_RETIRE_DEFAULT_DAYS", 30, "Default age at which a stale slack_thread watch is retired."),
+            knob("YAAS_RETIRE_DEFAULT_DAYS", 14, "Default age at which a stale slack_thread watch is retired."),
+            knob("YAAS_RETIRE_EPHEMERAL_HOURS", 168, "Lifetime of a watch marked ephemeral (a DM reply-catcher). Unmarked watches never expire."),
         ]},
         {"title": "Backend", "items": [
             knob("YAAS_AGENT", "claude", "Which agent backend runs the worker dispatch (claude / codex / cursor)."),
@@ -1167,6 +1168,24 @@ def build_quest_detail(quest_id: str) -> dict | None:
         try:    return float(x)
         except (TypeError, ValueError): return 0.0
 
+    def _expires_ts(e):
+        """When an ephemeral watch dies, or None if it never does / isn't datable yet.
+
+        Mirrors housekeep.retire_ephemeral rather than importing it: this server is
+        read-only over live state and must not pull in the module that DELETES watches.
+        The window is read the same way housekeep reads it, so the two agree.
+        """
+        if e.get("ephemeral") is not True:
+            return None
+        created = _as_float(e.get("created_ts"))
+        if created <= 0 or created != created:      # unstamped, or NaN
+            return None
+        try:
+            hours = int(str(_dotenv("YAAS_RETIRE_EPHEMERAL_HOURS", "168")).strip() or 168)
+        except ValueError:
+            hours = 168
+        return created + hours * 3600 if hours > 0 else None
+
     open_threads, scheduled = [], []
     for e in watches:
         wtype = e.get("type")
@@ -1182,6 +1201,13 @@ def build_quest_detail(quest_id: str) -> dict | None:
                 "link_kind":  kind,
                 "query":      e.get("query") if wtype == "email" else None,
                 "last_checked_ts": e.get("last_checked_ts"),
+                # A reply-catcher and a standing subscription look identical in this list
+                # otherwise, which is how two of them ran for 3 and 12 days past their
+                # purpose without anyone noticing. expires_ts is None for an unmarked
+                # (permanent) watch, and None while created_ts is still unstamped —
+                # housekeep backfills that on its next run, so "soon" rather than "never".
+                "ephemeral":  e.get("ephemeral") is True,
+                "expires_ts": _expires_ts(e),
             })
         elif wtype == "schedule":
             # A scheduled follow-up = something the bot will do / GM promised at

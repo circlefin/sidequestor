@@ -858,9 +858,20 @@ function renderFeed(feed){
 function oiRow(inner,cls){ return `<div class="oi-row ${cls}">${inner}</div>`; }
 function oiThreadRow(t){
   const ro=t.read_only?'<span class="tag tag-mode">read-only</span>':'';
+  // A reply-catcher and a permanent subscription otherwise look identical here, which is
+  // how two of them outlived their purpose by 3 and 12 days unnoticed. Show when it dies;
+  // "expiring" with no date means housekeep has not stamped its clock yet.
+  const eph=t.ephemeral?`<span class="tag tag-mode" title="Temporary reply-catcher — retired automatically">${t.expires_ts?'expires '+esc(expiryLabel(t.expires_ts)):'expiring'}</span>`:'';
   const link=(t.link_url||t.slack_url)?recLink(t,false):(t.query?`<span class="oi-query">${esc(t.query)}</span>`:'');
   const age=t.last_checked_ts?`<span class="oi-age">${agoEpoch(t.last_checked_ts)}</span>`:'';
-  return oiRow(`${badge(t.type||'watch')}${ro}<span class="oi-reason">${esc(t.reason||'(no reason)')}</span>${age}${link}`,'r-wait');
+  return oiRow(`${badge(t.type||'watch')}${ro}${eph}<span class="oi-reason">${esc(t.reason||'(no reason)')}</span>${age}${link}`,'r-wait');
+}
+function expiryLabel(ts){
+  const f=parseFloat(ts); if(!isFinite(f)||f<=0) return '';
+  const days=Math.round((f*1000-Date.now())/86400000);
+  if(days<0) return 'overdue';
+  if(days===0) return 'today';
+  return days===1?'in 1d':`in ${days}d`;
 }
 function fireTime(ts){ const f=parseFloat(ts); if(!isFinite(f)||f<=0) return ''; const d=new Date(f*1000),now=Date.now(); const past=d.getTime()<now; const s=d.toLocaleDateString(undefined,{month:'short',day:'numeric'}); return `<span class="oi-age${past?' oi-overdue':''}">${past?'due ':'fires '}${esc(s)}</span>`; }
 function renderQuestOpenItems(oi){

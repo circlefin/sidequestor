@@ -89,6 +89,36 @@ def ratelimited(reason="transient rate limit; watermark held"):
     emit(RATELIMITED, reason=reason, complete=False)
 
 
+def transient_cause(stderr, tool):
+    """Name WHY a client.py exit-4 happened, from the stderr it already wrote.
+
+    Exit 4 is one bucket for several unrelated failures — HTTP 429, a 5xx, a socket
+    timeout, DNS/connection refused — and every checker used to report all of them as
+    "rate limit or network". That reads as a rate limit, so 2,236 events in a single day
+    were filed under "Slack is throttling us" without evidence; only 50 that day actually
+    said `ratelimited`. Tuning concurrency against a number that mostly measures timeouts
+    would have optimised the wrong thing.
+
+    client.py already prints a precise `ERROR: ...` line to stderr before exiting; the
+    checkers simply discarded it. This reads it back and returns a short stable token
+    (`slack ratelimited` / `slack 5xx` / `timeout` / `network`) for the reason string, so
+    the run-log can be counted by actual cause. Unrecognised text stays "transient" rather
+    than being forced into a category — an honest unknown beats a confident wrong label.
+    """
+    s = (stderr or "").strip().lower()
+    if "429" in s or "ratelimited" in s or "rate_limited" in s or "rate limit" in s:
+        return "slack ratelimited"
+    if any(c in s for c in ("http 500", "http 502", "http 503", "http 504",
+                            "service_unavailable", "internal_error")):
+        return "slack 5xx"
+    if "timeout" in s or "timederror" in s or "timed out" in s:
+        return "timeout"
+    if any(c in s for c in ("urlerror", "connectionerror", "oserror", "refused",
+                            "reset", "dns", "name or service", "unreachable")):
+        return "network"
+    return "transient"
+
+
 def error(reason):
     # complete=False on principle: a failed check saw nothing, so its cursor must
     # never advance even if some other code path decides to dispatch.
