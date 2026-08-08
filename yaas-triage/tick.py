@@ -864,11 +864,13 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
                  f"handled|nothing_to_do|blocked \"<one-line note>\".")
     if target == "reactions":
         prompt = (f"Yaas worker dispatch: dirty target: reactions. Ack items (JSON): {items_json}"
-                  f" — each item_id is \"<emoji>:<msg_ts>\". Run the Reactions Fast Path. "
+                  f" — each item_id is \"<emoji>:<msg_ts>\". Load and follow "
+                  f"yaas-triage/skills/yaas-reactions/SKILL.md (the Reactions Fast Path). "
                   f"{ack_block} {_RUN_DISCIPLINE}")
     else:
         prompt = (f"Yaas worker dispatch: dirty target: {target}. Exact dirty watches (JSON): "
                   f"{items_json} — each item_id is a watch_id. Process EVERY listed watch_id. "
+                  f"Load and follow yaas-triage/skills/yaas-quest-dispatch/SKILL.md. "
                   f"{ack_block} {_RUN_DISCIPLINE}")
 
     cp = t.run(t.py(t.helper("dispatch", "run-agent.py"), "--prompt", prompt,
