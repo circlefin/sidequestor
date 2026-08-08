@@ -18,7 +18,7 @@
 """
 spend-window.py — rolling dispatch spend and count, read from run-log.ndjson.
 
-Feeds the pre-dispatch budget gate in triage.sh. No new accounting: every dispatch
+Feeds the pre-dispatch budget gate in the original shell orchestrator. No new accounting: every dispatch
 already writes a `gate_dispatch_tokens` event carrying `cost_usd`, and every tick
 that dispatches writes `gate_dispatch`.
 
@@ -38,14 +38,14 @@ Prints one JSON object:
 The cap comparison lives here rather than in the shell so the floats are compared
 in one language, with no dependency on bc.
 
-triage.sh enforces `--cap-1h`, `--cap-24h` and `--cap-dispatch-6h`. The hourly cap is
+the original shell orchestrator enforces `--cap-1h`, `--cap-24h` and `--cap-dispatch-6h`. The hourly cap is
 the responsive dollar tripwire; the 24h cap catches slow drift; the count cap is the
 only one that works under the Codex and Cursor backends, which report no cost figure.
 `--cap-6h` is accepted but unused: 6h sits awkwardly between the hourly tripwire and
 the daily backstop and adds nothing. `spend_6h` is still reported for observability.
 
 `uncosted_24h` matters: the Codex and Cursor backends report raw tokens with no
-cost figure, so a dollars-only ceiling is blind under those. triage.sh therefore
+cost figure, so a dollars-only ceiling is blind under those. the original shell orchestrator therefore
 also enforces a dispatch-COUNT ceiling, which is backend-agnostic.
 
 Reads only the live run log. `rotate-logs.py` keeps 7 days there, which covers the

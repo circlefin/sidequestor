@@ -19,7 +19,7 @@
 format-stream.py — convert claude -p stream-json NDJSON on stdin into a
 compact, human-readable transcript on stdout.
 
-Usage in triage.sh:
+Usage in the original shell orchestrator:
   claude -p --output-format stream-json --verbose ... \
     | tee "$WORKER_LOG_RAW" \
     | python3 format-stream.py >> "$WORKER_LOG"
@@ -29,7 +29,7 @@ Emits one or more short lines per event:
   - assistant text       → prints the text as-is
   - assistant tool_use   → "→ ToolName(…short summary…)"
   - user tool_result     → "← ToolName: <preview>"  (keyed off prior tool_use_id)
-  - result               → silent (handled by the metrics extractor in triage.sh)
+  - result               → silent (handled by the metrics extractor in the original shell orchestrator)
 
 Unknown types pass through as "<type>: <first 120 chars>" so nothing is lost.
 """

@@ -17,7 +17,7 @@
 
 # test-run-agent.sh — the one dispatch pipeline.
 #
-# triage.sh and manual-dispatch.sh each used to implement this: launch the agent, tee
+# the original shell orchestrator and manual-dispatch.sh each used to implement this: launch the agent, tee
 # the raw stream, format a transcript, symlink worker-latest.*, kill the tree on
 # timeout. Two copies, and manual-dispatch's copy had no test at all, so a watchdog or
 # log-pipeline fix had to be made twice and verified once.

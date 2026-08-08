@@ -19,7 +19,7 @@
 tick_dispatch.py — the dispatch-phase GATES of the tick.py orchestrator.
 
 Once check_quest has produced the dirty target list, two decisions stand between it and
-spending money, and both used to live inline in triage.sh as untested shell:
+spending money, and both used to live inline in the original shell orchestrator as untested shell:
 
   slack_gate    Slack is a hard dependency for some targets and irrelevant to others. If
                 Slack is down, drop ONLY the targets that need it (reactions, or a quest with

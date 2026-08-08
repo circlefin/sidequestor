@@ -180,7 +180,7 @@ def _stale_reason(channel_id, thread_ts, now=None):
     whose state is unknown is the exact failure this exists to prevent.
     """
     if os.environ.get("YAAS_FORCE_DRAFT") == "1":
-        return "catch-up mode is active (YAAS_FORCE_DRAFT=1)"
+        return "force-draft mode is active (YAAS_FORCE_DRAFT=1)"
     if not thread_ts:
         # A new top-level message is not a reply to anything, so it has no staleness.
         return None

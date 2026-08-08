@@ -18,7 +18,6 @@ yaas-triage/
 │   ├── tick_state.py         ←   config/loading: repo root, knobs, lag map, active quests
 │   ├── tick_check.py         ←   classify(): the six-way per-watch verdict
 │   └── tick_dispatch.py      ←   the dispatch gates: slack-need, budget/fanout/slice
-├── triage.sh                 ← the previous bash orchestrator, frozen as instant rollback
 ├── triage-loop.sh            ← the launchd wrapper that sleeps between ticks (runs tick.py)
 ├── checkers/                 ← one script per watch type (plugin directory)
 │   ├── slack_thread.py · slack_channel.py · slack_dm.py · slack_mention.py
@@ -38,7 +37,7 @@ yaas-triage/
 ├── surfaces/                 ← "talk to the outside": mcp-call.sh, jira-call.sh,
 │                               slack-send.py, slack-react.sh, react-lifecycle.py
 ├── ops/                      ← "keep it alive and visible": dashboard-server.py, health-monitor.py,
-│                               catchup.py, rotate-logs.py, notify.py, doctor.sh, sync-yaas-v2.sh
+│                               rotate-logs.py, notify.py, doctor.sh, sync-yaas-v2.sh
 ├── tests/                    ← unit/ + behaviour/ + differential/ (goldens + mutations)
 ├── setup/                    ← one-time install (setup.sh, install-launchd*.sh, plist templates)
 └── skills/                   ← generic worker skills (loaded on demand)
@@ -81,7 +80,7 @@ ARCHITECTURE.md               ← full system design
 
 ### How it works
 
-The orchestrator's `check_quest` (`tick.py`, ported from `triage.sh`) iterates over every entry in a quest's `watches[]` array. For each entry it looks up `yaas-triage/checkers/<type>.py` and runs it:
+The orchestrator's `check_quest` (`tick.py`, ported from the original shell orchestrator) iterates over every entry in a quest's `watches[]` array. For each entry it looks up `yaas-triage/checkers/<type>.py` and runs it:
 
 ```
 python3 checkers/<type>.py '<watch_entry_json>'

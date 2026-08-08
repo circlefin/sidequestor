@@ -14,7 +14,7 @@
          interval spawn stops being delivered ("pended nondemand spawn = interval"
          that never fires), even after a clean bootout/bootstrap. That silently
          killed all dispatch once. triage-loop.sh paces itself instead, and
-         triage.sh holds its own flock so a brief double-spawn during a reload
+         tick.py holds its own flock so a brief double-spawn during a reload
          serialises safely. Interval is YAAS_TRIAGE_INTERVAL (default 60s). -->
     <key>KeepAlive</key>
     <true/>

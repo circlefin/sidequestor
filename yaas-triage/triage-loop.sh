@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# triage-loop.sh — long-running KeepAlive driver for triage.sh.
+# triage-loop.sh — long-running KeepAlive driver for tick.py (the orchestrator).
 #
 # Why this exists: on macOS 26.5.0 (post-update, 2026-06), launchd's
 # StartInterval delivery for com.yaas.triage stopped firing — the interval
@@ -25,10 +25,10 @@
 #
 # The robust alternative is KeepAlive + an internal sleep loop: launchd keeps
 # exactly one copy of THIS script alive (restarting it if it ever dies), and
-# the loop itself paces triage.sh at INTERVAL seconds. No dependency on the
+# the loop itself paces tick.py at INTERVAL seconds. No dependency on the
 # StartInterval timer.
 #
-# triage.sh holds its own single-instance flock, so even if launchd briefly
+# tick.py holds its own single-instance flock, so even if launchd briefly
 # double-spawns this loop during a reload, the inner runs serialize safely.
 
 set -u
@@ -36,7 +36,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INTERVAL="${YAAS_TRIAGE_INTERVAL:-60}"
 
-# `|| true` is required — a worker failure legitimately makes triage.sh exit non-zero
+# `|| true` is required — a worker failure legitimately makes tick.py exit non-zero
 # and this loop must not die on it. But discarding the code outright is what let the
 # 2026-06-30 crash loop run 6.5 hours while launchd reported a healthy job. So count
 # consecutive failures to a file that health-monitor.py reads. The threshold there is
@@ -45,11 +45,8 @@ FAILFILE="$SCRIPT_DIR/../state/triage/consecutive-tick-failures"
 mkdir -p "$(dirname "$FAILFILE")" 2>/dev/null || true
 
 while true; do
-  # CUTOVER 2026-08-07: the loop now drives tick.py (the Python orchestrator), not triage.sh.
-  # tick.py passes the full differential harness (30 goldens, 9 mutations) and a live DRY_RUN
-  # smoke test. triage.sh is kept on disk as instant rollback: revert this one line and
-  # re-kickstart. This edit is intentionally left UNCOMMITTED during the shadow window so the
-  # canonical default in git stays triage.sh until tick.py has run clean for a stretch.
+  # The loop drives tick.py (the Python orchestrator). The port is complete and validated;
+  # the original shell orchestrator has been retired to archive/.
   if python3 "$SCRIPT_DIR/tick.py"; then
     echo 0 > "$FAILFILE" 2>/dev/null || true
   else

@@ -19,7 +19,7 @@
 #
 # YaaS's only job here: launch the configured agent headless in the repo, pass
 # the prompt, and STREAM its raw event JSONL to stdout (agent's stderr → this
-# script's stderr). Exit code = the agent's exit code. triage.sh owns the
+# script's stderr). Exit code = the agent's exit code. the original shell orchestrator owns the
 # tee → format-stream.py pipeline and the post-run token extraction; this
 # script is a thin, MCP-agnostic launcher.
 #

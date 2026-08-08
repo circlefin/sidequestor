@@ -19,7 +19,7 @@
 scenario.py — build a throwaway repo that a full triage tick can run against.
 
 This is the foundation of the differential harness. The point is to run the REAL
-orchestrator (triage.sh today, tick.py after the port) end to end with no network, no
+orchestrator (the orchestrator) end to end with no network, no
 Slack, no agent and no launchd, so its decisions can be recorded and compared.
 
 It needs zero instrumentation of the orchestrator, because every external call the

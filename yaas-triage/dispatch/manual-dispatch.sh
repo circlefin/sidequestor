@@ -17,12 +17,12 @@
 
 # manual-dispatch.sh — run one dashboard-initiated worker dispatch against a
 # single quest with a free-text instruction, WITHOUT waiting for Slack/email
-# activity. Shares triage.sh's single-instance lock (logs/triage.lock) so a
+# activity. Shares the original shell orchestrator's single-instance lock (logs/triage.lock) so a
 # manual run and a triage tick can never race on watch.json, and reuses the
 # exact worker-latest.log streaming pipeline so the dashboard's existing live
 # panel shows progress with no extra wiring.
 #
-# Unlike triage.sh, this NEVER advances any watermark — it is a direct
+# Unlike the original shell orchestrator, this NEVER advances any watermark — it is a direct
 # instruction, not a response to new inbound activity. The worker may still
 # append new watches[] entries per CLAUDE.md §3a; existing entries are left
 # untouched, exactly as in a normal Mode A run.
@@ -62,7 +62,7 @@ if [ -z "$QUEST_ID" ] || [ -z "$INSTRUCTION" ]; then
   exit 2
 fi
 
-# Load .env for YAAS_AGENT + secrets, exactly as triage.sh does (errexit off
+# Load .env for YAAS_AGENT + secrets, exactly as the original shell orchestrator does (errexit off
 # while sourcing — a malformed .env line must not abort us).
 if [ -f "$REPO_ROOT/.env" ]; then
   set +e; set -a; source "$REPO_ROOT/.env"; set +a
@@ -103,7 +103,7 @@ NOW_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 INSTR_JSON=$(printf '%s' "$INSTRUCTION" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
 echo "{\"ts\":\"$NOW_UTC\",\"event\":\"manual_dispatch\",\"quest\":\"$QUEST_ID\",\"instruction\":$INSTR_JSON}" >> "$RUN_LOG"
 
-WORKER_TIMEOUT=1800  # keep in sync with triage.sh WORKER_TIMEOUT
+WORKER_TIMEOUT=1800  # keep in sync with the original shell orchestrator WORKER_TIMEOUT
 CLAUDE_PERMISSION_MODE="${YAAS_CLAUDE_PERMISSION_MODE:-${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}}"
 CODEX_PERMISSION_MODE="${YAAS_CODEX_PERMISSION_MODE:-workspace-write}"
 
@@ -113,7 +113,7 @@ CODEX_PERMISSION_MODE="${YAAS_CODEX_PERMISSION_MODE:-workspace-write}"
 WORKER_PROMPT="Yaas worker dispatch (manual, dashboard-initiated). Dirty target: $QUEST_ID. This is NOT triggered by new Slack/email activity — it is a direct instruction from the operator. Follow the Quest Activation Protocol for this quest (read context.md first; read other files only when you need them). ALL normal rules apply: draft-vs-send authorization (§3, §3d), never modify existing watch.json entries, act-first-then-report (§3b), log every outbound action to timeline.ndjson via slack-send.py. MANUAL INSTRUCTION TO ACT ON: $INSTRUCTION. NO ACK LEDGER for this dispatch: there is no run_id and this run advances no watermarks, so skip § 4a entirely and do NOT call ack-watch.py. ACT SILENTLY: emit no narration between tool calls. OUTPUT CONTRACT: emit the summary only if something material happened; keep it under 8 lines."
 
 # The pipeline, watchdog and process-tree kill live in run-agent.py, shared with
-# triage.sh. This file used to carry its own copy of all three, untested, so a fix to
+# the original shell orchestrator. This file used to carry its own copy of all three, untested, so a fix to
 # either had to be made twice and was verified once.
 AGENT_JSON=$(python3 "$SCRIPT_DIR/run-agent.py" \
   --prompt "$WORKER_PROMPT" --label "$QUEST_ID" --timeout "$WORKER_TIMEOUT" \

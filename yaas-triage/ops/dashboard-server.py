@@ -90,7 +90,7 @@ DASHBOARD_HTML = REPO_ROOT / "dashboard.html"
 PORT           = int(sys.argv[1]) if len(sys.argv) > 1 else 8877
 
 # Workspace-specific hosts. No hardcoded defaults: they belong to whoever runs
-# this, so they come from the gitignored repo-root .env (the same file triage.sh
+# this, so they come from the gitignored repo-root .env (the same file the orchestrator
 # sources). Without them, a reconstructed Slack/Jira link is simply omitted; a
 # stored permalink still works, because it carries its own host.
 def _dotenv(key: str, default: str = "") -> str:
@@ -110,7 +110,7 @@ SLACK_HOST = _dotenv("SLACK_WORKSPACE_DOMAIN")            # e.g. acme.slack.com
 JIRA_HOST  = (_dotenv("JIRA_BASE_URL").replace("https://", "")
                                       .replace("http://", "").rstrip("/"))
 
-WORKER_TIMEOUT_S = 1800  # mirrors WORKER_TIMEOUT in triage.sh — a log older than
+WORKER_TIMEOUT_S = 1800  # mirrors YAAS_WORKER_TIMEOUT in tick.py — a log older than
                          # this with no footer means the worker was killed, not running
 LIVE_TAIL_LINES  = 60   # panel wants the fuller transcript; pill only shows the target name
 
@@ -540,7 +540,7 @@ def _approval_draft_record(i: dict) -> dict:
 
 
 # ── Live run detector ──────────────────────────────────────────────────────
-# triage.sh writes logs/worker-latest.log at dispatch time: a header line with
+# the worker dispatch writes logs/worker-latest.log at dispatch time: a header line with
 # the dirty targets, then a live-appended human-readable tool-call transcript
 # (tee'd through format-stream.py as the worker runs), ending with a
 # "=== Tokens: ..." footer once the worker exits. So "still running" = the
@@ -812,7 +812,6 @@ def build_config() -> dict:
         ]},
         {"title": "Timing", "items": [
             knob("YAAS_STALE_REPLY_HOURS", 24, "Replies older than this are drafted, not sent (stale-reply guard)."),
-            knob("YAAS_CATCHUP_AFTER_HOURS", 6, "Silence longer than this arms a catch-up hold (read everything before answering)."),
             knob("YAAS_RETIRE_DEFAULT_DAYS", 30, "Default age at which a stale slack_thread watch is retired."),
         ]},
         {"title": "Backend", "items": [

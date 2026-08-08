@@ -21,11 +21,11 @@ Everything below is downstream of that.
                 │                watcher)             approval queue)
                 ▼
         ┌───────────────┐
-        │   tick.py     │   ONE TICK  (triage.sh is the frozen bash predecessor, kept as rollback)
+        │   tick.py     │   ONE TICK
         │               │
         │  1. CHECK ────┼──▶ checkers/<type>.py, one per watch, in parallel
         │               │    "is there anything new?"  → clean | dirty | error
-        │  2. DECIDE ───┼──▶ gates: cost, Slack health, backoff, catch-up hold
+        │  2. DECIDE ───┼──▶ gates: cost, Slack health, backoff
         │  3. DISPATCH ─┼──▶ one AI worker per dirty target, isolated
         │  4. COMMIT ───┼──▶ move watermarks — but ONLY on evidence (§4)
         └───────────────┘
@@ -155,12 +155,9 @@ at 30 minutes, whatever was banked still commits and the rest correctly re-surfa
      │
      ├─ single-instance lock ......... only one tick at a time
      ├─ env knob validation .......... a malformed ceiling reads as NO ceiling → refuse to run
-     ├─ catch-up detection ........... measured BEFORE this tick writes anything
-     │
      ├─ CHECK all watches (parallel)
      │    └─ checker error → exponential backoff 60s → 1h, then misconfig
      │
-     ├─ catch-up hold? ............... long silence → digest, then STOP. Nothing committed.
      ├─ advance clean watermarks
      ├─ retire + prune ............... stale threads, done approvals, fired schedules, logs
      │
@@ -238,27 +235,16 @@ It lives in `surfaces/slack-send.py`, the one sanctioned send path — not in a 
 
 ## 8. Coming back after a long silence
 
-```
-   gap > 6h ?
-       │ yes
-       ▼
-   CATCH-UP HOLD ─── check every watch each tick
-                 ─── write state/catchup-digest.md
-                 ─── send nothing, commit nothing (not even clean watermarks)
-                 ─── health-monitor raises catchup_awaiting_release
-                            │
-                  you read the digest
-                            │
-                  catchup.py release
-                            ▼
-                normal ticks resume from exactly where the pause began
-```
+There is **no whole-system hold**. After any pause each watch simply resumes from its own
+watermark, and staleness is handled at the one place it matters — the send path (§7): any reply
+to a conversation quiet for more than `YAAS_STALE_REPLY_HOURS` (default 24) is drafted to the
+review queue instead of sent. So a stale answer is always a human decision, while fresh activity
+keeps flowing with nothing to release.
 
-Holding *everything* is deliberate: advancing clean watches while holding dirty ones would
-leave a half-applied tick whose end state depends on how far it got.
-
-Silence is measured only from events that mean a tick **did** something. A tick that refuses to
-start still writes to the log, so counting those would let hours of failures look like health.
+(An earlier design held the *entire* tick after N hours of silence and waited for a manual
+`release`. It was removed in 2026-08 because it fired on ordinary operator pauses and laptop
+sleeps, not just real outages, blocking fresh activity for no benefit the 24h draft guard didn't
+already provide.)
 
 ---
 
@@ -268,7 +254,7 @@ start still writes to the log, so counting those would let hours of failures loo
 state/quests/active/<quest_id>/
 ├── context.md        why this exists, and the decision rules   (worker reads FIRST)
 ├── meta.json         status, priority, allow_send
-├── watch.json        the watermarks       ← triage.sh owns; a worker may only APPEND
+├── watch.json        the watermarks       ← tick.py owns; a worker may only APPEND
 └── timeline.ndjson   append-only log of every action taken
 ```
 
@@ -287,7 +273,6 @@ yaas-triage/
 │   ├── tick_state.py         config/loading (repo root, knobs, lag map, quests)
 │   ├── tick_check.py         the six-way per-watch verdict (classify)
 │   └── tick_dispatch.py      the dispatch gates (slack-need, budget/fanout/slice)
-├── triage.sh              the previous bash orchestrator, frozen as instant rollback
 ├── triage-loop.sh         the launchd wrapper that sleeps between ticks (runs tick.py)
 │
 ├── checkers/       "IS THERE ANYTHING NEW?"    one plugin per watch type
@@ -320,7 +305,6 @@ yaas-triage/
 ├── ops/            "KEEP IT ALIVE AND VISIBLE"
 │   ├── health-monitor.py         the dead-man switch, runs OUTSIDE triage
 │   ├── heartbeat-loop.sh         its own launchd job
-│   ├── catchup.py                the long-silence hold
 │   ├── doctor.sh                 is THIS MACHINE configured?
 │   ├── notify.py                 desktop notifications
 │   ├── rotate-logs.py            daily rotation of the append-only files
@@ -358,7 +342,6 @@ If the loop dies, the agent goes quiet and *looks* idle. So a separate launchd j
 | `tick_failures` | consecutive non-zero exits |
 | `checker_stuck` | a watch was promoted to `misconfig` |
 | `approval_stuck` | a reviewed draft is stuck mid-execution |
-| `catchup_awaiting_release` | held after a long silence, waiting on you |
 | `state_unreadable` | `last-run.json` missing or corrupt |
 
 The verdict goes to `state/health-status.json`, so the dashboard and `doctor.sh` show the same
@@ -381,7 +364,7 @@ answer. Notifications de-duplicate, so a persistent fault does not shout every f
               └─ tests/behaviour/   named by FAILURE CLASS, may span files
 
    31 goldens ── tests/differential/   a REAL tick against a throwaway repo,
-                     │                  run against BOTH triage.sh and tick.py
+                     │                  run against tick.py
                      └─ 9 mutations ── break the orchestrator on purpose,
                                        assert the goldens NOTICE
 ```
@@ -414,7 +397,6 @@ Worth knowing before trusting the system further than it has earned.
 | Evidence is Slack-and-channel only | email, Jira and GitHub acks are unverified. Absence of a warning does not mean everything was checked. |
 | `handled` is unverified | acking `handled` bypasses the evidence check entirely. |
 | Slack gating is by trigger, not by action | an email-triggered quest whose reply goes to Slack is still dispatched during an outage. The send fails, the item is acked `blocked`, so it costs an invocation rather than data. |
-| `triage.sh` is ~1,800 lines of shell | its internals are not unit-testable, only covered end to end. This is the argument for porting it. |
 | Prune rules have no golden | they delete logs, not watches, so a mistake costs history rather than tracking. |
 
 ---

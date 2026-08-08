@@ -17,7 +17,7 @@
 
 # init-yaas-v2-tracking.sh — wire up the .git-yaas-v2 second git-dir.
 #
-# Lets triage.sh (via sync-yaas-v2.sh) pull daily updates from the canonical
+# Lets the orchestrator (via sync-yaas-v2.sh) pull daily updates from the canonical
 # yaas-v2 template without touching the repo's main .git history. This is a
 # second GIT_DIR pointed at the SAME worktree (the repo root) — it never runs
 # `checkout` or `reset --hard`, so it never overwrites your working tree.

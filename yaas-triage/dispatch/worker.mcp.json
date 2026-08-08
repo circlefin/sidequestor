@@ -1,5 +1,5 @@
 {
-  "_comment": "Minimal MCP surface for the Mode A worker dispatch. Loaded via --mcp-config --strict-mcp-config in triage.sh. The worker also has WebFetch/WebSearch built-in tools for public URLs (Google Doc public-share links, web pages). For authenticated Google Workspace reads (private Docs, Drive), the worker shells out to the `gws` CLI via Bash — no GWS MCP needed. Coda and Atlassian are MCP because they need authenticated API access and there's no equivalent CLI.",
+  "_comment": "Minimal MCP surface for the Mode A worker dispatch. Loaded via --mcp-config --strict-mcp-config by the worker dispatch. The worker also has WebFetch/WebSearch built-in tools for public URLs (Google Doc public-share links, web pages). For authenticated Google Workspace reads (private Docs, Drive), the worker shells out to the `gws` CLI via Bash — no GWS MCP needed. Coda and Atlassian are MCP because they need authenticated API access and there's no equivalent CLI.",
   "mcpServers": {
     "slack": {
       "type": "http",

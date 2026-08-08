@@ -129,7 +129,7 @@ eq "an inner checkout resolves to itself" \
 
 echo
 echo "── ambient \$REPO_ROOT is IGNORED, deliberately ───────────────────────────"
-# triage.sh exports REPO_ROOT to its children. A stale value pointing at ANOTHER VALID
+# The orchestrator exports REPO_ROOT to its children. A stale value pointing at ANOTHER VALID
 # checkout would pass any marker check, so it cannot be told apart from a deliberate
 # redirection: honouring it silently sends writes to the wrong repo. Fixtures copy the
 # whole tree, so the walk-up already lands in the fixture and no override is needed.
@@ -176,26 +176,9 @@ done
   || bad "expected several inlined copies, found $COPIES"
 [ "$DIFFERENT" -eq 0 ] && ok "all copies identical" || bad "$DIFFERENT copy/copies drifted"
 
-echo
-echo "── the shell helper agrees with the Python one ───────────────────────────"
-# The bash _repo_root lives in triage.sh, retired after the tick.py cutover (the live
-# implementation is tick_state.py's _repo_root, checked in tick_state.test.sh). Only run this
-# cross-language agreement check where triage.sh is still on disk (the private rollback copy);
-# in a triage.sh-free checkout it is correctly skipped, not a failure.
-if [ -f "$SCRIPT_DIR/triage.sh" ]; then
-  SH=$(sed -n '/^_repo_root()/,/^}/p' "$SCRIPT_DIR/triage.sh")
-  if [ -z "$SH" ]; then
-    bad "no _repo_root() in triage.sh"
-  else
-    ok "extracted the shell helper from triage.sh"
-    RES=$( printf '%s\n' "$SH" > "$TMP/h.sh"
-           echo '_repo_root "$1"' >> "$TMP/h.sh"
-           unset REPO_ROOT; bash "$TMP/h.sh" "$FAKE/yaas-triage/ledger" )
-    eq "shell resolves the same root as Python" "$RES" "$FAKE"
-  fi
-else
-  ok "triage.sh retired; tick_state.py _repo_root is canonical (see tick_state.test.sh)"
-fi
+# The repo-root resolution now lives solely in tick_state.py's _repo_root (the orchestrator is
+# Python); the cross-language shell/Python agreement check was retired with the shell orchestrator.
+# tick_state.test.sh covers the canonical implementation directly.
 
 echo
 echo "────────────────────────────────────────────────────────────────────────────"

@@ -32,7 +32,7 @@ Output: count|preview   (preview = "KEY [status] — summary" of newest-updated
         0|              (nothing changed since the watermark)
         ratelimited|r   (transient Jira 429/5xx/timeout — triage SKIPS the tick
                          instead of dispatching; see the 2026-07-24 storm note
-                         in triage.sh check_quest)
+                         in the original shell orchestrator check_quest)
         error|reason    (hard failure — triage treats this as dirty/retry)
 
 Env:    JIRA_CALL   path to the REST bridge (falls back to ../jira-call.sh)

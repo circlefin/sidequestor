@@ -23,7 +23,7 @@ dispatch/spend-window.py, the Slack health gate is a live network probe, and the
 budget admission is genuinely stateful on runtime dispatch DURATIONS (TICK_SPENT only exists
 after each worker returns). None of that can honestly be made pure.
 
-Two pieces can, and they are the two that were inline in triage.sh and untested:
+Two pieces can, and they are the two that were inline in the original shell orchestrator and untested:
 
   rotate()        the fairness rotation. Which order to try the dirty targets in, so that a
                   dirty set permanently larger than the fan-out cap does not starve the

@@ -21,17 +21,17 @@ checkers/reactions.py — scan Slack for new :claude-intensifies:, :writing_hand
 processed-set state files. Writes state/triage/pending_reactions.json if anything is new.
 
 Unlike the per-entry checkers, this runs once globally (not per watch entry).
-Called directly by triage.sh after the per-quest checker pass.
+Called directly by the original shell orchestrator after the per-quest checker pass.
 
 Usage:
   python3 checkers/reactions.py <mcp_call> <cutoff_date> <repo_root> <pending_path>
 
   mcp_call     — path to mcp-call.sh
-  cutoff_date  — YYYY-MM-DD, 60 days ago (computed by triage.sh)
+  cutoff_date  — YYYY-MM-DD, 60 days ago (computed by the original shell orchestrator)
   repo_root    — absolute path to the repo root
   pending_path — path to write pending_reactions.json
 
-Exit code: always 0. Prints one line to stdout for triage.sh to parse:
+Exit code: always 0. Prints one line to stdout for the original shell orchestrator to parse:
   "<SGT_timestamp>  REACTIONS_DIRTY=1"  or  "...REACTIONS_DIRTY=0"
 Dirty emoji details go to stderr.
 """

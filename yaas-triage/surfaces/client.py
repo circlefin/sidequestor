@@ -228,7 +228,7 @@ def env_from_dotenv(name):
     """Read one var from the repo .env without sourcing the whole file.
 
 
-    triage.sh exports these before a headless dispatch, but an interactive call gets a
+    the original shell orchestrator exports these before a headless dispatch, but an interactive call gets a
     fresh shell that has not, which used to make a working setup look unconfigured.
     """
     val = os.environ.get(name)

@@ -32,7 +32,7 @@ Notes:
 - Slack/tool HEALTH is intentionally NOT derived here. It is unreliable from the
   stream (Cursor sends via a shell call to mcp-call.sh, which is invisible as an
   "MCP call"; Codex emits no server-status event). YaaS detects a Slack outage
-  with a pre-dispatch mcp-call.sh ping in triage.sh instead.
+  with a pre-dispatch mcp-call.sh ping in the orchestrator instead.
 """
 import sys
 import json

@@ -47,7 +47,7 @@ Output: count|preview   (preview = "#<num> [state] title" of most-recently
         0|              (nothing changed since the watermark)
         ratelimited|r   (transient gh/API failure — triage SKIPS the tick rather
                          than burning a dispatch; see the 2026-07-24 storm note
-                         in triage.sh check_quest)
+                         in the original shell orchestrator check_quest)
         error|reason    (hard failure — triage treats this as dirty/retry)
 
 Env:    GH_BIN   path to the gh CLI (default: resolved from PATH, then

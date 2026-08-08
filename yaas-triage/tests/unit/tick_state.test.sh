@@ -17,7 +17,7 @@
 
 # tick_state.test.sh — the config/loading foundation of the tick.py orchestrator.
 #
-# tick_state.py reproduces what triage.sh derives before it decides anything: repo root, paths,
+# tick_state.py reproduces what the original shell orchestrator derives before it decides anything: repo root, paths,
 # the numeric env knobs (with refuse-on-garbage validation), the per-type lag map, and the
 # sorted active-quest list. It never writes state, so it is safe to exercise against a fixture.
 # These cases pin the behaviours that matter: quests come back SORTED (the fairness rotation

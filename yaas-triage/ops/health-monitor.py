@@ -24,7 +24,7 @@ Twice now the whole system has been dead for hours while every surface said it w
 fine:
 
   * 2026-06-30 — a stray `.pth` crashed every tick for 6.5 hours. `triage-loop.sh`
-    swallows `triage.sh`'s exit code behind `|| true`, so launchd happily reported a
+    swallows the orchestrator's exit code behind `|| true`, so launchd happily reported a
     healthy long-running job the entire time.
   * 2026-06 — launchd's StartInterval delivery silently stopped firing after a macOS
     update. Same outcome: nothing looked wrong.
@@ -38,7 +38,7 @@ What it checks
 ──────────────
   triage_stalled     no tick has COMPLETED recently — the loop is dead or wedged
   tick_hung          a tick started and never finished (the .pth crash shape)
-  tick_failures      triage.sh has exited non-zero N times in a row
+  tick_failures      the orchestrator has exited non-zero N times in a row
   checker_stuck      a watch's checker has failed enough to be promoted to misconfig
   approval_stuck     an approval has sat in `executing` past any plausible run
   health_events      misconfigured watch / budget breach / saturated window / breaker
@@ -171,7 +171,7 @@ class Health:
             return
         if n >= FAIL_STREAK:
             self.flag("tick_failures", str(n),
-                      f"triage.sh has failed {n} ticks in a row",
+                      f"the orchestrator has failed {n} ticks in a row",
                       "triage-loop.sh discards exit codes, so this counter is the only "
                       "signal. Check logs/triage.err.log")
         elif n:
@@ -213,26 +213,6 @@ class Health:
                       "its execution lease has expired, so the send may or may not have "
                       f"landed and it needs reconciling rather than resending. ids: {ids[:120]}")
 
-    def check_catchup_hold(self):
-        """A catch-up hold is deliberate, but it must never be invisible.
-
-        While held, ticks complete normally and nothing is dirty, so every other condition
-        reads healthy — the agent would sit doing nothing for days and look fine. This is the
-        one condition that is not a fault: it is a request for a human decision, and it
-        escalates the longer it waits.
-        """
-        d = _read_json(self.state / "catchup.json", {}) or {}
-        if d.get("status") != "awaiting_release":
-            return
-        age = _age_min(d.get("armed_at"))
-        waited = f"{age/60:.1f}h" if age else "just now"
-        self.flag("catchup_awaiting_release", d.get("armed_at", "?"),
-                  f"catch-up hold waiting for release ({waited})",
-                  f"triage was silent for {d.get('gap_hours', '?')}h and is holding: every "
-                  "watch is checked each tick but nothing is sent and no watermark moves. "
-                  "Review state/catchup-digest.md, then run: "
-                  "python3 yaas-triage/ops/catchup.py release")
-
     def check_recent_events(self):
         path = self.state / "run-log.ndjson"
         if not path.exists():
@@ -270,7 +250,6 @@ class Health:
         self.check_tick_failures()
         self.check_checker_health()
         self.check_stuck_approvals()
-        self.check_catchup_hold()
         self.check_recent_events()
         return self
 

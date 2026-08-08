@@ -20,11 +20,11 @@ commit.py — the commit predicate, as a pure function.
 
 This is the single most safety-critical decision in the system: which watermarks move, and
 to what value. Get it wrong in the advancing direction and a message is buried with no error
-and no trace. It used to live as inline `jq` inside triage.sh's commit_quest, where it could
+and no trace. It used to live as inline `jq` inside the original shell orchestrator's commit_quest, where it could
 not be unit-tested and where two silent-loss bugs hid long enough to reach production.
 
 `decide()` takes a snapshot and returns a decision. It does NO I/O: it does not read
-watch.json, does not write watermarks, does not log. triage.sh still owns the actual write
+watch.json, does not write watermarks, does not log. the original shell orchestrator still owns the actual write
 (_advance_watches) and the logging, so the golden-observable behaviour is unchanged. The only
 thing that moved here is the *reasoning*, so it can be tested against every case directly.
 
@@ -37,11 +37,11 @@ Plus the observe-only evidence veto: a `nothing_to_do` ack on a Slack watch whos
 worker's event stream does not show it reading is always flagged, and is additionally dropped
 from the committed set when `enforce` is true.
 
-The "advance_to" a committed watch carries may be null; triage.sh resolves that to
+The "advance_to" a committed watch carries may be null; the original shell orchestrator resolves that to
 "now minus the type's lag" at write time. That fallback deliberately stays in the shell so
 this function has no clock dependency and its output is exactly comparable across runs.
 
-Usage (from triage.sh, one call replacing several jq expressions):
+Usage (from the original shell orchestrator, one call replacing several jq expressions):
     decide '<snapshot json>'
 prints:
     {"moves":[{"watch_id","advance_to"}], "committed_ids":[...],

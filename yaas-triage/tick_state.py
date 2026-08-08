@@ -19,7 +19,7 @@
 tick_state.py — the config and loading foundation of the tick.py orchestrator.
 
 This is the first module of the real orchestrator rewrite: everything the tick reads before it
-decides anything. It reproduces, faithfully, what triage.sh derives in its first ~90 lines plus
+decides anything. It reproduces, faithfully, what the original shell orchestrator derives in its first ~90 lines plus
 its "Per-checker watermark lag map" and "Gather quests" sections — repo root, paths, the numeric
 env knobs (with the same refuse-on-garbage validation), the per-type watermark lag map, and the
 list of active quests.
@@ -61,7 +61,7 @@ def _repo_root(start):
 
 
 # The numeric knobs that gate spend and data loss, with their defaults. A malformed value here
-# must FAIL the tick loudly, never silently read as "no cap" — the same rule triage.sh enforces,
+# must FAIL the tick loudly, never silently read as "no cap" — the same rule the original shell orchestrator enforces,
 # because a ceiling that quietly disables itself is worse than no ceiling.
 NUMERIC_KNOBS = {
     "YAAS_TICK_DISPATCH_BUDGET": 1800,
@@ -76,7 +76,6 @@ NUMERIC_KNOBS = {
     "YAAS_TRIAGE_MAX_PARALLEL": 8,
     "YAAS_MIN_DISPATCH_SLICE": 60,
     "YAAS_STALE_REPLY_HOURS": 24,
-    "YAAS_CATCHUP_AFTER_HOURS": 6,
 }
 
 
@@ -118,7 +117,7 @@ def _load_env_file(repo_root, environ):
 def validate_knobs(env):
     """Raise BadEnvKnob if any gate knob (or a YAAS_MAX_SPEND_* window) is set but non-numeric.
 
-    Mirrors triage.sh: `.` and `1.2.3` and `twenty` are all rejected; empty means "use the
+    Mirrors the original shell orchestrator: `.` and `1.2.3` and `twenty` are all rejected; empty means "use the
     default" and is fine. The dangerous direction is a ceiling silently reading as zero/absent,
     so this refuses to run rather than proceed with a disabled cap.
     """

@@ -29,8 +29,7 @@
 # this file: three mutations were no-ops against an older copy of the predicate and all
 # three appeared to be caught by a harness that had never seen them.)
 #
-#   ./mutations.sh              run every mutation against triage.sh
-#   ./mutations.sh tick.py      run them against the ported orchestrator instead
+#   ./mutations.sh              run every mutation against tick.py (the orchestrator)
 #
 # The live tree is NEVER modified: mutations are applied to a throwaway copy, so this is
 # safe to run alongside other suites and safe to kill at any moment.
@@ -41,7 +40,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 TRIAGE="$(cd "$HERE/../.." && pwd)"
 ORCH="${1:-tick.py}"
 
-# Work on a COPY of the whole tree. Mutating the live triage.sh meant any concurrently
+# Work on a COPY of the whole tree. Mutating the live orchestrator meant any concurrently
 # running suite tested deliberately-broken code, and a SIGKILL mid-run would leave the
 # real orchestrator mutated. Both are unacceptable for a tool whose whole job is to
 # break things. YAAS_TRIAGE_SRC points the fixture builder at the copy.
@@ -66,7 +65,7 @@ PASS=0; FAIL=0
 run_mutation() {
   # name  old  new  expect  [file]
   # `file` is a path relative to the copied source tree; defaults to the orchestrator.
-  # It exists because the commit predicate now lives in ledger/commit.py, not triage.sh:
+  # It exists because the commit predicate lives in ledger/commit.py, not the orchestrator file:
   # a mutation must be able to break the code where the logic actually is.
   local name="$1" old="$2" new="$3" expect="$4" rel="${5:-$ORCH}"
   local mfile="$SRC/$rel"
@@ -109,7 +108,7 @@ printf '\033[1mmutation testing: %s\033[0m\n\n' "$ORCH"
 #    to committing on exit code alone, which is the bug the whole ledger exists to kill.
 #    Note a ZERO-ack dispatch cannot catch this: it takes a separate gate_dispatch_unacked
 #    path and never reaches the predicate. It needs a partial ack.
-# The commit predicate moved from inline jq in triage.sh into ledger/commit.py, so these two
+# The commit predicate moved from inline jq in the original shell orchestrator into ledger/commit.py, so these two
 # mutations target that file now. This is the whole point of the extraction: the most
 # safety-critical logic is in one testable place. If it ever moves again, the STALE guard
 # fails loudly rather than testing nothing.
@@ -128,44 +127,24 @@ run_mutation "ignore the saturation flag" \
   "ledger/commit.py"
 
 # 3. When a checker names the boundary it actually covered, using "now" instead skips the
-#    tail of a forward slice. The advance-to-boundary logic lives in the orchestrator itself
-#    (jq in triage.sh, advance_watches() in tick.py), so the target text is ORCH-specific —
-#    otherwise the mutation is a silent no-op against the port and tests nothing.
-case "$ORCH" in
-  *.py) run_mutation "ignore the checker advance_to boundary" \
-          'if adv is not None and str(adv) != "":' 'if False:' \
-          "advance_to_exact_value" ;;
-  *)    run_mutation "ignore the checker advance_to boundary" \
-          'if ($m.advance_to // "") != ""' 'if false' \
-          "advance_to_exact_value" ;;
-esac
+#    tail of a forward slice. The advance-to-boundary logic lives in tick.py's advance_watches().
+run_mutation "ignore the checker advance_to boundary" \
+  'if adv is not None and str(adv) != "":' 'if False:' \
+  "advance_to_exact_value"
 
 # 4. Dispatching into a Slack outage burns an invocation and can look like "no activity".
-#    The health gate is also orchestrator-native (the mcp-call in triage.sh, slack_health_ok()
-#    in tick.py).
-case "$ORCH" in
-  *.py) run_mutation "Slack health gate always passes" \
-          '    return cp.returncode == 0' '    return True' \
-          "slack_down_gates_dispatch" ;;
-  *)    run_mutation "Slack health gate always passes" \
-          '  "$MCP_CALL" slack_search_public_and_private' \
-          '  true "$MCP_CALL" slack_search_public_and_private' \
-          "slack_down_gates_dispatch" ;;
-esac
+#    The health gate is tick.py's slack_health_ok().
+run_mutation "Slack health gate always passes" \
+  '    return cp.returncode == 0' '    return True' \
+  "slack_down_gates_dispatch"
 
 # 4b. A Slack rate-limit must route as its own outcome (held + gate_watch_ratelimited), NOT
 #     silently fall through — the 2026-07-24 storm came from ratelimited being mishandled. The
-#     routing lives in tick_check.classify() for tick.py and in triage.sh's analyze for the shell.
-case "$ORCH" in
-  *.py) run_mutation "ratelimited stops being handled as ratelimited" \
-          '    if outcome == "ratelimited":' '    if False and outcome == "ratelimited":' \
-          "watch_ratelimited_surfaces" \
-          "tick_check.py" ;;
-  *)    run_mutation "ratelimited stops being handled as ratelimited" \
-          '    if [ "$new_count" = "ratelimited" ]; then' \
-          '    if [ "$new_count" = "NEVERMATCH" ]; then' \
-          "watch_ratelimited_surfaces" ;;
-esac
+#     routing lives in tick_check.classify().
+run_mutation "ratelimited stops being handled as ratelimited" \
+  '    if outcome == "ratelimited":' '    if False and outcome == "ratelimited":' \
+  "watch_ratelimited_surfaces" \
+  "tick_check.py"
 
 # ── The rules C1a added coverage for ─────────────────────────────────────────
 # These DELETE watch entries or decide dispatch ORDER. Before C1a no golden touched them at

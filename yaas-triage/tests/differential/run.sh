@@ -18,7 +18,7 @@
 # run.sh — the regression net for the triage port.
 #
 # Every scenario is run through an orchestrator end to end, and the resulting DECISIONS
-# are compared against a golden recorded from triage.sh. The golden is the contract: if
+# are compared against a golden recorded from the original shell orchestrator. The golden is the contract: if
 # tick.py produces the same decisions on every scenario, the port is behaviour-preserving
 # by construction rather than by review.
 #
@@ -76,7 +76,7 @@ for sc in "$SCENARIOS"/*.json; do
   # what the stubs read; YAAS_TRIAGE_DIR is how the stub agent finds the real
   # ack-watch.py. Nothing else about the environment is special, which is the point:
   # this is the real tick, not a simulation of one. The runner is chosen by extension so the
-  # rewritten Python orchestrator (tick.py) is held to the identical goldens as triage.sh.
+  # rewritten Python orchestrator (tick.py) is held to the identical goldens the original shell orchestrator produced.
   case "$ORCH" in *.py) RUNNER=python3 ;; *) RUNNER=bash ;; esac
   ( cd "$fixture" \
       && YAAS_SCENARIO="$fixture/scenario.json" \

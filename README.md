@@ -226,7 +226,6 @@ DRY_RUN=1 VERBOSE=1 python3 yaas-triage/tick.py   # look, don't touch
 | `gate_target_breaker_open` | one quest is hogging the hour |
 | `gate_watch_misconfigured` | a watch has stopped being checked and needs you |
 | `gate_watch_ratelimited` | Slack throttled a watch this tick; held, retries next tick (shows on the dashboard as "rate limited") |
-| `gate_catchup_hold` | it's been quiet a long time — see below |
 | `gate_bad_env_knob` | a value in `.env` isn't a number, so a ceiling would silently be no ceiling |
 
 **One gotcha:** editing `triage-loop.sh` or `dashboard-server.py` does nothing until that job
@@ -242,28 +241,17 @@ launchctl kickstart -k "gui/$(id -u)/com.yaas.triage"
 
 ## Going away for a while
 
-Turn it off, take a week off, come back. Nothing is lost — every watch holds its place.
+Turn it off, take a week off, come back. Nothing is lost — every watch holds its place, and
+when it resumes it picks up from exactly where each watermark paused.
 
-But a week of backlog is a trap: the safe way to read a backlog is oldest-first, which is
-exactly the wrong way to *answer* one. So when it notices it's been quiet for more than six
-hours, it stops itself:
+The trap in a backlog is staleness: a week-old question shouldn't be answered as though it just
+arrived. That's handled at the one place it matters, the send path: **any reply to a conversation
+that has been quiet for more than 24 hours is drafted to your approval queue instead of sent**
+(`YAAS_STALE_REPLY_HOURS`, default 24). So a stale answer is always a human decision, never an
+auto-send — while fresh activity keeps flowing normally, with no whole-system pause to release.
 
-```
-   long silence
-        │
-        ▼
-   reads everything · writes you a digest · sends nothing · commits nothing
-        │
-   you read state/catchup-digest.md
-        │
-   python3 yaas-triage/ops/catchup.py release
-        ▼
-   back to normal, from exactly where it paused
-```
-
-And independently of that, any reply to a conversation that has been quiet for more than 24
-hours goes to your approval queue instead of being sent. Your agent will not answer a week-old
-question as though it just arrived.
+(There is also a manual `YAAS_FORCE_DRAFT=1` switch that drafts *every* reply for review,
+regardless of age, when you want a fully hands-on stretch.)
 
 ---
 
@@ -321,7 +309,6 @@ Worth reading before you hand it anything sensitive.
 yaas-triage/
 ├── tick.py            one tick (the live orchestrator)
 ├── tick_state.py      config/loading   tick_check.py  the six-way verdict   tick_dispatch.py  the gates
-├── triage.sh          the previous bash orchestrator, kept as instant rollback
 ├── checkers/          "is there anything new?"     one plugin per watch type
 ├── dispatch/          "run a worker"
 ├── ledger/            "owns a state file, atomically"

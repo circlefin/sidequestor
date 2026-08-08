@@ -38,8 +38,7 @@ exempt_reason() {
     dispatch/worker.mcp.json)   echo "config, not code" ;;
     checkers/*.lag)             echo "config: one integer" ;;
     ops/dashboard-start.sh)     echo "fifteen lines that open a browser" ;;
-    ops/catchup.py)             echo "covered via behaviour/catchup-hold" ;;
-    triage-loop.sh)             echo "a sleep loop around triage.sh; launchd owns it" ;;
+    triage-loop.sh)             echo "a sleep loop around tick.py; launchd owns it" ;;
     ops/heartbeat-loop.sh)      echo "a sleep loop around health-monitor.py; launchd owns it" ;;
     dispatch/manual-dispatch.sh) echo "covered via unit/dispatch/run-agent (shared pipeline)" ;;
     ops/sync-yaas-v2.sh)        echo "mirrors the public repo; exercised by using it" ;;
@@ -62,8 +61,7 @@ exempt_reason() {
     checkers/slack_mention.py)  echo "contract-checked via behaviour/checker-contract" ;;
     surfaces/mcp-call.sh|surfaces/jira-call.sh|surfaces/slack-react.sh)
                                 echo "11-line shim; covered via unit/surfaces/client" ;;
-    tick.py)                    echo "the orchestrator; covered end-to-end by the 31 differential goldens + 9 mutations (differential/run.sh check tick.py), which run-all.sh now runs" ;;
-    triage.sh)                  echo "frozen bash predecessor kept as rollback; same 31 goldens (differential/run.sh check)" ;;
+    tick.py)                    echo "the orchestrator; covered end-to-end by the differential goldens + mutations (differential/run.sh check tick.py), which run-all.sh runs" ;;
     *) return 1 ;;
   esac
 }

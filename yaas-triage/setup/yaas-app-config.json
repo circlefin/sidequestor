@@ -20,5 +20,5 @@
     "chat:write",
     "reactions:read"
   ],
-  "_reactions_read_note": "reactions:read may require workspace admin approval in some orgs. If approval is required, request it before running setup.sh; or proceed without — the reaction-monitoring path in triage.sh will return zero results until the scope is granted, then each user re-runs setup.sh to re-authorize."
+  "_reactions_read_note": "reactions:read may require workspace admin approval in some orgs. If approval is required, request it before running setup.sh; or proceed without — the reaction-monitoring path in the orchestrator will return zero results until the scope is granted, then each user re-runs setup.sh to re-authorize."
 }

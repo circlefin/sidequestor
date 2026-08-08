@@ -16,24 +16,25 @@
 # limitations under the License.
 
 """
-tick.py — the yaas idle-triage orchestrator (v3), a faithful port of triage.sh.
+tick.py — the yaas idle-triage orchestrator (v3), a faithful port of the original shell orchestrator.
 
-This is the coordinator that triage.sh was: it loops every active quest's watch.json, runs the
+This is the coordinator that the original shell orchestrator was: it loops every active quest's watch.json, runs the
 per-type checkers, decides per watch whether the watermark holds or advances, and — when there
 is genuinely new activity — dispatches one paid worker per dirty target and commits only the
-watermarks the worker's acks earned. Same six gates (lock, bad-env, catchup, idle, budget,
-slack), same evidence-based commit, same fairness rotation.
+watermarks the worker's acks earned. Same gates (lock, bad-env, idle, budget, slack), same
+evidence-based commit, same fairness rotation. (Stale replies are handled by slack-send.py's
+always-on 24h draft guard, not by a whole-tick hold.)
 
 What changed is HOW the decisions are made, not WHICH: the risky pure logic now lives in tested
 modules (tick_state / tick_check / tick_dispatch, and the pre-existing ledger/dispatch helpers),
 and this file is the sequencer that calls them and does the I/O they deliberately avoid — the
-watch.json writes, the run-log events, the subprocess fan-out. The differential harness holds
-this file to the exact same 30 goldens as triage.sh (`run.sh check tick.py`), so the port is
-behaviour-preserving by construction: same watch movements, same run-log event sequence, same
-ack manifests, same exit code.
+watch.json writes, the run-log events, the subprocess fan-out. The differential harness held
+this file to the same goldens the original shell orchestrator produced (`run.sh check tick.py`),
+so the port is behaviour-preserving by construction: same watch movements, same run-log event
+sequence, same ack manifests, same exit code.
 
-It is NOT yet the live orchestrator. triage-loop.sh still runs triage.sh; the cutover is a
-separate, supervised step after a shadow period.
+This is the live orchestrator — `triage-loop.sh` runs it. The port is complete and validated;
+the original shell orchestrator has been retired to archive/.
 """
 
 import json
@@ -60,7 +61,7 @@ def _now_utc():
 
 class Tick:
     """One triage tick. Holds the derived config + clock and the accumulated check results,
-    and owns every side effect (run-log, watch.json, subprocess). Mirrors triage.sh's globals
+    and owns every side effect (run-log, watch.json, subprocess). Mirrors the original shell orchestrator's globals
     as instance attributes so the control flow reads the same top to bottom."""
 
     def __init__(self):
@@ -80,7 +81,7 @@ class Tick:
         self.approvals_file = r / "state" / "pending-approvals.json"
         self.lag_map = self.cfg.lag_map
         # cfg.env is os.environ with REPO_ROOT/.env merged in (real env wins), exactly what
-        # triage.sh gets from `set -a; source .env`. Subprocesses inherit it, and the agent
+        # the original shell orchestrator gets from `set -a; source .env`. Subprocesses inherit it, and the agent
         # backend + knobs are read from it — NOT bare os.environ, which misses .env-only vars
         # like YAAS_AGENT (the fixture sets it to "stub"; the shell honours that, so must we).
         self.env = dict(self.cfg.env)
@@ -95,7 +96,7 @@ class Tick:
         self.worker_timeout = int(self.env.get("YAAS_WORKER_TIMEOUT", "1800") or "1800")
         self.now_utc = _now_utc()
         self.now_ts = time.time()
-        # subprocess env: mirror the exports triage.sh makes.
+        # subprocess env: mirror the exports the original shell orchestrator makes.
         self.env["MCP_CALL"] = str(self.script_dir / "surfaces" / "mcp-call.sh")
         self.env.setdefault("YAAS_AGENT", self.agent)
         self.mcp_call = self.env["MCP_CALL"]
@@ -137,7 +138,7 @@ class Tick:
 
     def event(self, obj):
         """Append one run-log event. `ts` is stamped here so callers pass only the payload.
-        Compact separators to match triage.sh's `jq -c`/`echo` output, so the run-log stays a
+        Compact separators to match the original shell orchestrator's `jq -c`/`echo` output, so the run-log stays a
         single uniform format and grep-based consumers keep working."""
         rec = {"ts": self.now_utc}
         rec.update(obj)
@@ -189,7 +190,7 @@ class Tick:
 # ── The single place a watermark ever moves ──────────────────────────────────
 # Both the clean path and the post-dispatch commit call this. One writer, one rule: use the
 # checker's own advance_to when it gave one, else advance to now minus the type's lag. Mirrors
-# triage.sh _advance_watches (append-only to the watermark field; never touches other fields).
+# the original shell orchestrator _advance_watches (append-only to the watermark field; never touches other fields).
 def advance_watches(t, qid, moves):
     """moves: list of {watch_id, advance_to}. Returns True on success (or nothing to do)."""
     watch = t.quests_dir / qid / "watch.json"
@@ -221,7 +222,7 @@ def advance_watches(t, qid, moves):
 
 
 # ── Per-quest check ───────────────────────────────────────────────────────────
-# Ports triage.sh check_quest: run each watch's checker (local watches before slack_ ones so a
+# Ports the original shell orchestrator check_quest: run each watch's checker (local watches before slack_ ones so a
 # rate-limit skip can't shadow a local dirty signal), turn each result into a verdict via the
 # pure tick_check.classify(), and layer the side effects classify() deliberately omits: persist
 # checker-health on error/recovery, and STOP the quest's remaining watches after a ratelimit.
@@ -319,7 +320,7 @@ def check_quest(t, qid):
             break  # a rate-limit stops further slack calls in this quest
         if v == tick_check.HOLD:
             # complete=False so the watches_truncated counter (which keys off complete is False)
-            # counts held-undrained windows, matching triage.sh — a hold is by definition an
+            # counts held-undrained windows, matching the original shell orchestrator — a hold is by definition an
             # undrained window.
             rows.append({"qid": qid, "status": "hold", "watch_id": wid,
                               "type": wtype, "reason": reason, "complete": False})
@@ -388,16 +389,6 @@ def _parse_checker(raw):
 
 def run_tick(t):
     """The whole tick after config is loaded. Returns the process exit code."""
-    # ── Catch-up detection BEFORE this tick writes anything to the run log ──────
-    catchup = {}
-    cp = t.run(t.py(t.helper("ops", "catchup.py"), "detect"))
-    if cp.returncode == 0 and cp.stdout.strip():
-        try:
-            catchup = json.loads(cp.stdout)
-        except ValueError:
-            catchup = {}
-    catchup_armed = bool(catchup.get("armed"))
-
     # tick start stamp (health-monitor watches started-vs-completed)
     t._bump_state(tick_started_utc=t.now_utc)
 
@@ -467,20 +458,6 @@ def run_tick(t):
     if t.pending_reactions.exists():
         t.reactions_dirty = True
         t.log(f"DIRTY: reactions — pending in {t.pending_reactions}")
-
-    # ── Catch-up hold: after a long silence, read everything before answering ────
-    if catchup_armed:
-        gap = catchup.get("gap_hours", "?")
-        dirty_digest = [{"quest_id": r["qid"], "type": r.get("type", ""),
-                         "detail": r.get("reason", "")}
-                        for r in t.results if r["status"] == "dirty"]
-        t.run(t.py(t.helper("ops", "catchup.py"), "digest",
-                   json.dumps({"dirty": dirty_digest, "quests_checked": quest_count})))
-        t.event({"event": "gate_catchup_hold", "gap_hours": str(gap)})
-        t.log(f"CATCHUP HOLD — triage was silent for {gap}h. Every watch was checked; "
-              "nothing sent, no watermark moved.")
-        t.slog(f"Run OK — catch-up hold after {gap}h silence. Nothing sent. Release when ready.")
-        return 0
 
     # ── Advance clean watch watermarks ──────────────────────────────────────────
     clean_by_quest = {}
@@ -557,7 +534,7 @@ def run_tick(t):
 def analyze(t):
     """Fold the per-watch rows into dirty/clean/skipped sets + the dirty/clean watch records,
     emitting the same run-log events (gate_watch_backlog, gate_watch_misconfigured) as the shell.
-    Mirrors triage.sh's analyze while-loop."""
+    Mirrors the original shell orchestrator's analyze while-loop."""
     for r in t.results:
         status, qid = r["status"], r["qid"]
         if status == "ok":
@@ -654,7 +631,7 @@ def housekeep(t, quest_dirs):
 
 
 def _prune_reaction_state(t):
-    """Cap each reaction state file to its newest 1000 timestamps. Mirrors triage.sh: without
+    """Cap each reaction state file to its newest 1000 timestamps. Mirrors the original shell orchestrator: without
     this the replied/saved arrays grow unbounded and every reaction sweep pays to read them."""
     for name in ("claude_intensifies_replied.json", "writing_hand_replied.json",
                  "floppy_disk_saved.json", "incoming_envelope_adopted.json"):
@@ -678,7 +655,7 @@ def _prune_reaction_state(t):
 
 def _prune_worker_logs(t):
     """Delete per-dispatch worker-*.{log,ndjson} older than YAAS_LOG_RETAIN_DAYS (default 14;
-    0 disables). Mirrors triage.sh; rotate-logs.py handles triage.log, not these."""
+    0 disables). Mirrors the original shell orchestrator; rotate-logs.py handles triage.log, not these."""
     try:
         days = int(t.env.get("YAAS_LOG_RETAIN_DAYS", "14") or "14")
     except ValueError:
@@ -734,8 +711,8 @@ _RUN_DISCIPLINE = ("watch.json is not editable: append with yaas-triage/ledger/a
 def dispatch_loop(t, dispatch_targets, targets_json):
     """The per-target dispatch: emit the plan, rotate for fairness, then for each target apply
     the fanout/budget defer and per-target breaker, dispatch one worker, and commit. Mirrors
-    triage.sh's dispatch section; returns the worst non-zero exit as the tick's code."""
-    # Match triage.sh's `cd "$REPO_ROOT"` before dispatching, so the worker subprocess (and any
+    the original shell orchestrator's dispatch section; returns the worst non-zero exit as the tick's code."""
+    # Match the original shell orchestrator's `cd "$REPO_ROOT"` before dispatching, so the worker subprocess (and any
     # helper it shells out to) runs with the repo as cwd — some workers/helpers resolve state
     # paths relative to it. Everything tick.py itself touches is an absolute path, so this is
     # safe; it only fixes the child processes' working directory.
@@ -843,7 +820,7 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
         t.log(f"DISPATCH SKIPPED: {target} — no dispatchable items in manifest")
         t.dispatch_exit = 8
         return
-    # Compact separators to match triage.sh's `jq -c` output — the manifest JSON is embedded in
+    # Compact separators to match the original shell orchestrator's `jq -c` output — the manifest JSON is embedded in
     # the worker prompt verbatim, and consumers (and the worker's own eyes) expect the compact
     # {"item_id":"..."} form, not json.dumps's spaced default.
     items_json = json.dumps(items, separators=(",", ":"))
@@ -941,7 +918,7 @@ def _slack_init_status(ndjson_path):
 
 def _record_progress(t, scope, committed_ids):
     """Bump the no-progress counter for every manifest item NOT in committed_ids; clear it for
-    those that were. Mirrors triage.sh _record_progress."""
+    those that were. Mirrors the original shell orchestrator _record_progress."""
     manifest_path = t.manifest_dir / f"dispatch-{t.dispatch_run_id}.json"
     counts = t._read_json(t.unacked_file, {}) or {}
     if not isinstance(counts, dict):
@@ -981,7 +958,7 @@ def _record_progress(t, scope, committed_ids):
 
 import re as _re
 
-# The slack-tooling-outage recovery matcher, mirroring triage.sh's jq in mark_recovered_if_blocked.
+# The slack-tooling-outage recovery matcher, mirroring the original shell orchestrator's jq in mark_recovered_if_blocked.
 _SLACK_TOOL = _re.compile(r"slack[_ *-]+(mcp|tools?)")
 _OUTAGE = _re.compile(r"unavailable|outage|not (exposed|registered|authenticated|connected)|"
                       r"absent|no[ -]such[ -]tool|protocol|malformed|failed to connect|"
@@ -991,7 +968,7 @@ _OUTAGE = _re.compile(r"unavailable|outage|not (exposed|registered|authenticated
 def quest_has_recovery_evidence(t, qid, source):
     """True iff this tick saw all of the quest's `source` watches read cleanly (a source_recovered
     row) AND nothing unsafe (skip/error/misconfig) for the quest — the same awk over the results
-    that triage.sh runs. Guards against clearing a blocker on a half-healthy tick."""
+    that the original shell orchestrator runs. Guards against clearing a blocker on a half-healthy tick."""
     recovered = any(r["qid"] == qid and r["status"] == "source_recovered" and r.get("type") == source
                     for r in t.results)
     unsafe = any(r["qid"] == qid and r["status"] in ("skip", "error", "misconfig")
@@ -1002,7 +979,7 @@ def quest_has_recovery_evidence(t, qid, source):
 def mark_recovered_if_blocked(t, qid, source, note, run_start_utc):
     """If the quest's last timeline event is a `blocked` from BEFORE this dispatch, and it is a
     Slack-tooling outage that the worker's successful Slack read now clears, append a recovery
-    `note` so the dashboard blocker lifts. Faithful port of triage.sh; fails closed on anything
+    `note` so the dashboard blocker lifts. Faithful port of the original shell orchestrator; fails closed on anything
     ambiguous (missing/malformed ts, non-slack source, business-dependency blockers)."""
     timeline = t.quests_dir / qid / "timeline.ndjson"
     if not timeline.exists():
@@ -1132,7 +1109,7 @@ def commit_quest(t, qid, dirty_watches_json):
     t.event({"event": "gate_dispatch_success", "targets": [qid], "acked": len(moves)})
 
     # If the worker read Slack cleanly on a quest that was blocked by a Slack-tooling outage,
-    # clear the dashboard blocker with a recovery note (matches triage.sh).
+    # clear the dashboard blocker with a recovery note (matches the original shell orchestrator).
     if t.dispatch_slack_read_ok == 1 and quest_has_recovery_evidence(t, qid, "slack"):
         mark_recovered_if_blocked(
             t, qid, "slack",
@@ -1258,7 +1235,7 @@ def main():
     # dispatch can take minutes, so two ticks could race watch.json / the run log. Take
     # an exclusive non-blocking flock; if another tick holds it, skip this one (exit 0).
     # The OS releases the lock when this process exits, so no cleanup is needed. Mirrors
-    # triage.sh's flock — NOT covered by the differential harness (it runs a single tick),
+    # the original shell orchestrator's flock — NOT covered by the differential harness (it runs a single tick),
     # so it lives here in the sequencer, not in a golden.
     import fcntl
     lockfile = t.log_dir / "triage.lock"
@@ -1281,7 +1258,7 @@ def main():
         pass
 
     # _on_exit in a finally so log rotation / notify / v2-sync (and the completion stamp) run on
-    # ANY exit, including an unhandled exception mid-tick — matching triage.sh's `trap _on_exit
+    # ANY exit, including an unhandled exception mid-tick — matching the original shell orchestrator's `trap _on_exit
     # EXIT`. Only a SIGKILL/hang skips it, which is exactly the "started but never completed"
     # state health-monitor is built to catch.
     try:
@@ -1291,7 +1268,7 @@ def main():
 
 
 def _on_exit(t):
-    """Post-run hook — mirrors triage.sh _on_exit. Stamps completion, rotates logs, notifies,
+    """Post-run hook — mirrors the original shell orchestrator _on_exit. Stamps completion, rotates logs, notifies,
     syncs. All best-effort; a failure here never changes the tick's verdict."""
     t._bump_state(last_triage_completed_utc=_now_utc())
     for argv in (t.py(t.helper("ops", "rotate-logs.py")),

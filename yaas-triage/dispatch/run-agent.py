@@ -18,7 +18,7 @@
 """
 run-agent.py — run ONE headless agent invocation and return its exit code.
 
-This is the pipeline that triage.sh and manual-dispatch.sh each used to implement
+This is the pipeline that the original shell orchestrator and manual-dispatch.sh each used to implement
 separately: launch dispatch-agent.sh, tee the raw event stream to an ndjson file, pipe
 it through format-stream.py into a human transcript, symlink worker-latest.*, and kill
 the whole process tree if it runs past its timeout. Two copies meant a fix to the

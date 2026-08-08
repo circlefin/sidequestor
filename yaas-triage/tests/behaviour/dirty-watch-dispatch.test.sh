@@ -32,7 +32,7 @@ CONTRACT_QUEST="$ROOT/state/quests/active/quest-contract"
 
 mkdir -p "$TRIAGE/checkers" "$QUEST" "$BROKEN_QUEST" "$CLEAN_QUEST" "$BUSINESS_QUEST" "$ERROR_QUEST" "$LOCAL_QUEST" "$RECOVERY_QUEST" "$CURRENT_BLOCK_QUEST" "$MISCONFIG_QUEST" "$FAIL_QUEST" "$CONTRACT_QUEST" "$ROOT/state/triage" "$ROOT/logs"
 # The fixture mirrors the real layout. Flattening was a small lie about the tree before
-# the reorganisation; now it is a broken one, since triage.sh looks for its collaborators
+# the reorganisation; now it is a broken one, since the original shell orchestrator looks for its collaborators
 # in ledger/ and dispatch/.
 mkdir -p "$TRIAGE/ledger" "$TRIAGE/dispatch" "$TRIAGE/ops"
 cp "$SCRIPT_DIR/tick.py" "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR/tick_check.py" \
@@ -234,7 +234,7 @@ import sys
 for _ in sys.stdin:
     pass
 PY
-# Each stub must land where triage.sh looks for it, or triage falls through to the real
+# Each stub must land where the original shell orchestrator looks for it, or triage falls through to the real
 # helper (or to nothing). mcp-call.sh especially: if the health ping cannot find it, the
 # tick reports SLACK DOWN and skips dispatch, and every dispatch assertion below fails
 # for a reason that has nothing to do with what is being tested.

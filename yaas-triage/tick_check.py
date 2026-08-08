@@ -18,7 +18,7 @@
 """
 tick_check.py — turn a checker's raw result into a per-watch VERDICT.
 
-This is the analyze phase of triage.sh, and its single subtle decision: given what a checker
+This is the analyze phase of the original shell orchestrator, and its single subtle decision: given what a checker
 reported plus the watch's own history (is it in backoff? has it been dispatched repeatedly with
 no progress? is its watch_id even valid?), which of the six verdicts does this watch get —
 

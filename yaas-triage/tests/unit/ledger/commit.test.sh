@@ -18,7 +18,7 @@
 # commit.test.sh — the commit predicate, tested in isolation.
 #
 # This is the single most safety-critical decision in the system: which watermarks move.
-# It used to be inline jq inside triage.sh where it could not be tested and where two
+# It used to be inline jq inside the original shell orchestrator where it could not be tested and where two
 # silent-loss bugs hid until production. commit.py extracts it as a pure function; this
 # proves every branch of it directly, which the differential goldens can only do indirectly.
 #

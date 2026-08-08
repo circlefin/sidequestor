@@ -21,7 +21,7 @@
 # incident repeating, and until now nothing tested it. Two layers here:
 #
 #   1. spend-window.py's window arithmetic and cap precedence, against a seeded log.
-#   2. triage.sh end-to-end: a breach must withhold the dispatch, log the event, and
+#   2. the original shell orchestrator end-to-end: a breach must withhold the dispatch, log the event, and
 #      leave the dirty quest's watermark UNTOUCHED so the work re-surfaces. A gate
 #      that dropped work in order to save money would be worse than no gate.
 
@@ -83,11 +83,11 @@ eq "an unreadable log yields no output, so triage fails OPEN" \
    "$(python3 "$SCRIPT_DIR/dispatch/spend-window.py" "$TMP_DIR/nope" 2>/dev/null || true)" ""
 
 echo
-echo "── triage.sh end-to-end: a breach withholds dispatch and holds watermarks ─"
+echo "── the original shell orchestrator end-to-end: a breach withholds dispatch and holds watermarks ─"
 ROOT="$TMP_DIR/repo"; TRIAGE="$ROOT/yaas-triage"; Q="$ROOT/state/quests/active/quest-b"
 mkdir -p "$TRIAGE/checkers" "$Q" "$ROOT/state/triage" "$ROOT/logs"
 # The fixture mirrors the real layout. Flattening was a small lie about the tree before
-# the reorganisation; now it is a broken one, since triage.sh looks for its collaborators
+# the reorganisation; now it is a broken one, since the original shell orchestrator looks for its collaborators
 # in ledger/ and dispatch/.
 mkdir -p "$TRIAGE/ledger" "$TRIAGE/dispatch" "$TRIAGE/ops"
 cp "$SCRIPT_DIR/tick.py" "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR/tick_check.py" "$SCRIPT_DIR/tick_dispatch.py" "$TRIAGE/"

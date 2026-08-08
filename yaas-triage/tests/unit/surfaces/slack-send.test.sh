@@ -141,12 +141,12 @@ printf '%s' "$OUT" | grep -q '"held": true' \
   && ok "an unreadable thread is held, not sent" || bad "it sent into an unreadable thread"
 
 echo
-echo "── catch-up mode forces every reply to review ─────────────────────────────"
+echo "── force-draft mode forces every reply to review ──────────────────────────"
 mk_slack "$FRESH"
 OUT=$( cd "$REPO" && REPO_ROOT="$REPO" YAAS_FORCE_DRAFT=1 python3 "$TRI/surfaces/slack-send.py" \
        '{"quest_id":"q-demo","channel_id":"C1","message":"hi","thread_ts":"1785000000.000100"}' 2>&1 )
 printf '%s' "$OUT" | grep -q '"held": true' \
-  && ok "YAAS_FORCE_DRAFT=1 holds even a live thread" || bad "catch-up mode did not force a hold"
+  && ok "YAAS_FORCE_DRAFT=1 holds even a live thread" || bad "force-draft mode did not force a hold"
 
 echo
 echo "── things the guard must NOT interfere with ────────────────────────────────"

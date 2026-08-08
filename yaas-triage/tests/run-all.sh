@@ -50,9 +50,8 @@ echo "$PASS suite(s) passed, $FAIL failed"
 # end-to-end tick per scenario (~2s each), which is the only coverage tick.py's top-level control
 # flow (run_tick / dispatch_loop / commit_quest / _on_exit) gets — the unit suites above cover
 # its extracted modules, not the wiring. Skipping it would let `run-all` go green without ever
-# executing the code that actually runs in production. The shell-side `check` and the mutation
-# suite stay a deliberate pre-merge step (see the hints below), since triage.sh is now only the
-# rollback and the mutations take ~2 min.
+# executing the code that actually runs in production. The mutation suite (differential/
+# mutations.sh) stays a deliberate pre-merge step, since it takes ~2 min.
 if [ -d "$HERE/differential" ]; then
   echo
   echo "── differential: tick.py (the live orchestrator) vs recorded goldens ──"

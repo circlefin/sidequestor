@@ -22,7 +22,7 @@ This is the DELETE side of watch.json, and deletion is the highest-consequence h
 there is: drop a rule that should have stayed and you silently stop tracking a live thread;
 keep one that should have gone and watch.json grows without bound and a fired backstop shows
 up forever as a phantom open item. Both have happened. So the three retire decisions, which
-used to be one jq expression and two inline Python heredocs inside triage.sh, are pure
+used to be one jq expression and two inline Python heredocs inside the original shell orchestrator, are pure
 predicates here with a unit test each.
 
 THE THREE RULES (each returns True = retire this entry):

@@ -32,7 +32,7 @@ Prints the sent Gmail message ID on success. Exits 1 on failure.
 
 - `GWS_BIN` — path to gws CLI (defaults to `gws` on PATH)
 - `YAAS_FROM_EMAIL` — sender display name + address, e.g. `Jane Smith <jane@example.com>`
-  Set in `.env` and sourced by triage.sh.
+  Set in `.env` and sourced by the orchestrator.
 
 ## Example (from a quest context)
 
