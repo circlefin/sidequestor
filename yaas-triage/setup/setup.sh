@@ -265,7 +265,7 @@ echo
 # ── Quick connectivity check ────────────────────────────────────────────────
 echo "Testing Slack MCP connectivity..."
 echo
-TEST_RESULT=$("$TRIAGE_DIR/mcp-call.sh" slack_read_user_profile '{"user_id":"me"}' 2>&1 || true)
+TEST_RESULT=$("$TRIAGE_DIR/surfaces/mcp-call.sh" slack_read_user_profile '{"user_id":"me"}' 2>&1 || true)
 if printf '%s' "$TEST_RESULT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); sys.exit(0 if d else 1)" 2>/dev/null; then
   echo "✓ Slack MCP connection OK."
 else
@@ -322,7 +322,7 @@ fi
 # For people who just want to run the latest YAAS and not build/extend it
 # themselves. Wires up a second git-dir (.git-yaas-v2) tracking the canonical
 # template read-only, then flips settings.json -> sync.yaas_v2_auto_pull so
-# triage.sh pulls it once a day. Never touches files that are already
+# the orchestrator pulls it once a day. Never touches files that are already
 # customized — see sync-yaas-v2.sh.
 echo
 read -p "Opt into daily auto-sync from the public yaas-v2 template? [y/N]: " SYNC_V2
@@ -341,7 +341,7 @@ d.setdefault("sync", {})["yaas_v2_auto_pull"] = True
 json.dump(d, open(path, "w"), indent=2)
 PYEOF
     echo "✓ settings.json: sync.yaas_v2_auto_pull = true"
-    echo "  triage.sh will check for yaas-v2 updates once every 24h."
+    echo "  the orchestrator will check for yaas-v2 updates once every 24h."
     echo "  Result of each attempt: state/yaas-v2-sync-status.json"
   else
     echo "init-yaas-v2-tracking.sh not found yet — skipping."
@@ -351,12 +351,37 @@ else
   echo "'git pull' works fine if you haven't diverged from the template."
 fi
 
+# ── Verify the install ──────────────────────────────────────────────────────
+# Prove the code is actually correct on THIS machine before you trust it. doctor.sh
+# checks the environment; run-all.sh runs the unit/behaviour suites + the end-to-end
+# differential goldens against tick.py (throwaway fixtures, no network, no real state).
+# Warn-only: setup's real work (OAuth, keychain, launchd) is already done above, so a
+# test failure is surfaced loudly but does not undo the install.
+echo
+read -p "Run the verification suite now to confirm the install is correct? [Y/n]: " RUN_TESTS
+if [[ ! "$RUN_TESTS" =~ ^[Nn] ]]; then
+  echo
+  echo "── doctor.sh (environment) ──"
+  bash "$TRIAGE_DIR/ops/doctor.sh" || echo "  ⚠ doctor reported issues (see above)."
+  echo
+  echo "── run-all.sh (code correctness) ──"
+  if bash "$TRIAGE_DIR/tests/run-all.sh"; then
+    echo "✓ All tests passed — the install is verified."
+  else
+    echo "⚠ Some tests failed (see above). The install itself is intact (token + jobs are set up),"
+    echo "  but something in this checkout or environment is off — fix it before relying on YAAS."
+  fi
+else
+  echo "Skipped. Verify any time with:"
+  echo "  bash $TRIAGE_DIR/ops/doctor.sh && bash $TRIAGE_DIR/tests/run-all.sh"
+fi
+
 echo
 echo "╔════════════════════════════════════════════════════════════════════╗"
 echo "║  yaas setup complete                                               ║"
 echo "╠════════════════════════════════════════════════════════════════════╣"
-echo "║  Manual run:     $TRIAGE_DIR/triage.sh"
-echo "║  Dry run:        DRY_RUN=1 $TRIAGE_DIR/triage.sh"
+echo "║  Manual run:     python3 $TRIAGE_DIR/tick.py"
+echo "║  Dry run:        DRY_RUN=1 python3 $TRIAGE_DIR/tick.py"
 echo "║  Dashboard:      $TRIAGE_DIR/dashboard-start.sh  (http://localhost:8877)"
 echo "║  Rotate token:   rerun setup.sh"
 echo "║  Revoke:         Settings → Manage apps in your Slack workspace    ║"
