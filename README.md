@@ -275,6 +275,11 @@ YAAS_AGENT=codex
 YAAS_AGENT=cursor
 ```
 
+**Recommended default: Claude with Opus 5 at low thinking** — `YAAS_CLAUDE_MODEL=claude-opus-5`,
+`YAAS_CLAUDE_EFFORT=low`. Triage work is bounded and well-scoped (each quest's `context.md`
+carries the decision rules), so low thinking is fast and cheap while still running the most
+capable model. Raise `YAAS_CLAUDE_EFFORT` per-install if your quests need deeper reasoning.
+
 Only one file knows the difference (`dispatch/dispatch-agent.sh`); everything else is
 backend-agnostic. Each harness reads its own rules file — `CLAUDE.md`, `AGENTS.md`, or
 `.cursorrules` — and `setup.sh` can symlink them so you maintain one.
