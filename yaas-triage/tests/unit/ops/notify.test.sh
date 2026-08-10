@@ -39,8 +39,8 @@ _find_triage() {
   echo "cannot locate yaas-triage/ above $1" >&2; return 1
 }
 SCRIPT_DIR="$(_find_triage "$0")" || exit 1
+. "$SCRIPT_DIR/tests/lib/harness.sh"
 NOTIFY="$SCRIPT_DIR/ops/notify.py"
-PASS=0; FAIL=0
 
 # Recorder used as YAAS_NOTIFY_CMD: argv = title, subtitle, body.
 RECORDER="$(mktemp)"
@@ -51,8 +51,6 @@ EOF
 chmod +x "$RECORDER"
 
 # --- helpers ----------------------------------------------------------------
-ok()   { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
-bad()  { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; [ -n "${2:-}" ] && printf '       %s\n' "$2"; }
 
 # epoch helpers (relative to now)
 now()       { python3 -c 'import time;print(f"{time.time():.6f}")'; }

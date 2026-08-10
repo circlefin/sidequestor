@@ -35,16 +35,12 @@ _find_triage() {
   echo "cannot locate yaas-triage/ above $1" >&2; return 1
 }
 SCRIPT_DIR="$(_find_triage "$0")" || exit 1
+. "$SCRIPT_DIR/tests/lib/harness.sh"
 COMMIT="$SCRIPT_DIR/ledger/commit.py"
-
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
-bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 
 # decide <snapshot-json> ; jq-extract <field> compares against expected
 decide() { python3 "$COMMIT" "$1"; }
 jqf()    { printf '%s' "$1" | python3 -c "import json,sys;print(json.dumps(json.load(sys.stdin)[sys.argv[1]]))" "$2"; }
-eq()     { [ "$2" = "$3" ] && ok "$1" || bad "$1 (want $3, got $2)"; }
 
 # A dirty record; args: watch_id complete advance_to
 dw() { printf '{"quest_id":"q","watch_id":"%s","type":"slack_thread","complete":%s,"advance_to":%s}' \

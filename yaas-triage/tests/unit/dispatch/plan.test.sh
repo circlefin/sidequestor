@@ -35,12 +35,8 @@ _find_triage() {
   echo "cannot locate yaas-triage/ above $1" >&2; return 1
 }
 SCRIPT_DIR="$(_find_triage "$0")" || exit 1
+. "$SCRIPT_DIR/tests/lib/harness.sh"
 PLAN="$SCRIPT_DIR/dispatch/plan.py"
-
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
-bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
-eq()  { [ "$2" = "$3" ] && ok "$1" || bad "$1 (want $3, got $2)"; }
 
 rot()   { python3 "$PLAN" rotate "$1" "$2"; }
 order() { rot "$1" "$2" | python3 -c "import json,sys;print(json.dumps(json.load(sys.stdin)['order']))"; }

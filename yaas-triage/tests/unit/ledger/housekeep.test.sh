@@ -33,13 +33,9 @@ _find_triage() {
   echo "cannot locate yaas-triage/ above $1" >&2; return 1
 }
 SCRIPT_DIR="$(_find_triage "$0")" || exit 1
+. "$SCRIPT_DIR/tests/lib/harness.sh"
 HK="$SCRIPT_DIR/ledger/housekeep.py"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
-bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
-eq()  { [ "$2" = "$3" ] && ok "$1" || bad "$1 (want $3, got $2)"; }
 
 # retire <watch-json> <meta-json> <approvals-json> <now> ; echoes surviving watch_ids
 retire() {

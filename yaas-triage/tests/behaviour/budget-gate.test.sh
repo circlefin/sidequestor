@@ -39,13 +39,10 @@ _find_triage() {
   echo "cannot locate yaas-triage/ above $1" >&2; return 1
 }
 SCRIPT_DIR="$(_find_triage "$0")" || exit 1
+. "$SCRIPT_DIR/tests/lib/harness.sh"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
-bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
-eq()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 # jq renders a float as 5.0, so dollar amounts are compared numerically rather than
 # as strings.
 eqn() { if python3 -c "import sys; sys.exit(0 if abs(float(sys.argv[1])-float(sys.argv[2]))<1e-6 else 1)" "$2" "$3" 2>/dev/null; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }

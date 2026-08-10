@@ -31,12 +31,8 @@ _find_triage() {
   echo "cannot locate yaas-triage/ above $1" >&2; return 1
 }
 SCRIPT_DIR="$(_find_triage "$0")" || exit 1
+. "$SCRIPT_DIR/tests/lib/harness.sh"
 D="$SCRIPT_DIR/tick_dispatch.py"
-
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
-bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
-eq()  { [ "$2" = "$3" ] && ok "$1" || bad "$1 (want $3, got $2)"; }
 
 # Dirty watches: q-mail fired an email watch; q-chat fired a slack_thread; q-both fired both.
 DW='[{"quest_id":"q-mail","type":"email"},{"quest_id":"q-chat","type":"slack_thread"},{"quest_id":"q-both","type":"email"},{"quest_id":"q-both","type":"slack_dm"}]'
