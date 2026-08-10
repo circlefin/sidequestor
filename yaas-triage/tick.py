@@ -48,6 +48,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
+import atomic
 import tick_state
 import tick_check
 import tick_dispatch
@@ -179,10 +180,7 @@ class Tick:
             else:
                 d[k] = v
         try:
-            tmp = str(self.triage_state) + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(d, f, indent=2)
-            os.replace(tmp, self.triage_state)
+            atomic.write_json(self.triage_state, d)
         except OSError:
             pass
 
@@ -212,9 +210,7 @@ def advance_watches(t, qid, moves):
             lag = t.lag_map.get(w.get("type"), 0)
             w["last_checked_ts"] = str(t.now_ts - lag)
     try:
-        tmp = watch.parent / f".watch.{os.getpid()}.tmp"
-        tmp.write_text(json.dumps(data, indent=2) + "\n")
-        os.replace(tmp, watch)
+        atomic.write_json(watch, data, trailing_newline=True)
     except OSError:
         t.log(f"WATCH WRITE FAILED: {qid} — {len(moves)} watermark(s) not advanced")
         return False
@@ -619,10 +615,7 @@ def _bump_unacked(t, key, wtype, status):
     rec["last_status"] = status
     counts[key] = rec
     try:
-        tmp = str(t.unacked_file) + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(counts, f, indent=2)
-        os.replace(tmp, t.unacked_file)
+        atomic.write_json(t.unacked_file, counts)
     except OSError:
         pass
 
@@ -661,10 +654,7 @@ def _prune_reaction_state(t):
         if isinstance(arr, list) and len(arr) > 1000:
             data[key] = sorted(arr)[-1000:]
             try:
-                tmp = str(p) + ".tmp"
-                with open(tmp, "w") as f:
-                    json.dump(data, f, indent=2)
-                os.replace(tmp, p)
+                atomic.write_json(p, data)
                 t.log(f"Pruned {p} to 1000 entries (was {len(arr)})")
             except OSError:
                 pass
@@ -831,10 +821,7 @@ def dispatch_loop(t, dispatch_targets, targets_json):
     if isinstance(st, dict) and t.triage_state.exists():
         st["dispatch_cursor"] = offset + t.dispatched
         try:
-            tmp = str(t.triage_state) + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(st, f, indent=2)
-            os.replace(tmp, t.triage_state)
+            atomic.write_json(t.triage_state, st)
         except OSError:
             t.log("CURSOR WRITE FAILED — dispatch rotation not advanced")
 
@@ -933,20 +920,37 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
             t.log(f"WORKER SOURCE OK [{target}]: successful Slack read observed")
 
     # Token accounting — emits gate_dispatch_tokens (the event snapshot reads for `dispatches`).
-    if t.agent == "claude":
-        t.run(t.py(t.helper("dispatch", "extract-tokens.py"), worker_ndjson, str(t.dispatch_exit),
-                   str(t.dispatch_wall), target, str(t.run_log), str(t.log_file), str(worker_log)))
-    else:
-        cpt = t.run(t.py(t.helper("dispatch", "translate-stream.py"), t.agent, worker_ndjson,
-                         str(t.dispatch_exit)))
+    # One path for every backend: translate-stream.py is the backend seam, so the cost
+    # extraction lives beside the two adapters that already parse the same result event.
+    cpt = t.run(t.py(t.helper("dispatch", "translate-stream.py"), t.agent, worker_ndjson,
+                     str(t.dispatch_exit)))
+    try:
+        tok = json.loads(cpt.stdout)
+    except (ValueError, AttributeError):
+        tok = {}
+    ev = {"event": "gate_dispatch_tokens", "backend": t.agent,
+          "targets": [target],
+          "input": tok.get("input_tokens", 0),
+          "output": tok.get("output_tokens", 0),
+          "cache_write": tok.get("cache_write", 0),
+          "cache_read": tok.get("cache_read", 0),
+          "wall_sec": t.dispatch_wall, "exit": t.dispatch_exit}
+    # Only a backend that reports dollars gets a cost. An absent cost_usd is what
+    # spend-window.py counts as uncosted_24h, so do not fake a zero.
+    if "cost_usd" in tok:
+        ev["cost_usd"] = tok["cost_usd"]
+    t.event(ev)
+
+    cost = f"${ev['cost_usd']:.4f}" if "cost_usd" in ev else "$-"
+    line = (f"Tokens: in={ev['input']:,} out={ev['output']:,} "
+            f"cw={ev['cache_write']:,} cr={ev['cache_read']:,} "
+            f"| {cost} | {ev['wall_sec']}s")
+    t.log(line)
+    if worker_log:
         try:
-            tok = json.loads(cpt.stdout)
-            t.event({"event": "gate_dispatch_tokens", "backend": t.agent,
-                     "input_tokens": tok.get("input_tokens", 0),
-                     "output_tokens": tok.get("output_tokens", 0),
-                     "wall_sec": t.dispatch_wall, "targets": target,
-                     "note": "raw tokens; no cost (non-claude backend)"})
-        except (ValueError, AttributeError):
+            with open(worker_log, "a") as f:
+                f.write(f"\n=== {line} ===\n")
+        except OSError:
             pass
 
 
@@ -995,10 +999,7 @@ def _record_progress(t, scope, committed_ids):
             else:
                 bump(key, item.get("type", ""), item.get("status", "pending"))
     try:
-        tmp = str(t.unacked_file) + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(counts, f, indent=2)
-        os.replace(tmp, t.unacked_file)
+        atomic.write_json(t.unacked_file, counts)
     except OSError:
         pass
 
@@ -1230,10 +1231,7 @@ def commit_reactions(t):
                 notes[ts] = (f"parked by triage after {rec['count']} dispatch(es) with no "
                              f"progress (last status: {rec.get('last_status','pending')}) — needs review")
                 try:
-                    stmp = str(sp) + ".tmp"
-                    with open(stmp, "w") as f:
-                        json.dump(sdata, f, indent=2)
-                    os.replace(stmp, sp)
+                    atomic.write_json(sp, sdata)
                     counts.pop(key, None)
                     parked.append(iid)
                     continue
@@ -1244,20 +1242,14 @@ def commit_reactions(t):
         if keep:
             remaining[emoji] = keep
     try:
-        ctmp = str(t.unacked_file) + ".tmp"
-        with open(ctmp, "w") as f:
-            json.dump(counts, f, indent=2)
-        os.replace(ctmp, t.unacked_file)
+        atomic.write_json(t.unacked_file, counts)
     except OSError:
         pass
     if parked:
         t.log("reactions: parked " + ", ".join(parked) + " into skipped_notes (no progress)")
     if remaining:
         try:
-            tmp = str(t.pending_reactions) + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(remaining, f, indent=2)
-            os.replace(tmp, t.pending_reactions)
+            atomic.write_json(t.pending_reactions, remaining)
         except OSError:
             pass
         t.log("REACTIONS PARTIAL — unacked/blocked reactions retained in pending_reactions.json.")

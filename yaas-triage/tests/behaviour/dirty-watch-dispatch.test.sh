@@ -36,7 +36,7 @@ mkdir -p "$TRIAGE/checkers" "$QUEST" "$BROKEN_QUEST" "$CLEAN_QUEST" "$BUSINESS_Q
 # in ledger/ and dispatch/.
 mkdir -p "$TRIAGE/ledger" "$TRIAGE/dispatch" "$TRIAGE/ops"
 cp "$SCRIPT_DIR/tick.py" "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR/tick_check.py" \
-   "$SCRIPT_DIR/tick_dispatch.py" "$TRIAGE/"
+   "$SCRIPT_DIR/tick_dispatch.py" "$SCRIPT_DIR/atomic.py" "$TRIAGE/"
 cp "$SCRIPT_DIR/ledger/ensure-watch-ids.py" "$SCRIPT_DIR/ledger/ack-watch.py" \
    "$SCRIPT_DIR/ledger/checker-health.py" "$SCRIPT_DIR/ledger/watch-guard.py" \
    "$SCRIPT_DIR/ledger/commit.py" "$SCRIPT_DIR/ledger/housekeep.py" "$TRIAGE/ledger/"
@@ -246,9 +246,6 @@ exit 0
 SH
   chmod +x "$TRIAGE/$helper"
 done
-cat > "$TRIAGE/dispatch/extract-tokens.py" <<'PY'
-#!/usr/bin/env python3
-PY
 chmod +x "$TRIAGE"/tick.py "$TRIAGE"/checkers/*.py
 
 # Pre-assign watch IDs (deterministic, idempotent — triage re-runs this as a

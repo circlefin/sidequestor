@@ -285,7 +285,6 @@ yaas-triage/
 │   ├── dispatch-agent.sh         backend-agnostic (claude / codex / cursor)
 │   ├── manual-dispatch.sh        a dashboard-initiated run with an instruction
 │   ├── format|translate-stream   event stream → transcript / common facts
-│   ├── extract-tokens.py         cost and token counts
 │   ├── source-evidence.py        which sources did the worker actually READ?
 │   └── spend-window.py           rolling spend; evaluates the ceilings
 │

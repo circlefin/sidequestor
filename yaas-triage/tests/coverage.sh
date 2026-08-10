@@ -46,12 +46,12 @@ exempt_reason() {
     dispatch/dispatch-agent.sh) echo "backend launcher; covered via dispatch/run-agent" ;;
     dispatch/format-stream.py)  echo "covered via dispatch/run-agent" ;;
     dispatch/translate-stream.py) echo "covered via dispatch/run-agent" ;;
-    dispatch/extract-tokens.py) echo "covered via behaviour/budget-gate" ;;
     dispatch/source-evidence.py) echo "covered via behaviour/dirty-watch-dispatch" ;;
     dispatch/spend-window.py)   echo "covered via behaviour/budget-gate" ;;
     ledger/ack-watch.py)        echo "covered via behaviour/dirty-watch-dispatch + goldens" ;;
     ledger/checker-health.py)   echo "covered via behaviour/dirty-watch-dispatch" ;;
     ledger/approval-helper.py)  echo "covered via behaviour/approval-lease" ;;
+    atomic.py)                  echo "covered via the differential goldens — every state write goes through it" ;;
     checkers/result.py)         echo "covered via behaviour/checker-contract" ;;
     checkers/slack.py)          echo "covered via unit/checkers/slack_utils + the four slack_* checkers" ;;
     checkers/cron_due.py)       echo "covered via behaviour/checker-contract" ;;

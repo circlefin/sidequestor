@@ -143,11 +143,7 @@ def main():
                     out["dispatches_1h"] += 1
 
             if target is not None and t >= c1:
-                # `targets` is a list on gate_dispatch and gate_dispatch_tokens, but
-                # older non-claude token events wrote it as a comma-joined string.
                 tg = d.get("targets")
-                if isinstance(tg, str):
-                    tg = [x for x in tg.split(",") if x]
                 if isinstance(tg, list) and target in tg and ev == "gate_dispatch":
                     out["target_dispatches_1h"] += 1
 

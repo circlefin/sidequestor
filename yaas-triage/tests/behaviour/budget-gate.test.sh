@@ -90,7 +90,7 @@ mkdir -p "$TRIAGE/checkers" "$Q" "$ROOT/state/triage" "$ROOT/logs"
 # the reorganisation; now it is a broken one, since the original shell orchestrator looks for its collaborators
 # in ledger/ and dispatch/.
 mkdir -p "$TRIAGE/ledger" "$TRIAGE/dispatch" "$TRIAGE/ops"
-cp "$SCRIPT_DIR/tick.py" "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR/tick_check.py" "$SCRIPT_DIR/tick_dispatch.py" "$TRIAGE/"
+cp "$SCRIPT_DIR/tick.py" "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR/tick_check.py" "$SCRIPT_DIR/tick_dispatch.py" "$SCRIPT_DIR/atomic.py" "$TRIAGE/"
 cp "$SCRIPT_DIR/ledger/ensure-watch-ids.py" "$SCRIPT_DIR/ledger/ack-watch.py" \
    "$SCRIPT_DIR/ledger/checker-health.py" "$SCRIPT_DIR/ledger/watch-guard.py" "$SCRIPT_DIR/ledger/commit.py" "$SCRIPT_DIR/ledger/housekeep.py" "$TRIAGE/ledger/"
 cp "$SCRIPT_DIR/dispatch/source-evidence.py" "$SCRIPT_DIR/dispatch/spend-window.py" \
@@ -126,7 +126,6 @@ PY
 for helper in sync-yaas-v2.sh mcp-call.sh; do
   printf '#!/bin/bash\nexit 0\n' > "$TRIAGE/$helper"
 done
-printf '#!/usr/bin/env python3\n' > "$TRIAGE/dispatch/extract-tokens.py"
 printf '#!/usr/bin/env python3\n' > "$TRIAGE/ops/notify.py"
 printf '#!/usr/bin/env python3\n' > "$TRIAGE/ops/rotate-logs.py"
 chmod +x "$TRIAGE"/tick.py "$TRIAGE"/checkers/*.py

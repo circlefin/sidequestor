@@ -24,11 +24,14 @@ Usage:
   translate-stream.py <backend> <raw_ndjson_path> <exit_code>
 
 Emits one JSON line to stdout:
-  {"backend","exit","is_error","input_tokens","output_tokens","final"}
+  {"backend","exit","is_error","input_tokens","output_tokens",
+   "cache_write","cache_read","cost_usd","final"}
 
 Notes:
-- Tokens are RAW (no $ conversion — that needs per-model pricing and is out of
-  scope here; triage just reports the counts).
+- Tokens are RAW. `cost_usd` is present only when the backend reports it (Claude
+  does; Codex and Cursor do not, and converting counts to dollars would need
+  per-model pricing this has no business owning). A missing cost is what
+  spend-window.py counts as `uncosted_24h`.
 - Slack/tool HEALTH is intentionally NOT derived here. It is unreliable from the
   stream (Cursor sends via a shell call to mcp-call.sh, which is invisible as an
   "MCP call"; Codex emits no server-status event). YaaS detects a Slack outage
@@ -70,7 +73,7 @@ def translate_codex(ev):
             if item.get("type") == "agent_message":
                 final = item.get("text", final)
     # No reliable hard-error field on Codex; rely on exit code upstream.
-    return final, inp, out, False
+    return final, {"input_tokens": inp, "output_tokens": out}, False
 
 
 def translate_cursor(ev):
@@ -85,46 +88,61 @@ def translate_cursor(ev):
             u = e.get("usage", {}) or {}
             inp = u.get("inputTokens", inp)
             out = u.get("outputTokens", out)
-    return final, inp, out, hard_error
+    return final, {"input_tokens": inp, "output_tokens": out}, hard_error
 
 
 def translate_claude(ev):
-    """Claude stream-json: result event carries usage."""
+    """Claude stream-json: the result event carries usage AND a settled cost.
+
+    Claude is the only backend that reports dollars, so it is the only one that
+    fills cost_usd. It used to be parsed by a second reader (extract-tokens.py)
+    that emitted its own event schema; folding it here leaves one parser of the
+    worker stream and one shape of gate_dispatch_tokens.
+    """
     final = ""
-    inp = out = 0
+    usage = {"input_tokens": 0, "output_tokens": 0, "cache_write": 0, "cache_read": 0}
     hard_error = False
+    found = False
     for e in ev:
         if e.get("type") == "result":
+            found = True
             final = e.get("result", final) or final
             hard_error = bool(e.get("is_error", False))
             u = e.get("usage", {}) or {}
-            inp = u.get("input_tokens", inp)
-            out = u.get("output_tokens", out)
-    return final, inp, out, hard_error
+            usage = {
+                "input_tokens":  u.get("input_tokens", 0),
+                "output_tokens": u.get("output_tokens", 0),
+                "cache_write":   u.get("cache_creation_input_tokens", 0),
+                "cache_read":    u.get("cache_read_input_tokens", 0),
+            }
+            usage["cost_usd"] = e.get("total_cost_usd", 0.0)
+    if not found:
+        print("WARN: no result event found in worker log", file=sys.stderr)
+    return final, usage, hard_error
 
 
 def main():
     backend, path, exit_code = sys.argv[1], sys.argv[2], sys.argv[3]
     ev = load(path)
     if backend == "codex":
-        final, inp, out, err = translate_codex(ev)
+        final, usage, err = translate_codex(ev)
     elif backend == "cursor":
-        final, inp, out, err = translate_cursor(ev)
+        final, usage, err = translate_cursor(ev)
     else:
-        final, inp, out, err = translate_claude(ev)
+        final, usage, err = translate_claude(ev)
 
     try:
         exit_int = int(exit_code)
     except (TypeError, ValueError):
         exit_int = -1
-    print(json.dumps({
+    out = {
         "backend": backend,
         "exit": exit_int,
         "is_error": err,
-        "input_tokens": inp,
-        "output_tokens": out,
         "final": (final or "")[:400],
-    }))
+    }
+    out.update(usage)
+    print(json.dumps(out))
 
 
 if __name__ == "__main__":
