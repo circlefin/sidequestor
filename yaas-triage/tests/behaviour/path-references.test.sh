@@ -57,7 +57,9 @@ SEARCH=(--include='*.md' --include='*.json' --include='*.sh' --include='*.py'
 # inside a temp fixture: those strings are inputs to a function, not references to files
 # that should exist. (Careful writing prose here: naming such a path in a comment makes
 # THIS file fail its own check, which is exactly what happened the first time.)
-EXCLUDE_RE='^(\.git/|node_modules/|\.local/|logs/|state/|yaas-robustness-plan\.md|documentation-complaints\.md|docs/|yaas-triage/tests/behaviour/repo-root\.test\.sh)'
+# Local AI-tooling caches (.ua, .serena, .code-review-graph) index the repo by path, so a
+# rename leaves stale references in them. They are gitignored build artifacts, not source.
+EXCLUDE_RE='^(\.git/|\.claude/|\.ua/|\.understand-anything/|\.serena/|\.code-review-graph/|node_modules/|\.local/|logs/|state/|yaas-robustness-plan\.md|documentation-complaints\.md|docs/|yaas-triage/tests/behaviour/repo-root\.test\.sh)'
 
 # Paths that are documentation EXAMPLES rather than real files. Each needs a reason:
 # a bare allowlist becomes a place to hide broken references.

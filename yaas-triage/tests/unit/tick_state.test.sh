@@ -17,12 +17,11 @@
 
 # tick_state.test.sh — the config/loading foundation of the tick.py orchestrator.
 #
-# tick_state.py reproduces what the original shell orchestrator derives before it decides anything: repo root, paths,
-# the numeric env knobs (with refuse-on-garbage validation), the per-type lag map, and the
-# sorted active-quest list. It never writes state, so it is safe to exercise against a fixture.
-# These cases pin the behaviours that matter: quests come back SORTED (the fairness rotation
-# depends on it), a malformed gate knob REFUSES rather than reading as no-cap, and the lag map
-# matches the .lag files.
+# tick_state.py reproduces what the original shell orchestrator derives before it decides anything:
+# repo root, paths, the numeric env knobs (with refuse-on-garbage validation) and the per-type lag
+# map. It never writes state, so it is safe to exercise against a fixture. These cases pin the
+# behaviours that matter: a malformed gate knob REFUSES rather than reading as no-cap, and the lag
+# map matches the .lag files.
 
 set -u
 _find_triage() {
@@ -61,8 +60,7 @@ try:
     c = m.Config(FIX + "/yaas-triage", environ=env)
 except m.BadEnvKnob as e:
     print("BAD_ENV_KNOB:" + str(e)); sys.exit(0)
-if cmd == "quests":  print(json.dumps(m.gather_quests(c.quests_dir)))
-elif cmd == "lags":  print(json.dumps(c.lag_map, sort_keys=True))
+if cmd == "lags":  print(json.dumps(c.lag_map, sort_keys=True))
 elif cmd == "root":  print(str(c.repo_root))
 elif cmd == "knob":  print(c.knob(knob_name))
 PY
@@ -74,15 +72,6 @@ mkdir -p "$FIX/yaas-triage/checkers" "$FIX/state/quests/active"
 printf '30\n'  > "$FIX/yaas-triage/checkers/slack_thread.lag"
 printf ' 90 \n' > "$FIX/yaas-triage/checkers/email.lag"
 printf 'notanumber\n' > "$FIX/yaas-triage/checkers/github_pr.lag"   # must be skipped
-mk_quest() { mkdir -p "$FIX/state/quests/active/$1"; echo '{"watches":[]}' > "$FIX/state/quests/active/$1/watch.json"; }
-mk_quest q-charlie; mk_quest q-alpha; mk_quest q-bravo
-mkdir -p "$FIX/state/quests/active/q-nowatch"   # no watch.json → not a quest yet
-
-echo "── quests come back SORTED (fairness rotation depends on it) ──────────────"
-eq "sorted, and the watch-less dir is excluded" \
-   "$(py "$FIX" quests)" '["q-alpha", "q-bravo", "q-charlie"]'
-
-echo
 echo "── the lag map reflects the .lag files; a non-integer one is skipped ──────"
 eq "integer lags parsed (whitespace trimmed), garbage dropped" \
    "$(py "$FIX" lags)" '{"email": 90, "slack_thread": 30}'
@@ -99,13 +88,13 @@ eq "overridden fanout" "$(py "$FIX" knob YAAS_MAX_DISPATCH_FANOUT YAAS_MAX_DISPA
 
 echo
 echo "── a garbage gate knob REFUSES (never silently reads as no-cap) ───────────"
-printf '%s' "$(py "$FIX" quests YAAS_TICK_DISPATCH_BUDGET=twenty)" | grep -q "BAD_ENV_KNOB" \
+printf '%s' "$(py "$FIX" root YAAS_TICK_DISPATCH_BUDGET=twenty)" | grep -q "BAD_ENV_KNOB" \
   && ok "non-numeric budget is rejected" || bad "garbage budget was accepted"
-printf '%s' "$(py "$FIX" quests YAAS_MAX_SPEND_6H=.)" | grep -q "BAD_ENV_KNOB" \
+printf '%s' "$(py "$FIX" root YAAS_MAX_SPEND_6H=.)" | grep -q "BAD_ENV_KNOB" \
   && ok "a lone '.' is rejected (reads as zero in arithmetic otherwise)" || bad "'.' accepted"
-printf '%s' "$(py "$FIX" quests YAAS_MAX_SPEND_1H=40)" | grep -q "BAD_ENV_KNOB" \
+printf '%s' "$(py "$FIX" root YAAS_MAX_SPEND_1H=40)" | grep -q "BAD_ENV_KNOB" \
   && bad "a valid spend cap was wrongly rejected" || ok "a valid spend cap passes"
-printf '%s' "$(py "$FIX" quests YAAS_MAX_DISPATCH_FANOUT=)" | grep -q "BAD_ENV_KNOB" \
+printf '%s' "$(py "$FIX" root YAAS_MAX_DISPATCH_FANOUT=)" | grep -q "BAD_ENV_KNOB" \
   && bad "an empty knob was rejected" || ok "an empty knob is fine (means default)"
 
 echo

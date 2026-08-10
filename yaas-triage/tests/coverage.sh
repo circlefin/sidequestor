@@ -53,7 +53,7 @@ exempt_reason() {
     ledger/checker-health.py)   echo "covered via behaviour/dirty-watch-dispatch" ;;
     ledger/approval-helper.py)  echo "covered via behaviour/approval-lease" ;;
     checkers/result.py)         echo "covered via behaviour/checker-contract" ;;
-    checkers/cron-due.py)       echo "covered via behaviour/checker-contract" ;;
+    checkers/cron_due.py)       echo "covered via behaviour/checker-contract" ;;
     checkers/approval.py)       echo "covered via behaviour/approval-lease" ;;
     checkers/reactions.py)      echo "covered via behaviour/dirty-watch-dispatch" ;;
     checkers/email.py|checkers/schedule.py|\

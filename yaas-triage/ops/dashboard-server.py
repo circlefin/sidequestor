@@ -432,34 +432,6 @@ def _approvals_index(data: dict) -> dict:
 def _clip(s, n):
     return s[:n] + "…" if isinstance(s, str) and len(s) > n else (s or "")
 
-def _normalize_msg_event(e: dict, approvals_by_id: dict):
-    """Outbound timeline event → compact verbatim message record, or None."""
-    kind = _OUTBOUND_EVENTS.get(e.get("event"))
-    if kind is None:
-        return None
-    body = e.get("message_text")
-    if not body:
-        appr_id = e.get("approval_id")
-        if appr_id and appr_id in approvals_by_id:
-            body = approvals_by_id[appr_id]
-    if not body:
-        return None  # verbatim-only: skip summary-only sends
-    if e.get("event") == "executed" and e.get("action_type") == "email_reply":
-        kind = "email"
-    channel_id = _norm_channel(e)
-    return {
-        "ts":           e.get("ts"),
-        "event":        e.get("event"),
-        "kind":         kind,
-        "channel_id":   channel_id,
-        "thread_ts":    e.get("thread_ts"),
-        "message_text": _clip(body, 2000),
-        "note":         _clip(e.get("note"), 300),
-        **_link_fields(e),
-        "action_type":  e.get("action_type"),
-        "awaiting_send": False,
-    }
-
 def _approval_target_link(i: dict) -> dict:
     """Link fields for an approval item. The target dict carries the surface ids
     (channel/thread for Slack, email_thread_id for Gmail, an issue key or PR for
@@ -1617,28 +1589,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         now = datetime.now(timezone.utc).isoformat()
 
-        if action == "edit":
-            # In-place text edit on an already-reviewed item — stays reviewed,
-            # just updates the message_text the worker will send.
-            new_text = payload.get("message_text", "").strip()
-            if not new_text:
-                self._send_json({"error": "message_text required"}, 400)
-                return
-            updates = {"message_text": new_text, "human_edited": True}
-            try:
-                item = _update_approval(approval_id, updates, from_status=("reviewed",))
-            except Exception as e:
-                self._send_json({"error": str(e)}, 500)
-                return
-            if item is None:
-                self._send_json({"error": "approval not found"}, 404)
-                return
-            if item is _CONFLICT:
-                self._send_json({"error": "item is no longer in reviewed state"}, 409)
-                return
-            self._send_json({"ok": True, "status": item["status"]})
-            return
-        elif action == "revise":
+        if action == "revise":
             # Explicit "Submit for revision": send the draft back to the worker
             # for another pass, no matter what. Reuses the needs_reply loop the
             # '?' heuristic below relies on, so the worker revises + re-surfaces

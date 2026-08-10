@@ -16,9 +16,10 @@
 # limitations under the License.
 
 """
-cron-due.py — decide whether a cron schedule is due to fire.
+cron_due.py — decide whether a cron schedule is due to fire.
 
-Usage: cron-due.py CRON_EXPR TZ LAST_TS
+is_due(expr, tz_name, last_ts) is the predicate; schedule.py imports it directly.
+Also runnable as a CLI shim for tests: cron_due.py CRON_EXPR TZ LAST_TS
 
     CRON_EXPR  Standard 5-field cron (minute hour dom month dow).
                Supports *, */N, N, N-M, N,M. Vixie OR semantics when both
@@ -86,37 +87,35 @@ def day_matches(dt, dom_set, dow_set, dom_raw, dow_raw):
     return dt.day in dom_set or cron_dow in dow_set
 
 
-def main():
-    if len(sys.argv) != 4:
-        print("usage: cron-due.py CRON_EXPR TZ LAST_TS", file=sys.stderr)
-        sys.exit(2)
-    expr, tz_name, last_arg = sys.argv[1:4]
-    tz = ZoneInfo(tz_name) if tz_name else timezone.utc
+def is_due(expr, tz_name, last_ts):
+    """True iff any cron-matching datetime exists in (last_ts, now].
+
+    Raises ValueError on a malformed expression or timezone — the caller turns that
+    into a misconfig verdict rather than an error, since retrying will not fix it.
+    """
+    try:
+        tz = ZoneInfo(tz_name) if tz_name else timezone.utc
+    except Exception as e:
+        raise ValueError(f"bad timezone {tz_name!r}: {e}") from e
 
     fields = expr.split()
     if len(fields) != 5:
-        print(f"error: need 5 cron fields, got {len(fields)}", file=sys.stderr)
-        sys.exit(2)
-    try:
-        minute = parse_field(fields[0], 0, 59)
-        hour = parse_field(fields[1], 0, 23)
-        dom = parse_field(fields[2], 1, 31)
-        month = parse_field(fields[3], 1, 12)
-        # cron allows Sunday as 0 or 7. Parse the raw field (0-7), then map 7->0
-        # per value. A blind fields[4].replace('7','0') mangles ranges/steps:
-        # "1-7" -> "1-0" (empty range) and "*/7" -> "*/0" (zero step), both of
-        # which raise and wedge the schedule into a permanent error->redispatch.
-        dow = parse_field(fields[4], 0, 7)
-        dow = {0 if v == 7 else v for v in dow}
-    except ValueError as e:
-        print(f"error: {e}", file=sys.stderr)
-        sys.exit(2)
+        raise ValueError(f"need 5 cron fields, got {len(fields)}")
+    minute = parse_field(fields[0], 0, 59)
+    hour = parse_field(fields[1], 0, 23)
+    dom = parse_field(fields[2], 1, 31)
+    month = parse_field(fields[3], 1, 12)
+    # cron allows Sunday as 0 or 7. Parse the raw field (0-7), then map 7->0
+    # per value. A blind fields[4].replace('7','0') mangles ranges/steps:
+    # "1-7" -> "1-0" (empty range) and "*/7" -> "*/0" (zero step), both of
+    # which raise and wedge the schedule into a permanent error->redispatch.
+    dow = parse_field(fields[4], 0, 7)
+    dow = {0 if v == 7 else v for v in dow}
 
-    last_utc = parse_last(last_arg)
+    last_utc = parse_last(last_ts)
     now_utc = datetime.now(timezone.utc)
     if last_utc is None or last_utc >= now_utc:
-        print("not-due")
-        return
+        return False
 
     last_local = last_utc.astimezone(tz)
     now_local = now_utc.astimezone(tz)
@@ -132,10 +131,22 @@ def main():
                 for m in sorted(minute):
                     fire = datetime(day.year, day.month, day.day, h, m, tzinfo=tz)
                     if last_local < fire <= now_local:
-                        print("due")
-                        return
+                        return True
         day += timedelta(days=1)
-    print("not-due")
+    return False
+
+
+def main():
+    # CLI shim, kept so the cron logic stays exercisable on its own.
+    if len(sys.argv) != 4:
+        print("usage: cron_due.py CRON_EXPR TZ LAST_TS", file=sys.stderr)
+        sys.exit(2)
+    try:
+        due = is_due(sys.argv[1], sys.argv[2], sys.argv[3])
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(2)
+    print("due" if due else "not-due")
 
 
 if __name__ == "__main__":

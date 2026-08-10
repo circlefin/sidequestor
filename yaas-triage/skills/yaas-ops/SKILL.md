@@ -27,7 +27,7 @@ yaas-triage/
 │   ├── reactions.py          ← global reaction sweep (not per-quest)
 │   ├── result.py             ← the outcome contract every checker returns
 │   ├── slack_utils.py        ← shared drain()/parse helpers
-│   ├── cron-due.py           ← cron evaluation logic (used by schedule.py)
+│   ├── cron_due.py           ← cron evaluation logic (imported by schedule.py)
 │   └── *.lag                 ← per-type watermark lag in seconds
 ├── dispatch/                 ← "run a worker": run-agent.py, plan.py, spend-window.py,
 │                               source-evidence.py, extract/translate-stream.py, worker.mcp.json

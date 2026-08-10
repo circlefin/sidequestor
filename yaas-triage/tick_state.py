@@ -20,9 +20,8 @@ tick_state.py — the config and loading foundation of the tick.py orchestrator.
 
 This is the first module of the real orchestrator rewrite: everything the tick reads before it
 decides anything. It reproduces, faithfully, what the original shell orchestrator derives in its first ~90 lines plus
-its "Per-checker watermark lag map" and "Gather quests" sections — repo root, paths, the numeric
-env knobs (with the same refuse-on-garbage validation), the per-type watermark lag map, and the
-list of active quests.
+its "Per-checker watermark lag map" section — repo root, paths, the numeric env knobs (with the
+same refuse-on-garbage validation) and the per-type watermark lag map.
 
 It is deliberately small and side-effect-light: it reads files and the environment, and it does
 NOT write state, dispatch, or log to the run log. tick.py owns those. Keeping loading pure makes
@@ -151,17 +150,6 @@ def load_lag_map(triage_dir):
     return lags
 
 
-def gather_quests(quests_dir):
-    """Active quest ids (directories with a watch.json), sorted for a stable, fair dispatch
-    order — the same stability the fairness rotation depends on. A dir without watch.json is
-    not a quest yet and is skipped."""
-    base = Path(quests_dir)
-    if not base.is_dir():
-        return []
-    return sorted(d.name for d in base.iterdir()
-                  if d.is_dir() and (d / "watch.json").exists())
-
-
 class Config:
     """Everything the tick reads before deciding. A plain data holder; no behaviour."""
 
@@ -202,7 +190,6 @@ def main():
         return 2
     print(json.dumps({
         "repo_root": str(c.repo_root),
-        "quests": gather_quests(c.quests_dir),
         "lag_map": c.lag_map,
         "run_log": str(c.run_log),
     }, indent=2))

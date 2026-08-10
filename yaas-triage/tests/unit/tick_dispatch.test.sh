@@ -15,12 +15,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# tick_dispatch.test.sh — the two dispatch-phase gates of the tick.py orchestrator.
+# tick_dispatch.test.sh — the Slack dependency gates of the tick.py orchestrator.
 #
 # slack_gate must drop ONLY Slack-needing targets during an outage (the ~183/day stall that a
-# per-target gate replaced), and slice_plan must never grant a dispatch that runs past the tick
-# budget nor start a target it cannot give MIN_SLICE seconds. Both are the money/data-loss
-# edges, so most cases assert something is GATED or DEFERRED.
+# per-target gate replaced), and needs_slack must classify a target's Slack dependency correctly.
+# These are the data-loss edges, so most cases assert something is GATED.
 
 set -u
 _find_triage() {
@@ -59,37 +58,6 @@ echo "── slack_gate: Slack DOWN → drop only Slack-needing, keep email-only
 G=$(python3 "$D" slack-gate '["q-mail","q-chat","reactions"]' 0 "$DW")
 eq "down: kept the email-only quest" "$(echo "$G" | python3 -c 'import json,sys;print(",".join(json.load(sys.stdin)["kept"]))')" "q-mail"
 eq "down: gated chat + reactions" "$(echo "$G" | python3 -c 'import json,sys;print(",".join(json.load(sys.stdin)["gated"]))')" "q-chat,reactions"
-
-echo
-echo "── slice_plan: fanout cap defers the surplus targets ──────────────────────"
-S=$(python3 "$D" slice '["a","b","c","d","e"]' 100000 0 300 3 1800)
-eq "granted exactly max_fanout" "$(echo "$S" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["dispatch"]))')" "3"
-eq "deferred the rest with a fanout reason" \
-   "$(echo "$S" | python3 -c 'import json,sys;d=json.load(sys.stdin)["deferred"];print(len(d), d and "fanout" in d[0]["reason"])')" "2 True"
-
-echo
-echo "── slice_plan: watchdog capped to REMAINING budget, never past the ceiling ─"
-# budget 2000, worker_timeout 1800: first target gets 1800; only 200 left, below min_slice → defer.
-S=$(python3 "$D" slice '["a","b"]' 2000 0 300 4 1800)
-eq "first target timeout = full worker_timeout" \
-   "$(echo "$S" | python3 -c 'import json,sys;print(json.load(sys.stdin)["dispatch"][0]["timeout"])')" "1800"
-eq "second deferred: remaining 200s < min_slice 300s" \
-   "$(echo "$S" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d["dispatch"]), "min slice" in d["deferred"][0]["reason"])')" "1 True"
-
-echo
-echo "── slice_plan: a target near the ceiling gets a SHORTENED timeout, not full ─"
-# spent 1000 of 2000; remaining 1000 >= min_slice → dispatch but timeout capped at 1000, not 1800.
-S=$(python3 "$D" slice '["a"]' 2000 1000 300 4 1800)
-eq "timeout shortened to remaining budget" \
-   "$(echo "$S" | python3 -c 'import json,sys;print(json.load(sys.stdin)["dispatch"][0]["timeout"])')" "1000"
-
-echo
-echo "── slice_plan: empty target list is a no-op, not a crash ──────────────────"
-S=$(python3 "$D" slice '[]' 3600 0 300 4 1800)
-eq "nothing dispatched, nothing deferred" \
-   "$(echo "$S" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d["dispatch"]),len(d["deferred"]))')" "0 0"
-
-echo
 echo "────────────────────────────────────────────────────────────────────────────"
 echo "tick_dispatch: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

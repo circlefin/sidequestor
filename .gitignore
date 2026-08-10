@@ -4,6 +4,10 @@
 # Claude Code local config
 .claude/
 .claude.json
+# Local AI tooling metadata / caches (knowledge graphs, symbol indexes)
+.ua/
+.understand-anything/
+.serena/
 
 # Working documents
 DRAFT-AGENT-DESIGN.md

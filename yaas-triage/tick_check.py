@@ -37,15 +37,12 @@ and returns the verdict. It runs no checker, reads no file, writes nothing. That
 the six-way routing — where two production incidents hid — unit-testable in isolation, which it
 never was inside the shell.
 
-The impure fan-out (running every checker in parallel, capped) lives in `run_checks()` and calls
-classify() on each result. tick.py sequences it; the backoff/health bookkeeping stays with the
-existing ledger/checker-health.py.
+tick.py owns the impure fan-out (running every checker in parallel, capped) and calls classify()
+on each result; the backoff/health bookkeeping stays with the existing ledger/checker-health.py.
 """
 
 import json
-import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 
 
 # Verdicts. Only `dirty` dispatches; everything else holds or advances. `clean` and `dirty`
@@ -207,23 +204,6 @@ def rotate_check_order(quest_ids, cursor):
         c = 0
     offset = c % n
     return [quest_ids[(offset + i) % n] for i in range(n)], offset + 1
-
-
-def run_checks(watches, run_one, classify_ctx, max_parallel=3):
-    """Run `run_one(watch)` for each watch concurrently (capped at max_parallel) and classify
-    the results. `run_one` returns the parsed checker result (or None); `classify_ctx(watch)`
-    returns the kwargs for classify (health, unacked, checker_exists, thresholds). Returns a
-    list of verdict dicts in the input order.
-
-    Kept thin and injected so the pure classify() carries the logic and this carries only the
-    fan-out — the shell used a background-job pool with the same cap for the same reason.
-    """
-    results = [None] * len(watches)
-    with ThreadPoolExecutor(max_workers=max(1, max_parallel)) as pool:
-        futs = {pool.submit(run_one, w): i for i, w in enumerate(watches)}
-        for fut, i in futs.items():
-            results[i] = fut.result()
-    return [classify(results[i], w, **classify_ctx(w)) for i, w in enumerate(watches)]
 
 
 def main():

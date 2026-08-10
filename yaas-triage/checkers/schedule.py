@@ -36,19 +36,15 @@ Output: 1|schedule due '<cron> (<tz>)'   when due (cron)
         0|                               when not due
         error|reason                     on bad cron expression
 
-Delegates to cron-due.py (same directory) for the actual cron evaluation logic.
+Imports cron_due.is_due (same directory) for the actual cron evaluation logic.
 """
 import sys
 import os
 import json
-import subprocess
 import time
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CRON_DUE = os.path.join(SCRIPT_DIR, "cron-due.py")
-
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cron_due
 import result
 
 def main():
@@ -69,16 +65,13 @@ def main():
     tz = str(entry.get("tz", "UTC"))
     since = str(entry.get("last_checked_ts", ""))
 
-    r = subprocess.run(
-        ["python3", CRON_DUE, cron_expr, tz, since],
-        capture_output=True, text=True, timeout=10,
-    )
-    if r.returncode == 2:
-        result.misconfig(f"bad cron expression: {r.stderr.strip()}")
+    try:
+        due = cron_due.is_due(cron_expr, tz, since)
+    except ValueError as e:
+        result.misconfig(f"bad cron expression: {e}")
         return
 
-    cron_verdict = r.stdout.strip()
-    if cron_verdict == "due":
+    if due:
         result.counted(1, f"schedule due '{cron_expr} ({tz})'")
     else:
         result.counted(0, "")

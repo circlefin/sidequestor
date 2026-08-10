@@ -116,7 +116,7 @@ echo "── every checker honours the result contract ────────�
 for path in "$CHECKERS"/*.py; do
   name=$(basename "$path" .py)
   case "$name" in
-    result|slack_utils|cron-due|reactions) continue ;;   # not per-entry checkers
+    result|slack_utils|cron_due|reactions) continue ;;   # not per-entry checkers
   esac
   [ -x "$path" ] || bad "$name — not executable, so triage reports 'no executable checker'"
   check_output "$name (plausible entry)" "$(python3 "$path" "$(entry_for "$name")" 2>/dev/null)"
