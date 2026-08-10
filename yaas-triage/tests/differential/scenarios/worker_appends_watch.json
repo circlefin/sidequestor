@@ -1,0 +1,40 @@
+{
+  "name": "worker_appends_watch",
+  "why": "The one mutation the rules allow. An appended watch must survive, and the pre-existing entry must still commit normally.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\nTest quest.\n",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "type": "slack_thread",
+          "last_checked_ts": "@now-3600",
+          "reason": "test",
+          "channel_id": "C1",
+          "thread_ts": "@now-7200.000100"
+        }
+      ]
+    }
+  },
+  "checkers": {
+    "w1": {
+      "outcome": "dirty",
+      "count": 1
+    }
+  },
+  "agent": {
+    "exit": 0,
+    "acks": {
+      "w1": "handled"
+    },
+    "append_watches": [
+      {
+        "type": "slack_thread",
+        "channel_id": "C9",
+        "thread_ts": "@now-60.000200",
+        "last_checked_ts": "@now-60",
+        "reason": "tracked my reply"
+      }
+    ]
+  }
+}

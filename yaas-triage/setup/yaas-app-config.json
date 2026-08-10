@@ -1,0 +1,24 @@
+{
+  "$schema_description": "Generic Slack OAuth config for yaas. Defines the scopes and PKCE flow. Per-install values (app_id, client_id, workspace) live in .env at the repo root — see .env.example. Used by setup.sh.",
+  "slack_app": {
+    "app_name": "yaas",
+    "use_pkce": true,
+    "redirect_uri": "http://localhost:3118/callback"
+  },
+  "user_scopes": [
+    "channels:history",
+    "groups:history",
+    "im:history",
+    "mpim:history",
+    "search:read.public",
+    "search:read.private",
+    "search:read.mpim",
+    "search:read.im",
+    "search:read.users",
+    "users:read",
+    "users:read.email",
+    "chat:write",
+    "reactions:read"
+  ],
+  "_reactions_read_note": "reactions:read may require workspace admin approval in some orgs. If approval is required, request it before running setup.sh; or proceed without — the reaction-monitoring path in the orchestrator will return zero results until the scope is granted, then each user re-runs setup.sh to re-authorize."
+}

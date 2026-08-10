@@ -1,0 +1,31 @@
+{
+  "name": "retire_stale_thread",
+  "why": "The retire rules DELETE watch entries, and until now no golden exercised them at all. A port that drops the rule grows watch.json without bound; one that over-applies it silently stops tracking a live customer thread. Neither would fail any other golden. Here w-old (40 days) must be REMOVED and w-new (5 days) kept, against the 30-day default.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\n",
+      "watches": [
+        {
+          "watch_id": "w-old",
+          "type": "slack_thread",
+          "channel_id": "C1",
+          "thread_ts": "@now-3456000.000100",
+          "last_checked_ts": "@now-3600",
+          "reason": "test"
+        },
+        {
+          "watch_id": "w-new",
+          "type": "slack_thread",
+          "channel_id": "C1",
+          "thread_ts": "@now-432000.000100",
+          "last_checked_ts": "@now-3600",
+          "reason": "test"
+        }
+      ]
+    }
+  },
+  "checkers": {},
+  "agent": {
+    "exit": 0
+  }
+}
