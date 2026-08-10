@@ -117,6 +117,75 @@ eq "unacked-promote beats a dirty result" \
    "$(c '{"outcome":"dirty","count":5}' "$W" --unacked 3)" "misconfig"
 
 echo
+echo "── check-phase fairness rotation ──────────────────────────────────────────"
+# rot <json-list> <cursor> ; prints "order|next_cursor"
+rot() {
+  python3 - "$CHK" "$1" "$2" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("tc", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+order, nxt = m.rotate_check_order(json.loads(sys.argv[2]), sys.argv[3])
+print(",".join(order) + "|" + str(nxt))
+PY
+}
+eq "cursor 0 leaves the order alone"   "$(rot '["a","b","c"]' 0)" "a,b,c|1"
+eq "cursor 1 starts at the second"     "$(rot '["a","b","c"]' 1)" "b,c,a|2"
+eq "cursor 2 starts at the third"      "$(rot '["a","b","c"]' 2)" "c,a,b|3"
+eq "an unbounded cursor wraps (4 of 3)" "$(rot '["a","b","c"]' 4)" "b,c,a|2"
+eq "an empty list rotates to empty"    "$(rot '[]' 7)" "|0"
+eq "one quest is a no-op"              "$(rot '["a"]' 5)" "a|1"
+
+echo
+echo "── a bad cursor must not crash the tick ───────────────────────────────────"
+# The dangerous outcome is a dead tick (nothing gets checked at all), not an unfair order,
+# so every unusable cursor degrades to 0 rather than raising.
+eq "negative → treated as 0"    "$(rot '["a","b","c"]' -3)" "a,b,c|1"
+eq "non-numeric → treated as 0" "$(rot '["a","b","c"]' 'garbage')" "a,b,c|1"
+eq "empty string → treated as 0" "$(rot '["a","b","c"]' '')" "a,b,c|1"
+
+echo
+echo "── THE PROPERTY: no quest can starve forever ──────────────────────────────"
+# This is the whole point. With a fixed order the same tail lost every tick (measured
+# 2026-08-09: four quests rate-limited on 100% of ticks purely for sorting last). Assert
+# that over N ticks with N quests, EVERY quest occupies the front position at least once —
+# a guarantee rotation gives and random ordering does not.
+FRONTS=$(python3 - "$CHK" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("tc", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+quests = [f"q{i}" for i in range(19)]          # the live install's quest count
+cursor, seen = 0, set()
+for _ in range(len(quests)):                    # exactly N ticks
+    order, cursor = m.rotate_check_order(quests, cursor)
+    seen.add(order[0])
+print(f"{len(seen)}/{len(quests)}")
+PY
+)
+eq "every one of 19 quests leads a tick within 19 ticks" "$FRONTS" "19/19"
+
+# And the starved-tail case concretely: if only the first 10 of 19 get served before the
+# budget runs out, every quest must still be served within a bounded number of ticks.
+SERVED=$(python3 - "$CHK" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("tc", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+quests = [f"q{i}" for i in range(19)]
+BUDGET = 10                                     # only this many get through per tick
+cursor, served = 0, set()
+for tick in range(1, 200):
+    order, cursor = m.rotate_check_order(quests, cursor)
+    served.update(order[:BUDGET])
+    if len(served) == len(quests):
+        print(tick); break
+else:
+    print("NEVER")
+PY
+)
+[ "$SERVED" != "NEVER" ] && [ "$SERVED" -le 19 ] \
+  && ok "with a 10-of-19 budget, all 19 are checked within $SERVED ticks (bounded)" \
+  || bad "starvation not bounded (got '$SERVED')"
+
+echo
 echo "────────────────────────────────────────────────────────────────────────────"
 echo "tick_check: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

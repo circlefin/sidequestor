@@ -317,7 +317,7 @@ yaas-triage/
 └── tests/             28 suites + 31 goldens + 9 mutations
 ```
 
-Adding a watch type means dropping one file in `checkers/`. Nothing else changes.
+Adding a watch type means dropping one file in `checkers/`, named for the type and **marked executable** (`chmod +x`) — triage resolves `checkers/<type>.py` and gates on the executable bit, so a non-executable checker is treated as missing and its watches are held as `misconfig` rather than silently skipped. Runtime requires neither `advance_to` nor `complete` — `complete` defaults to true and a missing `advance_to` falls back to a time-based guess — but emitting both is the safe contract, and the only way your checker can hold its own watermark when it could not drain the window. Omit them and you inherit a guess that is only correct for a source that cannot lag. Nothing else changes.
 
 Before you send a patch: `yaas-triage/tests/run-all.sh`, then
 `yaas-triage/tests/differential/run.sh check`. The second one runs a real tick against a

@@ -73,6 +73,72 @@ def failed(value):
     return False
 
 
+# A shell command counts as a READ only if it produced a Slack RESPONSE. Matching the
+# command text alone is not enough: the pattern is a substring search, so
+# `echo "./mcp-call.sh slack_read_channel {\"channel_id\":\"C0…\"}"` matches, exits 0, and
+# would be credited as having read C0… — a FALSE PRESENCE, which lets the watermark advance
+# over messages nobody saw. That is the one direction this file must never get wrong (see
+# the attribution note below: a false absence merely delays work).
+#
+# So require the OUTPUT to look like an mcp-call.sh response envelope rather than trusting
+# the command string. An echo emits its own argument, not a JSON object with these keys.
+# Deliberately strict: over-rejecting costs a delayed watch, under-rejecting buries a message.
+SLACK_RESPONSE_KEYS = ("messages", "results", "message", "permalink", "response_ts",
+                       "channel", "ok", "reactions", "thread", "replies")
+
+
+def shell_read_succeeded(command, stdout, is_background=False):
+    """True when a shell command demonstrably performed a Slack read and got a response."""
+    if is_background:
+        return False              # returns 0 immediately; the read has not happened yet
+    if not command or not SHELL_SLACK_READ.search(command):
+        return False
+    out = (stdout or "").strip()
+    if not out:
+        return False              # exit 0 with no output proves nothing was read
+    if failed(out):
+        return False
+    try:
+        parsed = json.loads(out)
+    except ValueError:
+        return False              # a real response is JSON; an echoed command is not
+    return isinstance(parsed, dict) and any(k in parsed for k in SLACK_RESPONSE_KEYS)
+
+
+# ── Cursor's shell tool call ───────────────────────────────────────────────────
+# Cursor emits a shape neither of the other two backends use, so without this it looked
+# like a worker that had read nothing at all. Captured from a real `cursor-agent -p
+# --output-format stream-json` run on 2026-08-10:
+#
+#   {"type":"tool_call","subtype":"completed","tool_call":{"shellToolCall":{
+#      "args":{"command":"...mcp-call.sh slack_read_channel '{\"channel_id\":\"C0…\"}'"},
+#      "result":{"success":{"exitCode":0,"command":"…","stdout":"{\"messages\":…"}}}}}
+#
+# A failure swaps `success` for `failure` (same inner fields, non-zero exitCode), which is
+# why this reads the success branch specifically rather than trusting the subtype.
+#
+# Returns (command, stdout) for a SUCCESSFUL Slack-reading shell call, else (None, None),
+# so evidence() and read_sources() cannot drift apart on the parsing.
+def cursor_shell_read(event):
+    if event.get("type") != "tool_call" or event.get("subtype") != "completed":
+        return None, None
+    shell = ((event.get("tool_call") or {}).get("shellToolCall") or {})
+    result = shell.get("result") or {}
+    ok = result.get("success")
+    # A result carrying BOTH branches is contradictory; treat it as a failure rather than
+    # taking the optimistic read.
+    if result.get("failure") is not None:
+        return None, None
+    if not isinstance(ok, dict) or ok.get("exitCode") != 0:
+        return None, None
+    args = shell.get("args") or {}
+    cmd = ok.get("command") or args.get("command", "") or ""
+    background = bool(result.get("isBackground") or args.get("isBackground"))
+    if not shell_read_succeeded(cmd, ok.get("stdout", ""), background):
+        return None, None
+    return cmd, ok.get("stdout", "") or ""
+
+
 def evidence(path):
     pending_claude_calls = set()
     for raw in path.read_text(errors="replace").splitlines():
@@ -95,10 +161,13 @@ def evidence(path):
             if (
                 item.get("type") == "command_execution"
                 and item.get("exit_code") == 0
-                and SHELL_SLACK_READ.search(item.get("command", ""))
-                and not failed(item.get("aggregated_output", ""))
+                and shell_read_succeeded(item.get("command", ""),
+                                         item.get("aggregated_output", ""))
             ):
                 return True
+
+        if cursor_shell_read(event)[0] is not None:
+            return True
 
         message = event.get("message") if isinstance(event.get("message"), dict) else {}
         for block in blocks(message.get("content")):
@@ -163,9 +232,13 @@ def read_sources(path):
                     and item.get("result") is not None and not failed(item.get("result"))):
                 found |= _channels_in(item.get("arguments"))
             if (item.get("type") == "command_execution" and item.get("exit_code") == 0
-                    and SHELL_SLACK_READ.search(item.get("command", ""))
-                    and not failed(item.get("aggregated_output", ""))):
+                    and shell_read_succeeded(item.get("command", ""),
+                                             item.get("aggregated_output", ""))):
                 found |= _channels_in(item.get("command", ""))
+
+        cmd, _out = cursor_shell_read(event)
+        if cmd is not None:
+            found |= _channels_in(cmd)
 
         message = event.get("message") if isinstance(event.get("message"), dict) else {}
         for block in blocks(message.get("content")):

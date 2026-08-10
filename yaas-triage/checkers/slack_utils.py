@@ -35,6 +35,43 @@ SLICE_ATTEMPTS  = 12     # request budget for the slice phase, shared between pa
                          # a dense slice, halving a too-wide one, and walking forward
 
 
+# How far back a search-backed checker must keep its watermark. Slack search reads an
+# INDEX, not the source, and that index is eventually consistent: a message posted at T is
+# not necessarily findable at T. So "search returned nothing" never proves "nothing was
+# posted" for the most recent seconds — only for the part of the window old enough to be
+# indexed. Advancing to now would step over anything still in flight and bury it, since the
+# watermark only ever moves forward.
+SEARCH_INDEX_LAG = 120   # seconds; conservative, and the cost of being wrong is asymmetric
+
+
+def search_advance_to(newest_seen: float, now: float = None,
+                      index_lag: float = SEARCH_INDEX_LAG):
+    """The newest watermark a SEARCH-backed checker may honestly claim. Returns a float.
+
+    Read-backed checkers (slack_thread, slack_channel) get their boundary from drain(),
+    which proves coverage against the source. Search-backed checkers (slack_dm,
+    slack_mention) cannot make that proof, so they need this instead — and before this
+    existed they returned no advance_to at all, which is the dangerous case: tick.py's
+    fallback then advances the watermark to `now - lag_map[type]`, and lag_map is built
+    from optional `checkers/<type>.lag` files. `slack_mention.lag` happened to exist (90s);
+    `slack_dm.lag` did not, so a slack_dm watch advanced to EXACTLY NOW on every clean
+    search and any DM not yet indexed at that instant was buried permanently.
+
+    Depending on a file existing on disk for a data-loss-prevention guarantee is the wrong
+    shape, so the rule now lives here, in code, identically for both checkers.
+
+    The rule: never claim more than `now - index_lag`, and never claim more than the newest
+    message actually seen. Passing newest_seen <= 0 (nothing found) still returns
+    `now - index_lag`, which lets a quiet watch make progress instead of stalling forever,
+    while keeping the recent, possibly-unindexed window unclaimed.
+    """
+    now = time.time() if now is None else now
+    ceiling = now - max(0.0, index_lag)
+    if newest_seen and newest_seen > 0:
+        return min(float(newest_seen), ceiling)
+    return ceiling
+
+
 def drain(fetch_page, since: float, filter_user_ids=None, filter_keywords=None,
           now: float = None):
     """Read everything new on a Slack source, and only claim coverage we can prove.

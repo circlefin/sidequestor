@@ -426,6 +426,20 @@ def run_tick(t):
     # is deterministic regardless of which checker finished first. The dispatch order is
     # separately re-sorted anyway, so ordering here is about a stable log/diff, not correctness.
     checkable = [qd.name for qd in quest_dirs if qd.name not in unreadable]
+    # Fairness rotation for the CHECK phase. The Slack budget runs out partway through a
+    # tick, and with a fixed (alphabetical) order the same tail lost every time: on
+    # 2026-08-09 four quests were rate-limited on 100% of ticks purely for sorting last.
+    # Rotating the START each tick spreads that loss, so a quest waits a few ticks instead
+    # of forever. Execution order only — results are reassembled in quest_dirs order below,
+    # so every log, diff and golden stays deterministic.
+    st0 = t._read_json(t.triage_state, {}) or {}
+    check_cursor = st0.get("check_cursor", 0) if isinstance(st0, dict) else 0
+    checkable, next_check_cursor = tick_check.rotate_check_order(checkable, check_cursor)
+    # Persist BEFORE the checks, not after: a tick killed mid-check (watchdog, reboot, the
+    # flock being stolen) would otherwise replay the same starting point next time and the
+    # rotation would silently stop rotating for exactly the quests it exists to protect.
+    if checkable:
+        t._bump_state(check_cursor=next_check_cursor)
     computed = {}
     if checkable:
         with ThreadPoolExecutor(max_workers=max(1, t.max_parallel)) as pool:
@@ -497,7 +511,10 @@ def run_tick(t):
         t.slog(f"Run OK — idle. {quest_count} quest(s) swept, 0 activity.")
         return 0
 
-    # ── Build the dispatch target list (sorted quests + optional 'reactions' last) ──
+    # ── Build the dispatch target list (sorted quests + optional 'reactions') ──
+    # Appended here for a stable, sorted target list; the dispatch loop moves it to the
+    # FRONT after the fairness rotation, because a reaction is the one target a human is
+    # actively waiting on. See the reordering below.
     dispatch_targets = sorted(t.dirty_quests)
     if t.reactions_dirty:
         dispatch_targets.append("reactions")
@@ -744,11 +761,39 @@ def dispatch_loop(t, dispatch_targets, targets_json):
     if offset:
         t.log(f"Rotated dispatch order by {offset} for fairness: {rotated}")
 
+    # Reactions jump the queue, AFTER the rotation so the cursor cannot push them back.
+    # A reaction is the one target with a human watching: you add the emoji and wait for the
+    # bot to acknowledge it. Everything else is background work nobody is staring at. Queued
+    # last (the previous behaviour) a reaction waited for every dirty quest to finish first —
+    # measured 2026-08-08, a trigger sat 4.5 minutes behind three quest dispatches before its
+    # worker even started, so the emoji showed nothing for minutes and looked broken.
+    # Excluded from the rotation rather than merely sorted first: the rotation exists to stop
+    # a quest starving, and there is only ever one reactions target, so rotating it buys
+    # nothing and would just reintroduce the delay on some ticks.
+    if "reactions" in rotated:
+        # index/slice rather than a filter comprehension: a filter would COLLAPSE two
+        # entries into one, and if a quest folder were ever literally named "reactions"
+        # that would silently drop a real target. Moving the first occurrence preserves
+        # the list exactly. (dispatch_one already treats the name as the reaction fast
+        # path, so such a folder is unsupported anyway — but unsupported should not mean
+        # a vanished dispatch.)
+        _i = rotated.index("reactions")
+        rotated = [rotated[_i]] + rotated[:_i] + rotated[_i + 1:]
+
     tick_spent = 0
     worst_exit = 0
+    quest_dispatched = 0   # fan-out counts QUESTS; see the reactions exemption below
     for target in rotated:
         remaining = t.tick_budget - tick_spent
-        if t.dispatched >= t.max_fanout or remaining < t.min_slice:
+        # Reactions does not consume a quest's fan-out slot. Without this exemption, putting
+        # reactions first turns the priority into starvation: with YAAS_MAX_DISPATCH_FANOUT=1
+        # and a reaction pending across ticks (a slow, failing or partially-acking reaction
+        # worker), reactions takes the only slot every tick and every dirty quest is deferred
+        # indefinitely — trading one starvation bug for a worse one. There is only ever a
+        # single reactions target, so exempting it costs at most one extra invocation per
+        # tick. The TIME budget below still applies to it, so it cannot overrun the tick.
+        over_fanout = target != "reactions" and quest_dispatched >= t.max_fanout
+        if over_fanout or remaining < t.min_slice:
             t.log(f"DEFERRED: {target} (dispatched={t.dispatched} spent={tick_spent}s)")
             t.event({"event": "gate_dispatch_deferred", "target": target,
                      "dispatched": t.dispatched, "spent_sec": tick_spent})
@@ -772,6 +817,8 @@ def dispatch_loop(t, dispatch_targets, targets_json):
         timeout = min(t.worker_timeout, remaining)
         dispatch_one(t, target, timeout, dirty_watches_json)
         t.dispatched += 1
+        if target != "reactions":
+            quest_dispatched += 1
         tick_spent += t.dispatch_wall
         if t.dispatch_exit != 0:
             worst_exit = t.dispatch_exit
@@ -1057,6 +1104,20 @@ def commit_quest(t, qid, dirty_watches_json):
     acked = [x for x in (cpa.stdout or "").splitlines() if x.strip()]
 
     # Evidence inputs (only when a worker event stream exists).
+    # OBSERVE-ONLY BY DEFAULT, and that is a deliberate decision, not an oversight — see
+    # tests/differential/scenarios/ack_evidence_observed_only.json, which records the
+    # reasoning. Enforcing looks like the stricter, safer choice and is not: the veto's
+    # FALSE NEGATIVE surface is wide (search-only reads, permalink reads, DM-by-user-id,
+    # a channel that appears only in the response, and other agent backends whose event
+    # schema this collector does not parse). A false negative is not a one-tick delay —
+    # the watch makes no progress, and after YAAS_UNACKED_PROMOTE dispatches it is parked
+    # as misconfig needing a human. So enforcing trades a rare, logged burial for a
+    # plausible silent freeze, which is the worse failure.
+    #
+    # It is measurable either way: the veto is ALWAYS computed and logged as
+    # gate_ack_unverified (once in 527 recorded dispatches), so the exposure is visible
+    # without holding anything. Set YAAS_ACK_EVIDENCE_ENFORCE=1 to enforce once your
+    # backend's read paths are known to be fully visible to dispatch/source-evidence.py.
     enforce = t.env.get("YAAS_ACK_EVIDENCE_ENFORCE", "0")
     ntd, read_channels, evidence_available = [], [], False
     if t.dispatch_ndjson and os.path.exists(t.dispatch_ndjson):

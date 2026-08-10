@@ -148,6 +148,31 @@ else
 fi
 
 echo
+echo "── helpers are NOT executable; plugins are ────────────────────────────────"
+# checkers/ holds two different kinds of file: dispatchable PLUGINS, one per watch type,
+# and shared HELPERS (result.py, slack_utils.py) that must never be run as a checker.
+# tick.py resolves a checker as checkers/<watch_type>.py and gates on os.access(X_OK), so
+# the executable bit — not the directory layout — is what separates them. That makes a
+# helpers/ subfolder unnecessary, but it also means the invariant is invisible: `chmod +x
+# slack_utils.py` would silently make a helper dispatchable, and a watch typed to match it
+# would execute a module that never emits a checker result. Pin it here so the mode bit
+# cannot drift unnoticed.
+HELPERS="result.py slack_utils.py"
+for h in $HELPERS; do
+  f="$SCRIPT_DIR/checkers/$h"
+  [ -f "$f" ] || { bad "helper missing: $h"; continue; }
+  [ -x "$f" ] && bad "$h is executable — it could be dispatched as a checker" \
+               || ok "$h is not executable (cannot be dispatched)"
+done
+# ...and the converse: every real watch type must have an EXECUTABLE plugin, or tick.py
+# silently classifies that watch as misconfig and holds its watermark forever.
+for t in slack_thread slack_channel slack_dm slack_mention email jira github_pr schedule approval; do
+  f="$SCRIPT_DIR/checkers/$t.py"
+  [ -x "$f" ] && ok "plugin $t.py is executable" \
+               || bad "plugin $t.py is missing or not executable — that watch type is dead"
+done
+
+echo
 echo "────────────────────────────────────────────────────────────────────────────"
 echo "checker contract: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

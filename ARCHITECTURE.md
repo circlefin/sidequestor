@@ -393,9 +393,9 @@ Worth knowing before trusting the system further than it has earned.
 
 | Limit | Consequence |
 |---|---|
-| Acks are self-attestation | a worker claiming `nothing_to_do` without reading still advances. Detection exists but is **observe-only**: it logs `gate_ack_unverified` and holds nothing. |
+| Acks are self-attestation | a worker claiming `nothing_to_do` without reading still advances. Detection runs on every dispatch and logs `gate_ack_unverified`, but is **observe-only by default** and holds nothing (measured: once in 527 dispatches). Enforcing is available (`YAAS_ACK_EVIDENCE_ENFORCE=1`) and deliberately not the default: the veto's false-negative surface is wide (search-only reads, permalink reads, DM-by-user-id, channel only in the response, other backend event schemas), and a false negative parks the watch as `misconfig` after `YAAS_UNACKED_PROMOTE` no-progress dispatches. A rare logged burial beats a plausible silent freeze. Turn it on once your backend's read paths are fully visible to `dispatch/source-evidence.py`. |
 | Evidence is Slack-and-channel only | email, Jira and GitHub acks are unverified. Absence of a warning does not mean everything was checked. |
-| `handled` is unverified | acking `handled` bypasses the evidence check entirely. |
+| `handled` is unverified | acking `handled` bypasses the evidence check entirely. This is deliberate: a `handled` ack usually means the worker already SENT something, so vetoing it would hold the watermark, re-detect the same item next tick, and risk sending twice. Trading a possible burial for a probable duplicate send is the wrong trade, so `handled` is trusted and only `nothing_to_do` is policed. |
 | Slack gating is by trigger, not by action | an email-triggered quest whose reply goes to Slack is still dispatched during an outage. The send fails, the item is acked `blocked`, so it costs an invocation rather than data. |
 | Prune rules have no golden | they delete logs, not watches, so a mistake costs history rather than tracking. |
 

@@ -153,8 +153,24 @@ printf '%s' "$(D)" | grep -q "SLACK_APP_ID empty" \
 echo
 echo "── the worker contract must be present and intact ─────────────────────────"
 reset_env; rm -f "$REPO/CLAUDE.md"
-printf '%s' "$(D)" | grep -q "CLAUDE.md missing" \
-  && ok "a missing CLAUDE.md fails" || bad "missing CLAUDE.md not reported"
+printf '%s' "$(D)" | grep -q "no worker rules file" \
+  && ok "a missing rules file fails" || bad "missing rules file not reported"
+
+# The backend-agnostic half of the same check: codex and cursor read AGENTS.md / GEMINI.md
+# (often symlinks to CLAUDE.md). doctor.sh used to demand CLAUDE.md by name, which failed a
+# perfectly good non-Claude install and contradicted the README's multi-backend claim.
+reset_env; rm -f "$REPO/CLAUDE.md"
+printf 'Quest Activation Protocol\n' > "$REPO/AGENTS.md"
+printf '%s' "$(D)" | grep -q "no worker rules file" \
+  && bad "AGENTS.md was not accepted as worker rules" \
+  || ok "AGENTS.md is accepted when CLAUDE.md is absent"
+rm -f "$REPO/AGENTS.md"
+
+# A thin rules file that POINTS at the skill now carrying the protocol is valid too.
+reset_env; printf 'load yaas-quest-dispatch\n' > "$REPO/CLAUDE.md"
+printf '%s' "$(D)" | grep -q "neither the Quest Activation Protocol" \
+  && bad "a valid skill-pointer rules file was rejected" \
+  || ok "a rules file pointing at yaas-quest-dispatch is accepted"
 
 reset_env; printf 'just some notes\n' > "$REPO/CLAUDE.md"
 printf '%s' "$(D)" | grep -q "Quest Activation Protocol" \
@@ -236,7 +252,7 @@ echo
 echo "── --quiet suppresses the noise but not the problems ──────────────────────"
 reset_env; rm -f "$REPO/CLAUDE.md"
 Q=$(D --quiet)
-printf '%s' "$Q" | grep -q "CLAUDE.md missing" && ok "--quiet still shows failures" \
+printf '%s' "$Q" | grep -q "no worker rules file" && ok "--quiet still shows failures" \
   || bad "--quiet hid a failure"
 [ "$(printf '%s' "$Q" | grep -c '✓')" -eq 0 ] && ok "...and hides the passing lines" \
   || bad "--quiet still printed passing lines"

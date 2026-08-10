@@ -39,27 +39,35 @@ MCP_CALL = os.environ.get("MCP_CALL", os.path.join(os.path.dirname(SCRIPT_DIR), 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import result
+import slack_utils
 
 def parse_search_results(text, since):
     """Parse Slack MCP search result text (### Result N of M / Message_ts: format).
-    Returns (count, preview) — preview from the first (most recent) new result block.
+    Returns (count, preview, newest_ts). newest_ts is the newest Message_ts seen in ANY
+    block, including already-seen ones: a message at or below the watermark still proves the
+    search index had reached that point, which is what search_advance_to() needs.
     Skips bot messages (From: line tagged [BOT]).
     """
     blocks = re.split(r"### Result \d+ of \d+", text)
     count = 0
     preview = ""
+    newest = 0.0
     for b in blocks[1:]:
         first_from = re.search(r"^From: [^\n]*", b, re.MULTILINE)
         if first_from and "[BOT]" in first_from.group(0):
             continue
         m = re.search(r"Message_ts: ?([0-9]+\.[0-9]+)", b)
-        if m and float(m.group(1)) > since:
+        if not m:
+            continue
+        ts = float(m.group(1))
+        newest = max(newest, ts)
+        if ts > since:
             count += 1
             if not preview:
                 # Extract first Content: line as preview
                 cm = re.search(r"Content:\s*(.+)", b)
                 preview = cm.group(1).strip()[:100] if cm else ""
-    return count, preview
+    return count, preview, newest
 
 
 SEARCH_LIMIT = 50   # was 20; a saturated page cannot prove nothing is older.
@@ -112,11 +120,18 @@ def main():
         return
 
     text = d.get("results", "")
-    count, preview = parse_search_results(text, since)
+    count, preview, newest = parse_search_results(text, since)
     # Saturation: Slack search returns newest-first, so a full page means older
     # matching hits may be unseen. Hold the cursor rather than skip them.
     hits = text.count("Message_ts:") + text.count("Message TS:")
-    result.counted(count, preview, complete=hits < SEARCH_LIMIT)
+    # Emit advance_to EXPLICITLY. Leaving it out makes tick.py fall back to
+    # `now - lag_map[type]`, which depends on an optional checkers/<type>.lag file — and the
+    # slack_dm one did not exist, so the watermark advanced to exactly now and any DM not yet
+    # in the search index was buried. search_advance_to() encodes the safe rule once, in
+    # code, for both search-backed checkers.
+    result.counted(count, preview,
+                   advance_to=f"{slack_utils.search_advance_to(newest):.6f}",
+                   complete=hits < SEARCH_LIMIT)
 
 
 if __name__ == "__main__":

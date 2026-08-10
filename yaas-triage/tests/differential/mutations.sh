@@ -190,6 +190,42 @@ run_mutation "drop the fairness rotation" \
   "fairness_rotation" \
   "dispatch/plan.py"
 
+# 10. Reactions must jump the dispatch queue. Queued behind dirty quests, a reaction waits for
+#     every one of them to finish before its worker even starts (measured 2026-08-08: 4.5
+#     minutes behind three quest dispatches), and the emoji shows nothing meanwhile — the one
+#     case where a human is actively watching and reads the delay as "it's broken".
+run_mutation "reactions stop jumping the dispatch queue" \
+  '    if "reactions" in rotated:' '    if False:' \
+  "reactions_dispatch_first"
+
+# 11. ...but reactions must not EAT a quest's slot. Jumping the queue while also consuming
+#     the fan-out budget turns priority into starvation: at fan-out 1 with a reaction pending
+#     across ticks, every dirty quest is deferred forever. Caught by Codex review, 2026-08-10.
+run_mutation "reactions consume a quest fan-out slot" \
+  '        over_fanout = target != "reactions" and quest_dispatched >= t.max_fanout' \
+  '        over_fanout = quest_dispatched >= t.max_fanout or t.dispatched >= t.max_fanout' \
+  "reactions_dont_starve_quests"
+
+# ── NOT mutated here, deliberately: the CHECK-phase fairness rotation ────────
+# tick_check.rotate_check_order() has no mutation in this file, and that is a considered
+# omission rather than an oversight — verified empirically on 2026-08-10 by disabling it
+# (offset always 0) and re-running: all 32 goldens still passed.
+#
+# It is invisible to this harness BY CONSTRUCTION. The rotation changes the order quests are
+# EXECUTED in; run_tick then reassembles results in quest_dirs order before anything is
+# logged, so watch movements, run-log events, ack manifests and exit code are all identical
+# with or without it. There is nothing for a golden to diff.
+#
+# Contrast the dispatch rotation above, which IS caught: under the fan-out cap it changes
+# WHICH targets get dispatched, and that shows up in the output. Same idea, different
+# observability, so do not "fix" this by adding a mutation here — it would survive and be
+# reported as a blind spot forever.
+#
+# The real guard is tests/unit/tick_check.test.sh, which asserts the property directly:
+# given a budget that serves only the first 10 of 19 quests, every quest is still checked
+# within a bounded number of ticks. That is the behaviour the rotation exists for, and it is
+# testable at the unit level precisely because it is a property of the ORDER, not the output.
+
 echo
 printf '%s mutation(s) caught, %s survived\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
