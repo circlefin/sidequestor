@@ -1,0 +1,30 @@
+{
+  "acks": {},
+  "dispatches": [],
+  "events": [
+    {
+      "event": "gate_watch_backlog",
+      "quest": "q-demo",
+      "reason": "clean but window not drained",
+      "type": "slack_thread",
+      "watch_id": "w1"
+    },
+    {
+      "event": "gate_idle",
+      "quests_checked": 1,
+      "quests_skipped": 1,
+      "watches_in_backoff": 0,
+      "watches_misconfigured": 0,
+      "watches_skipped": 1,
+      "watches_truncated": 1
+    }
+  ],
+  "exit": 0,
+  "planned": [],
+  "quests": {
+    "q-demo": "active"
+  },
+  "watches": {
+    "q-demo/w1": "held"
+  }
+}

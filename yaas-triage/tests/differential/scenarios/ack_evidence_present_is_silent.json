@@ -1,0 +1,34 @@
+{
+  "name": "ack_evidence_present_is_silent",
+  "why": "The worker DID read the channel it acked nothing_to_do on, so no gate_ack_unverified event appears at all. Guards that fire on correct behaviour get ignored.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\n",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "type": "slack_thread",
+          "channel_id": "C0AAAAAAA",
+          "thread_ts": "@now-7200.000100",
+          "last_checked_ts": "@now-3600",
+          "reason": "test"
+        }
+      ]
+    }
+  },
+  "checkers": {
+    "w1": {
+      "outcome": "dirty",
+      "count": 1
+    }
+  },
+  "agent": {
+    "exit": 0,
+    "acks": {
+      "w1": "nothing_to_do"
+    },
+    "reads": [
+      "C0AAAAAAA"
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "advance_to_exact_value",
+  "why": "When the checker names the boundary it covered, the commit must use that value verbatim rather than 'now', or a forward slice loses its tail.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\nTest quest.\n",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "type": "slack_thread",
+          "last_checked_ts": "@now-3600",
+          "reason": "test",
+          "channel_id": "C1",
+          "thread_ts": "@now-7200.000100"
+        }
+      ]
+    }
+  },
+  "checkers": {
+    "w1": {
+      "outcome": "dirty",
+      "count": 3,
+      "advance_to": "@now-60"
+    }
+  },
+  "agent": {
+    "exit": 0,
+    "acks": {
+      "w1": "handled"
+    }
+  }
+}
