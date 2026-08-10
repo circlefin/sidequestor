@@ -87,10 +87,6 @@ TRANSIENT_MARKERS = (
 )
 
 
-class Transient(Exception):
-    """Retryable upstream condition — skip the tick, don't dispatch."""
-
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import result
 
@@ -114,7 +110,7 @@ def gh_search(repo, extra, limit, timeout=30, since_iso=None, order="desc"):
         err = (r.stderr or "").strip()
         low = err.lower()
         if any(m in low for m in TRANSIENT_MARKERS):
-            raise Transient(err.splitlines()[-1] if err else "gh transient failure")
+            raise result.Transient(err.splitlines()[-1] if err else "gh transient failure")
         raise RuntimeError(err.splitlines()[-1] if err else f"gh exit {r.returncode}")
     return json.loads(r.stdout)
 
@@ -147,8 +143,7 @@ def updated_epoch(pr):
             tzinfo=timezone.utc).timestamp()
 
 
-def main():
-    entry = json.loads(sys.argv[1])
+def main(entry):
     repo = entry["repo"]
     extra = entry.get("search") or ""
     limit = int(entry.get("limit") or 100)
@@ -176,7 +171,7 @@ def main():
             # timestamp therefore holds more rows than one page. Reporting clean+complete here
             # would let triage advance this watch to now-lag and skip everything past the
             # page, so hold instead.
-            result.emit("hold", count=0, preview="", complete=False,
+            result.emit(result.HOLD, count=0, preview="", complete=False,
                         reason=(f"a full page of {limit} rows produced nothing past the "
                                 f"watermark; the boundary timestamp spans more than one page "
                                 f"— raise \"limit\" above {limit} for {repo}"))
@@ -185,7 +180,7 @@ def main():
         safe = [pr for pr in changed if updated_epoch(pr) < boundary]
         if not safe:
             # Every NEW row sits at the boundary timestamp, so no advance is provable.
-            result.emit("hold", count=len(changed), preview="", complete=False,
+            result.emit(result.HOLD, count=len(changed), preview="", complete=False,
                         reason=(f"all {len(changed)} new rows share updatedAt "
                                 f"{rows[-1].get('updatedAt')} on a full page; raise \"limit\" "
                                 f"above {limit} for {repo} or the watermark cannot advance"))
@@ -216,10 +211,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Transient as e:
-        # Not dirty: skip the tick. Watermark is held, so nothing is lost.
-        result.ratelimited(str(e))
-    except Exception as e:
-        result.error(f"{type(e).__name__}: {e}")
+    result.run(main)

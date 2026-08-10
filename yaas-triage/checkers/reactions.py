@@ -138,4 +138,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    result.guard(main)

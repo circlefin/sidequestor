@@ -56,7 +56,7 @@ FAIL=0
 ok()   { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 
-VALID_OUTCOMES="clean dirty ratelimited error misconfig"
+VALID_OUTCOMES="clean dirty hold ratelimited error misconfig"
 # Exception types that can only mean the checker's own code is wrong. A checker may
 # legitimately report a ValueError or KeyError from malformed input; it may never
 # report one of these.
@@ -116,7 +116,7 @@ echo "── every checker honours the result contract ────────�
 for path in "$CHECKERS"/*.py; do
   name=$(basename "$path" .py)
   case "$name" in
-    result|slack_utils|cron_due|reactions) continue ;;   # not per-entry checkers
+    result|slack|slack_utils|cron_due|reactions) continue ;;   # shared modules, not per-entry checkers
   esac
   [ -x "$path" ] || bad "$name — not executable, so triage reports 'no executable checker'"
   check_output "$name (plausible entry)" "$(python3 "$path" "$(entry_for "$name")" 2>/dev/null)"

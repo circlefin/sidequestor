@@ -35,7 +35,10 @@ So a checker now prints ONE LINE of JSON:
     {"outcome":"dirty","count":3,"preview":"...","advance_to":"1785920000.000000",
      "complete":true,"reason":""}
 
-  outcome     clean | dirty | ratelimited | error | misconfig
+  outcome     clean | dirty | hold | ratelimited | error | misconfig
+              hold        → the checker saw the window but will not let the
+                            watermark move yet (e.g. changes it has not proven
+                            the worker consumed). No dispatch.
               ratelimited → transient, triage holds the watermark, no dispatch.
               error       → triage backs off exponentially, no dispatch.
               misconfig   → permanent, needs a human, no dispatch.
@@ -56,9 +59,19 @@ import sys
 
 CLEAN       = "clean"
 DIRTY       = "dirty"
+HOLD        = "hold"
 RATELIMITED = "ratelimited"
 ERROR       = "error"
 MISCONFIG   = "misconfig"
+
+
+class Transient(Exception):
+    """A retryable upstream condition — rate limit, 5xx, timeout, network.
+
+    Lives here rather than in each checker because the verdict it maps to is part
+    of the contract: run() turns it into `ratelimited`, which holds the watermark
+    so the next tick re-reads the same window. Anything else becomes `error`.
+    """
 
 
 def emit(outcome, count=0, preview="", advance_to=None, complete=True, reason=""):
@@ -130,10 +143,31 @@ def misconfig(reason):
 
 
 def guard(main_fn):
-    """Run a checker's main() and convert any escaping exception into an `error`
-    result rather than a traceback on stdout that triage cannot parse."""
+    """Run a zero-argument checker main() and convert any escaping exception into a
+    parseable verdict rather than a traceback on stdout that triage cannot parse.
+
+    Transient → ratelimited (watermark held, next tick retries the same window).
+    Anything else → error (triage backs off exponentially).
+    """
     try:
         main_fn()
+    except Transient as exc:
+        ratelimited(str(exc))
+        sys.exit(0)
     except Exception as exc:  # noqa: BLE001 - deliberate catch-all at the boundary
         error(f"{type(exc).__name__}: {exc}")
         sys.exit(0)
+
+
+def run(main_fn):
+    """Entry point for a per-entry checker: parse the watch entry from argv and run it.
+
+    Every per-entry checker is invoked as `<checker>.py '<watch json>'`, so the argv
+    parse belongs here rather than being re-derived in each one. Parse failures go
+    through the same guard, so a malformed entry is an `error` verdict, not a
+    traceback triage would have to treat as a crash.
+    """
+    if len(sys.argv) < 2:
+        error("missing watch entry argument")
+        sys.exit(0)
+    guard(lambda: main_fn(json.loads(sys.argv[1])))

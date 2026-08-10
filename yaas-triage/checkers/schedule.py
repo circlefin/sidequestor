@@ -40,16 +40,13 @@ Imports cron_due.is_due (same directory) for the actual cron evaluation logic.
 """
 import sys
 import os
-import json
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cron_due
 import result
 
-def main():
-    entry = json.loads(sys.argv[1])
-
+def main(entry):
     # One-shot schedule: fire once when next_fire_ts has passed.
     if "cron" not in entry and "next_fire_ts" in entry:
         next_fire = float(entry["next_fire_ts"])
@@ -78,7 +75,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        result.error(f"{type(e).__name__}: {e}")
+    result.run(main)

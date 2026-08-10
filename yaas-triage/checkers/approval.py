@@ -41,19 +41,7 @@ APPROVALS    = os.path.join(REPO_ROOT, "state", "pending-approvals.json")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import result
 
-def main():
-    if len(sys.argv) < 2:
-        print("error|missing watch entry argument", file=sys.stderr)
-        result.error("missing watch entry argument")
-        return
-
-    try:
-        entry = json.loads(sys.argv[1])
-    except Exception as e:
-        print(f"error|bad watch entry JSON: {e}", file=sys.stderr)
-        result.error("bad watch entry JSON")
-        return
-
+def main(entry):
     approval_id = entry.get("approval_id")
     if not approval_id:
         print("error|approval_id missing from watch entry", file=sys.stderr)
@@ -114,4 +102,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    result.run(main)

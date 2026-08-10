@@ -63,10 +63,6 @@ TRANSIENT_MARKERS = (
 )
 
 
-class Transient(Exception):
-    """Retryable upstream condition — skip the tick, don't dispatch."""
-
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import result
 
@@ -76,7 +72,7 @@ def gws_run(*args, timeout=20):
         r = subprocess.run([GWS] + list(args), capture_output=True, text=True,
                            timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise Transient(f"{label} timed out after {timeout}s")
+        raise result.Transient(f"{label} timed out after {timeout}s")
 
     out = r.stdout.strip()
     if r.returncode == 0 and out:
@@ -95,21 +91,20 @@ def gws_run(*args, timeout=20):
         reason = str(err.get("reason", "")).lower()
         detail = f"{label}: {code} {err.get('message', '')}".strip()
         if code in TRANSIENT_CODES or reason in TRANSIENT_REASONS:
-            raise Transient(detail)
+            raise result.Transient(detail)
         raise RuntimeError(detail)
 
     blob = f"{out} {r.stderr or ''}".lower()
     detail = f"{label} failed (exit {r.returncode})"
     if any(m in blob for m in TRANSIENT_MARKERS):
-        raise Transient(detail)
+        raise result.Transient(detail)
     raise RuntimeError(detail)
 
 
 PAGE_LIMIT = 50   # was 10. See the complete= note below.
 
 
-def main():
-    entry = json.loads(sys.argv[1])
+def main(entry):
     query = entry["query"]
     since_ts = float(entry.get("last_checked_ts", "0"))
     since_ms = since_ts * 1000
@@ -141,7 +136,7 @@ def main():
                     "subject": hdrs.get("Subject", "")[:50],
                     "ts": int(md.get("internalDate", "0")) / 1000.0,
                 })
-        except Transient:
+        except result.Transient:
             # Must NOT be swallowed. Skipping a message here undercounts, and an
             # undercount to zero prints "0|" -> clean tick -> triage advances the
             # watermark past a message nobody ever read. Losing the email is
@@ -164,10 +159,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Transient as e:
-        # Not dirty: skip the tick. Watermark is held, so nothing is lost.
-        result.ratelimited(str(e))
-    except Exception as e:
-        result.error(f"{type(e).__name__}: {e}")
+    result.run(main)

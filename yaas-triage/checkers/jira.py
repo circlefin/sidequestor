@@ -79,10 +79,6 @@ EXIT_TRANSIENT = 4
 MAX_PAGES = 10
 
 
-class Transient(Exception):
-    """Retryable upstream condition — skip the tick, don't dispatch."""
-
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import result
 
@@ -91,7 +87,7 @@ def jira_get(path, timeout=30):
     detail = (r.stderr or "").strip().splitlines()
     msg = detail[-1] if detail else f"jira-call.sh exit {r.returncode}"
     if r.returncode == EXIT_TRANSIENT:
-        raise Transient(msg)
+        raise result.Transient(msg)
     if r.returncode != 0 or not r.stdout.strip():
         raise RuntimeError(msg)
     return json.loads(r.stdout)
@@ -116,8 +112,7 @@ def updated_epoch(issue):
                                  "%Y-%m-%dT%H:%M:%S.%f%z").timestamp()
 
 
-def main():
-    entry = json.loads(sys.argv[1])
+def main(entry):
     jql = entry["jql"]
     since_ts = float(entry.get("last_checked_ts") or 0)
 
@@ -174,7 +169,7 @@ def main():
         boundary = updated_epoch(changed[-1])
         safe = [i for i in changed if updated_epoch(i) < boundary]
         if not safe:
-            result.emit("hold", count=len(changed), preview="", complete=False,
+            result.emit(result.HOLD, count=len(changed), preview="", complete=False,
                         reason=(f"all {len(changed)} changed issues share the same updated "
                                 f"timestamp on a capped page; the watermark cannot advance "
                                 f"safely"))
@@ -186,7 +181,7 @@ def main():
             # The page filled yet nothing is past the watermark, so the boundary timestamp
             # spans more than the page cap. Reporting clean+complete would let triage advance
             # this watch to now-lag and skip everything beyond it.
-            result.emit("hold", count=0, preview="", complete=False,
+            result.emit(result.HOLD, count=0, preview="", complete=False,
                         reason="a capped page produced nothing past the watermark; the "
                                "boundary timestamp spans more than one page of results")
             return
@@ -215,10 +210,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Transient as e:
-        # Not dirty: skip the tick. Watermark is held, so the change is not lost.
-        result.ratelimited(str(e))
-    except Exception as e:
-        result.error(f"{type(e).__name__}: {e}")
+    result.run(main)
