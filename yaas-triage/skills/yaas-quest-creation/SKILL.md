@@ -29,16 +29,22 @@ Ask the user for, in order:
 2. **What to watch** — at least one entry, each with a `type`:
    - **`slack_thread`** — provide Slack permalink(s). Extract `channel_id` and `thread_ts` from each URL. Use when watching a specific thread for new replies.
    - **`slack_channel`** — provide channel name or ID. Watches entire channel for new top-level messages. Does NOT catch replies inside existing threads; for those, add the specific thread as `slack_thread`.
-   - **`slack_dm`** — Slack user IDs or names of people whose new DMs should trigger this quest. Resolve names → IDs via `mcp__slack__slack_search_users` if needed.
+   - **`slack_dm`** — needs BOTH `user_id` and `channel_id` (the DM channel, `D…`). Resolve a name → user ID via `mcp__slack__slack_search_users`, then resolve that user's DM channel; a `user_id` is not a channel. Fires on new DMs from that person.
    - **`slack_mention`** — a Slack `user_id`. Fires on any new message that @mentions that user, anywhere the searcher can see (global, not channel-scoped). No channel field; the worker re-runs the mention search to locate each hit. Use for "back me up: respond when anyone @mentions me." Skips `[BOT]` authors and the watched user's own messages.
-   - **`schedule`** — a 5-field cron expression + IANA timezone. Fires the quest at the scheduled time.
+   - **`schedule`** — fires the quest at a time you choose, in one of two shapes:
+     - **repeating**: `cron` (5-field) + `tz` (IANA timezone). `tz` is required alongside `cron` — a bare cron is ambiguous.
+     - **one-shot**: `next_fire_ts` (epoch seconds), and no `cron`. Fires once, then the watch is spent.
+     Cron cannot express "every other week" and similar; for those, schedule the inner interval and have `context.md` gate on a state file the worker writes after it acts.
    - **`email`** — field name is `query` (a Gmail search string, e.g. `from:partner@example.com subject:invoice`). Matches any email matching the query that arrived after the watermark.
    - **`jira`** — a JQL string (e.g. `labels=my-label`, `project=PROJ AND assignee=currentUser()`). Fires when any issue in that set changes: status transition, new comment, or any field edit. Reads through `yaas-triage/surfaces/jira-call.sh`, so it works headless (the Atlassian MCP does not). Requires the Keychain API token `jira-api-token`/`yaas`. Do NOT include `ORDER BY` in the JQL: the checker adds its own ordering, and a caller-supplied one disables its early stop and makes every tick page to the cap.
    - **`github_pr`** — a `repo` as `owner/name`. Fires on any PR update in that repo: new PR, new commit, review, comment, or merge. Use it alongside `jira` when a fix lands as a PR, because **a PR review comment does not bump the linked Jira issue**, so the `jira` watch cannot see it. Optional `search` (extra GitHub qualifiers) and `limit` (default 100). Two traps before you add a `search`: repeated qualifiers AND rather than OR (`author:a author:b` matches nothing and the watch reports clean forever), and full-text terms only match what a PR happens to say. Also avoid `is:open`, which hides merges. Verify recall against a known PR set first; the details are in `checkers/github_pr.py`'s docstring.
 
    Both of the above are repo/project-wide by nature, so they can fire on items unrelated to the quest. Say so in the `reason`, and make the quest's `context.md` tell the worker to exit immediately without acting when the changed item is out of scope.
-   - **`approval`** — runtime-only. The worker appends this automatically when it queues a manual-review item (§3d of CLAUDE.md). Do NOT include it in a creation spec; there is no approval to track at creation time.
-   - **Other types** (e.g. `telegram_chat`) — see `yaas-triage/skills/yaas-ops/SKILL.md` for required fields.
+   - **`approval`** — effectively runtime-only: the worker appends one itself when it queues a manual-review item (§3d of CLAUDE.md). Do not put one in a creation spec — there is no approval to track before the quest exists. `new-quest.py` does accept the type (with a required `approval_id`) so its type list matches `checkers/`, so this is a rule you follow, not one the script enforces.
+   - **Anything else** — there is no other type. `new-quest.py` rejects a type with no
+     `checkers/<type>.py`, because an unknown type would otherwise scaffold cleanly and then be
+     skipped silently on every tick. To add one, write the checker first, then register it in
+     `REQUIRED_FIELDS`. `yaas-triage/skills/yaas-ops/SKILL.md` has the state-file reference.
 
    **Prefer a pre-dispatch filter over waking Opus to decide relevance.** `slack_channel`
    and `slack_thread` watches accept two optional filter fields, evaluated inside the
@@ -99,10 +105,11 @@ Spec fields:
 - `allow_send` — `true` | `false` (default: `false`)
 - `context` — body text for `context.md`
 - `note` — short note for the `created` timeline event (defaults to first 80 chars of context)
-- `retire_slack_threads_after_days` — int or `false`:
-  - omitted → use global default (30 days)
+- `retire_slack_threads_after_days` — non-negative int or `false`:
+  - omitted → the global default, `YAAS_RETIRE_DEFAULT_DAYS` (**14** days)
   - positive int N → drop `slack_thread` watches whose parent `thread_ts` is older than N days
-  - `false` → never retire (use for long-lived partner conversations)
+  - `false` **or `0`** → never retire (use for long-lived partner conversations); `housekeep.py`
+    treats both the same, along with any unparseable value
   - Examples: `7` for ephemeral chat (self-DM), `false` for partner monitoring
 
 Example call:
@@ -162,11 +169,23 @@ Always watch the **parent thread_ts**, not a reply's ts.
 
 ## Validation checks before writing
 
-- Quest ID must be unique — check `state/quests/active/` and `state/quests/archived/` don't already contain the ID. If collision, append `-2`, `-3`, etc.
-- `watches[]` must have at least one entry.
-- Channel IDs start with `C` (public), `G` (private group), `D` (DM), or `MP` (mpim). Flag unexpected prefixes to the user.
-- User IDs start with `U`. Flag anything else.
-- Every entry must have `type` and `reason`. Do NOT include `last_checked_ts` — the script injects it and will reject any entry that already has one.
+**The script enforces these** — it exits non-zero rather than scaffolding something broken:
+
+- Quest ID uniqueness across `state/quests/active/`, `archived/` **and `completed/`**. On a
+  collision it appends `-2`, `-3`, … itself.
+- `watches[]` has at least one entry, and every entry has a `type` and a `reason`.
+- The `type` has an executable `checkers/<type>.py`, and carries that type's required fields.
+- `watch_mode`, if present, is exactly `"read_only"`.
+- No `last_checked_ts` — the script sets it.
+
+**These are yours to check; the script does NOT** — a malformed ID scaffolds cleanly and then
+fails at runtime, where it is much harder to notice:
+
+- Channel IDs start with `C` (public), `G` (private group), `D` (DM), or `MP` (mpim). Anything
+  else is almost certainly a user ID pasted into a channel field. Flag it to the user.
+- User IDs start with `U`.
+- The IDs point at what the user actually meant. Resolve names via
+  `mcp__slack__slack_search_users` and confirm before writing them in.
 
 ## Error handling
 

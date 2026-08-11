@@ -97,9 +97,11 @@ QUESTS_ARCHIVED  = REPO_ROOT / "state" / "quests" / "archived"
 REQUIRED_FIELDS = {
     "slack_thread":  ["channel_id", "thread_ts"],
     "slack_channel": ["channel_id"],
-    "slack_dm":      ["user_id"],
+    # Both, matching ledger/add-watch.py. user_id alone scaffolds a watch the ledger will
+    # later refuse, so the mismatch surfaces long after the quest looks healthy.
+    "slack_dm":      ["channel_id", "user_id"],
     "slack_mention": ["user_id"],
-    "schedule":      ["cron", "tz"],
+    "schedule":      [],           # cron+tz OR next_fire_ts — see validate_watches
     "email":         ["query"],
     "jira":          ["jql"],
     "github_pr":     ["repo"],
@@ -115,7 +117,8 @@ REQUIRED_FIELDS = {
 KNOWN_TYPES = set(REQUIRED_FIELDS)
 
 # Canonical field order for each type (for readable output)
-FIELD_ORDER = ["type", "channel_id", "thread_ts", "user_id", "cron", "tz", "id", "query",
+FIELD_ORDER = ["type", "channel_id", "thread_ts", "user_id", "cron", "tz", "next_fire_ts",
+               "id", "query",
                "jql", "repo", "search", "limit",
                "watch_mode", "last_checked_ts", "filter_user_ids", "filter_keywords", "reason"]
 
@@ -186,6 +189,16 @@ def validate_watches(watches):
         for field in REQUIRED_FIELDS.get(t, []):
             if not w.get(field):
                 die(f"watches[{i}] (type={t!r}) missing required field '{field}'")
+        # A schedule fires either on a repeating cron (with a timezone, since a bare cron is
+        # ambiguous) or once at a fixed epoch. checkers/schedule.py and ledger/add-watch.py
+        # both accept either shape; this used to demand cron+tz and so made the one-shot form
+        # unreachable through the documented path.
+        if t == "schedule":
+            if not (w.get("cron") or w.get("next_fire_ts")):
+                die(f"watches[{i}] (type='schedule') needs either 'cron' + 'tz' "
+                    f"(repeating) or 'next_fire_ts' (one-shot)")
+            if w.get("cron") and not w.get("tz"):
+                die(f"watches[{i}] (type='schedule') has 'cron' but no 'tz'")
         if "watch_mode" in w and w["watch_mode"] not in ("read_only",):
             die(f"watches[{i}] watch_mode must be 'read_only' if set, got: {w['watch_mode']!r}")
         if "last_checked_ts" in w:
@@ -209,7 +222,7 @@ def main():
     context    = spec.get("context", "")
     watches_in = spec.get("watches", [])
     note_raw   = spec.get("note", context[:80] if context else "Quest created")
-    retire_days = spec.get("retire_slack_threads_after_days", None)  # None → default (30 in the orchestrator)
+    retire_days = spec.get("retire_slack_threads_after_days", None)  # None → YAAS_RETIRE_DEFAULT_DAYS (14)
 
     if not title:
         die("'title' is required")

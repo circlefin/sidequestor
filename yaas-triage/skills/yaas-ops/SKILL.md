@@ -145,7 +145,7 @@ Old quests may carry six dead arrays at the bottom (`threads`, `dm_partners`, `c
   "created": "2026-...T...Z",
   "priority": "normal",                        // high | normal | low
   "allow_send": false,                         // true = worker can send directly
-  "retire_slack_threads_after_days": 30        // optional; int / false / null — see ARCHITECTURE.md §6
+  "retire_slack_threads_after_days": 14        // optional; int / false / null — see ARCHITECTURE.md §6
 }
 ```
 
@@ -287,11 +287,11 @@ come up while debugging:
 | `YAAS_MAX_DISPATCH_6H` | 250 | Dispatch-count ceiling. The only ceiling that works under the codex/cursor backends, which report no cost. |
 | `YAAS_MAX_TARGET_DISPATCH_PER_HOUR` | 25 | Per-target breaker; logs `gate_target_breaker_open`. |
 | `YAAS_MAX_DISPATCH_FANOUT` | 4 | Max agent invocations per tick. Extra targets are deferred (`gate_dispatch_deferred`) with watermarks untouched. |
-| `YAAS_UNACKED_PROMOTE` | 3 | Dispatches a watch may go unacked in the ledger before promotion to `misconfig`. |
+| `YAAS_UNACKED_PROMOTE` | 3 | Dispatches a watch may go unacked in the ledger before it starts backing off (5m doubling to a 24h cap). It keeps retrying forever and is never parked; the dashboard shows it as `backing off` with the worker's last error. |
 | `YAAS_CHECKER_ERROR_PROMOTE` | 6 | Consecutive checker errors before backoff becomes `misconfig`. |
 | `YAAS_TRIAGE_MAX_PARALLEL` | 3 | Peak concurrent Slack calls. Raising this contributed to a runaway incident. |
 | `YAAS_LOG_RETAIN_DAYS` | 14 | Per-dispatch worker logs older than N days are deleted each tick. `0` disables. |
-| `YAAS_RETIRE_DEFAULT_DAYS` | 30 | Default age threshold for retiring stale `slack_thread` watches. Per-quest override via `retire_slack_threads_after_days` in meta.json. |
+| `YAAS_RETIRE_DEFAULT_DAYS` | 14 | Default age threshold for retiring stale `slack_thread` watches. Per-quest override via `retire_slack_threads_after_days` in meta.json (`false` or `0` = never). |
 
 Current spend against the ceilings:
 `python3 yaas-triage/dispatch/spend-window.py state/run-log.ndjson | jq .`
