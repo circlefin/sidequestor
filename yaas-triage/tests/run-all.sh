@@ -63,7 +63,7 @@ if [ -d "$HERE/differential" ]; then
   rm -f /tmp/yaas-diff-runall.$$
   echo
   echo "coverage:  tests/coverage.sh   (source files with no unit test)"
-  echo "pre-merge (not run above): differential/run.sh check   (shell) · differential/mutations.sh"
+  echo "pre-merge (not run above): differential/mutations.sh   (~2 min; proves the goldens still bite)"
 fi
 
 [ "$FAIL" -eq 0 ]

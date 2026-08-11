@@ -2,6 +2,11 @@
 
 > *Yourself as a service, while you're AFK.*
 
+> **macOS only.** It runs on `launchd` and stores its Slack token in the Keychain, so it
+> will not run as-is on Linux or Windows. It is one person's always-on assistant,
+> published to read and adapt rather than to install unchanged — there is no support
+> commitment and no cross-platform story yet.
+
 You already have an AI agent on your machine — Claude Code, Codex, or Cursor — sitting in the
 repo you work in, waiting for you to type something.
 
@@ -32,6 +37,12 @@ ever acts inside a compartment, so you always know what it is watching, why it a
 mistake can't escape the quest it happened in. See [Everything is a quest](#everything-is-a-quest).
 
 **$0 idle. Tokens only on dispatch.**
+
+Costless Slack polling deliberately uses a locally owned workspace Slack app rather than a
+centrally managed Marketplace app or hosted credential service. This keeps credentials and
+availability under each user's control, at the cost of requiring every workspace to create or
+approve its own app. A Marketplace app can be reconsidered later if setup friction outweighs
+the local-first design.
 
 ---
 
@@ -115,9 +126,10 @@ cp CLAUDE.example.md CLAUDE.md
 
 Two files to edit, and only two:
 
-**`.env`** — the Slack app details, and your sender identity for email replies. Every other knob
-has a working default, and `.env.example` explains each one and why it's set where it is. Worth
-a glance at the spend ceilings before you leave them alone.
+**`.env`** — the Slack app details, your sender identity for email replies, and any reaction
+workflow emoji overrides you want. Every optional knob has a working default, and `.env.example`
+explains each one and why it's set where it is. Worth a glance at the spend ceilings before you
+leave them alone.
 
 **`CLAUDE.md`** — your agent's rules: who it is, how it writes, what it must never do. Add your
 voice here. Leave the protocol sections alone; the orchestrator has a contract with them.
@@ -154,7 +166,7 @@ yaas-triage/tests/run-all.sh                   # is the CODE correct?
 Three different questions, three different tools. The tests use throwaway fixtures and touch
 none of your real state, so they're safe to run whenever.
 
-Expect: `All checks passed`, `healthy`, and `28 suite(s) passed`.
+Expect: `All checks passed`, `healthy`, and `29 suite(s) passed`.
 
 ---
 
@@ -314,15 +326,18 @@ yaas-triage/
 ├── ledger/            "owns a state file, atomically"
 ├── surfaces/          "talk to the outside"
 ├── ops/               "keep it alive and visible"
-└── tests/             28 suites + 31 goldens + 9 mutations
+└── tests/             29 suites + 29 goldens + 12 mutations
 ```
 
-Adding a watch type means dropping one file in `checkers/`. Nothing else changes.
+Adding a watch type means dropping one file in `checkers/`, named for the type and **marked executable** (`chmod +x`) — triage resolves `checkers/<type>.py` and gates on the executable bit, so a non-executable checker is treated as missing and its watches are held as `misconfig` rather than silently skipped. Runtime requires neither `advance_to` nor `complete` — `complete` defaults to true and a missing `advance_to` falls back to a time-based guess — but emitting both is the safe contract, and the only way your checker can hold its own watermark when it could not drain the window. Omit them and you inherit a guess that is only correct for a source that cannot lag. Nothing else changes.
 
-Before you send a patch: `yaas-triage/tests/run-all.sh`, then
-`yaas-triage/tests/differential/run.sh check`. The second one runs a real tick against a
-throwaway repo and compares the decisions to recorded goldens — it is how a refactor proves it
-changed nothing it didn't mean to.
+Before you send a patch: `yaas-triage/tests/run-all.sh` (which already includes the
+differential goldens), then `yaas-triage/tests/differential/mutations.sh`. The goldens run a
+real tick against a throwaway repo and compare the decisions to recorded output — that is how
+a refactor proves it changed nothing it didn't mean to. The mutation suite is the one
+`run-all.sh` deliberately leaves out (it takes ~2 min): it breaks the orchestrator on purpose
+and fails if the goldens *don't* notice, which is what stops the goldens quietly decaying into
+a suite that passes no matter what you do.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [ARCHITECTURE.md](ARCHITECTURE.md), and
 [SECURITY.md](SECURITY.md).

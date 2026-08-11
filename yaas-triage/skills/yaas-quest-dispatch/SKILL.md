@@ -116,7 +116,7 @@ The `ephemeral` flag is not optional and is not decoration: it is what lets `hou
 
 ### 3b. Execute your own commitments before exiting (general rule — all quests AND reactions)
 
-This rule binds every outbound reply you compose, including Reactions Fast Path replies (§ Reactions) — "general rule" means the dispatch target doesn't matter. A `:claude-intensifies:` reply that says "will rerun X and confirm" owes the rerun in that same tick.
+This rule binds every outbound reply you compose, including Reactions Fast Path replies (§ Reactions) — "general rule" means the dispatch target doesn't matter. A reaction-workflow `process` reply that says "will rerun X and confirm" owes the rerun in that same tick.
 
 If your reply contains a forward-looking commitment ("I'll raise it in X", "let me ping Y", "I'm going to loop in Z"), execute it in the same tick before you exit. `watch.json` only watches inbound signals: messages, reactions, scheduled cron, email. A commitment that lives only as text inside a Slack message has no trigger for triage to fire on, so the next tick will not resurrect it. The user should not have to ping you to do something you just said you would do.
 
@@ -227,4 +227,3 @@ Two things the ledger cannot check for you:
 - Idle 7+ days with `awaiting_reply` → leave in `active/` but consider marking `blocked`.
 
 ---
-

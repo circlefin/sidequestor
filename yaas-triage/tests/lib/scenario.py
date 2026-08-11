@@ -181,10 +181,8 @@ for extra in spec.get("append_watches", []):
     subprocess.run(["python3", os.path.join(os.environ["YAAS_TRIAGE_DIR"], "ledger", "add-watch.py"),
                     target, json.dumps(extra)], capture_output=True)
 
-# A real event stream, so the source-evidence check has something to read. `reads` lists
-# channels the worker successfully read; `failed_reads` lists channels it TRIED and failed,
-# which must not count as evidence. Omitting `reads` entirely means "no stream at all",
-# which is how a scenario asks for the pre-check behaviour.
+# A real event stream for Slack-tooling blocker recovery. `reads` lists successful reads;
+# `failed_reads` lists attempts that must not count as proof that worker Slack access recovered.
 ndjson_path = "stub.ndjson"
 reads = spec.get("reads")
 if reads is not None:

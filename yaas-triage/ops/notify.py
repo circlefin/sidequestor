@@ -39,6 +39,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from reaction_config import load_reaction_emojis
+
 MAX_PER_RUN = 10          # a banner pile-up is worse than a missed banner
 
 TIMELINE_EVENTS = {
@@ -66,12 +69,6 @@ RUNLOG_EVENTS = {
         "ack manifest unreadable — work held",
         lambda e: f"{e.get('quest', '?')} run {e.get('run_id', '?')}"),
 }
-
-REACTION_FILES = {
-    "claude_intensifies_replied.json": ("replied_timestamps", "replied to :claude-intensifies:"),
-    "writing_hand_replied.json":       ("replied_timestamps", "drafted reply for :writing_hand:"),
-}
-
 
 def parse_ts(raw):
     """ISO-8601 to epoch float. None if unparseable."""
@@ -142,7 +139,14 @@ def from_runlog(repo, watermark):
 
 
 def from_reactions(repo, watermark):
-    for fname, (key, label) in REACTION_FILES.items():
+    emojis = load_reaction_emojis()
+    reaction_files = {
+        "claude_intensifies_replied.json":
+            ("replied_timestamps", f"replied to :{emojis['process']}"),
+        "writing_hand_replied.json":
+            ("replied_timestamps", f"drafted reply for :{emojis['draft']}"),
+    }
+    for fname, (key, label) in reaction_files.items():
         data = read_json(repo / "state" / fname)
         if not isinstance(data, dict):
             continue

@@ -35,6 +35,7 @@ the send belongs to a quest.
 Usage
 =====
     python3 yaas-triage/surfaces/slack-send.py '<json>'
+    python3 yaas-triage/surfaces/slack-send.py --channel-id C... --message "..."
 
 <json> fields:
     channel_id       (required)  channel/DM ID (C.../D.../G...) or user_id for a DM
@@ -59,6 +60,7 @@ Exit codes:
     2  send failed (Slack/MCP error) — nothing sent, nothing logged
 """
 
+import argparse
 import fcntl
 import json
 import os
@@ -213,16 +215,55 @@ def _queue_for_review(p, reason):
     return (out.stdout or "").strip()
 
 
-def main():
-    if len(sys.argv) < 2:
+def _parse_args(argv):
+    if not argv:
         print(__doc__)
         sys.exit(1)
+    if argv[0] in ("-h", "--help"):
+        print(__doc__)
+        sys.exit(0)
+    if len(argv) == 1 and not argv[0].startswith("-"):
+        try:
+            return json.loads(argv[0])
+        except json.JSONDecodeError as e:
+            print(f"error: invalid JSON argument: {e}", file=sys.stderr)
+            sys.exit(1)
 
-    try:
-        p = json.loads(sys.argv[1])
-    except json.JSONDecodeError as e:
-        print(f"error: invalid JSON argument: {e}", file=sys.stderr)
-        sys.exit(1)
+    parser = argparse.ArgumentParser(add_help=True, description="Send or draft a Slack message.")
+    parser.add_argument("--channel-id", "--channel", dest="channel_id", required=True)
+    parser.add_argument("--message", "--text", dest="message", required=True)
+    parser.add_argument("--thread-ts")
+    parser.add_argument("--reply-broadcast", action="store_true")
+    parser.add_argument("--draft", action="store_true")
+    parser.add_argument("--quest-id")
+    parser.add_argument("--quest-title")
+    parser.add_argument("--event")
+    parser.add_argument("--note")
+    ns = parser.parse_args(argv)
+
+    p = {
+        "channel_id": ns.channel_id,
+        "message": ns.message,
+    }
+    if ns.thread_ts:
+        p["thread_ts"] = ns.thread_ts
+    if ns.reply_broadcast:
+        p["reply_broadcast"] = True
+    if ns.draft:
+        p["draft"] = True
+    if ns.quest_id:
+        p["quest_id"] = ns.quest_id
+    if ns.quest_title:
+        p["quest_title"] = ns.quest_title
+    if ns.event:
+        p["event"] = ns.event
+    if ns.note:
+        p["note"] = ns.note
+    return p
+
+
+def main():
+    p = _parse_args(sys.argv[1:])
 
     channel_id = p.get("channel_id")
     message = p.get("message")

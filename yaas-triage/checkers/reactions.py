@@ -16,9 +16,9 @@
 # limitations under the License.
 
 """
-checkers/reactions.py — scan Slack for new :claude-intensifies:, :writing_hand:, :floppy_disk:,
-:incoming_envelope: reactions applied by the user since the 60-day cutoff. Diffs against
-processed-set state files. Writes state/triage/pending_reactions.json if anything is new.
+checkers/reactions.py — scan Slack for the configured process, draft, save, and adopt reactions
+applied by the user since the 60-day cutoff. Diffs against processed-set state files. Writes
+state/triage/pending_reactions.json if anything is new.
 
 Unlike the per-entry checkers, this runs once globally (not per watch entry).
 Called directly by the original shell orchestrator after the per-quest checker pass.
@@ -41,6 +41,10 @@ import re
 import os
 import sys
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from reaction_config import load_reaction_emojis
 
 
 def sgtnow():
@@ -54,11 +58,17 @@ def main():
     mcp_call, cutoff, repo_root, pending_path = sys.argv[1:5]
     state_dir = os.path.join(repo_root, "state")
 
+    try:
+        emojis = load_reaction_emojis()
+    except ValueError as exc:
+        print(f"REACTIONS_CONFIG_ERROR: {exc}", file=sys.stderr)
+        return 2
+
     emoji_specs = [
-        ("claude-intensifies", "claude_intensifies_replied.json", "replied_timestamps"),
-        ("writing_hand",      "writing_hand_replied.json",      "replied_timestamps"),
-        ("floppy_disk",       "floppy_disk_saved.json",         "saved_timestamps"),
-        ("incoming_envelope", "incoming_envelope_adopted.json", "adopted_timestamps"),
+        (emojis["process"], "claude_intensifies_replied.json", "replied_timestamps"),
+        (emojis["draft"],   "writing_hand_replied.json",      "replied_timestamps"),
+        (emojis["save"],    "floppy_disk_saved.json",         "saved_timestamps"),
+        (emojis["adopt"],   "incoming_envelope_adopted.json", "adopted_timestamps"),
     ]
 
     pending = {}
@@ -135,7 +145,8 @@ def main():
         except FileNotFoundError:
             pass
         print(f"{sgtnow()}  REACTIONS_DIRTY=0")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

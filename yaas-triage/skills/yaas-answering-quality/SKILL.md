@@ -1,11 +1,11 @@
 ---
 name: yaas-answering-quality
-description: Quality rules for composing bot replies in Slack threads and channels — research the asker/channel/partnership context first, multiple hypotheses for debugging questions, search prior Slack threads before answering tooling questions, follow up on answered threads within 48 hours, hedge confidence appropriately, and handle vague or suspiciously simple questions by clarifying or scoping the interpretation. Load whenever the worker is about to post a reply in a team Q&A channel, a `:claude-intensifies:` thread, a `:writing_hand:` draft, or any other public/private channel Q&A. Does not apply to partner-facing DMs on quest-driven outreach — those follow the quest's own tone.
+description: Quality rules for composing bot replies in Slack threads and channels — research the asker/channel/partnership context first, multiple hypotheses for debugging questions, search prior Slack threads before answering tooling questions, follow up on answered threads within 48 hours, hedge confidence appropriately, and handle vague or suspiciously simple questions by clarifying or scoping the interpretation. Load whenever the worker is about to post a reply in a team Q&A channel, a reaction-workflow process thread or draft, or any other public/private channel Q&A. Does not apply to partner-facing DMs on quest-driven outreach — those follow the quest's own tone.
 ---
 
 # Answering Quality Rules
 
-Applies whenever the bot composes a reply in any Slack channel (a team Q&A channel, `:claude-intensifies:` threads, `:writing_hand:` drafts, any public or private channel Q&A) **and to partner-facing quest replies** — the composition rules below (especially #6-#8) are what make a reply read as the operator rather than as a machine. Voice/register defaults live in CLAUDE.md § Tone; this skill owns answer quality.
+Applies whenever the bot composes a reply in any Slack channel (a team Q&A channel, reaction-workflow `process` threads or `draft` actions, any public or private channel Q&A) **and to partner-facing quest replies** — the composition rules below (especially #6-#8) are what make a reply read as the operator rather than as a machine. Voice/register defaults live in CLAUDE.md § Tone; this skill owns answer quality.
 
 ## 0. Know the room before you answer
 

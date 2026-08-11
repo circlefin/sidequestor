@@ -283,6 +283,13 @@ tbody td { padding:9px 14px 9px 0; vertical-align:top; }
 
 /* ── quest view ── */
 .qv-back { margin-bottom:14px; }
+.qv-layout { display:grid; grid-template-columns:minmax(0,55%) minmax(320px,45%); gap:22px; align-items:start; }
+.qv-main, .qv-side { min-width:0; }
+.qv-side { position:sticky; top:16px; }
+@media (max-width:1100px) {
+  .qv-layout { grid-template-columns:1fr; }
+  .qv-side { position:static; top:auto; }
+}
 .quest-head { background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:18px 20px; margin-bottom:14px; }
 .qh-top { display:flex; align-items:flex-start; gap:12px; }
 .quest-vtitle { font-size:17px; font-weight:700; line-height:1.35; }
@@ -317,7 +324,8 @@ details.fold[open] .fold-caret { transform:rotate(90deg); }
 .tl-now-divider::before, .tl-now-divider::after { content:''; flex:1; height:1px; background:var(--accent); opacity:0.35; }
 .tl-clickable { cursor:pointer; border-radius:6px; margin:0 -4px; padding-left:4px; padding-right:4px; }
 .tl-clickable:hover { background:var(--surface2); }
-.timeline-panel { margin-bottom:14px; }
+.timeline-panel { margin-bottom:14px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:16px 18px; }
+.qv-side .timeline-panel { margin-bottom:0; max-height:calc(100vh - 32px); overflow-y:auto; }
 .queued-strip { margin-top:14px; }
 .queued-row { border:1px solid var(--border); border-left:3px solid var(--blue); border-radius:7px; background:var(--surface); font-size:12px; margin-bottom:5px; overflow:hidden; }
 .queued-row-head { display:flex; align-items:center; gap:9px; padding:7px 12px; cursor:pointer; }
@@ -952,28 +960,32 @@ function renderQuestView(d){
   const trunc=d.timeline.length<d.timeline_total?`<div class="tl-truncated">showing ${d.timeline.length} of ${d.timeline_total} entries</div>`:'';
   document.getElementById('quest-view').innerHTML=`
   <div class="qv-back"><button class="icon-btn" data-action="close-quest">‹ back to quests</button></div>
-  <div class="col-main">
-    <div class="quest-head">
-      <div class="qh-top"><div><div class="quest-vtitle">${esc(m.title||d.id)}</div><div class="quest-vid">${esc(d.id)}</div></div></div>
-      <div class="quest-tags">${tags}</div>
+  <div class="qv-layout">
+    <div class="qv-main">
+      <div class="quest-head">
+        <div class="qh-top"><div><div class="quest-vtitle">${esc(m.title||d.id)}</div><div class="quest-vid">${esc(d.id)}</div></div></div>
+        <div class="quest-tags">${tags}</div>
+      </div>
+      <div id="qv-pending"></div>
+      ${renderQuestOpenItems(d.open_items)}
+      <div class="qv-prompt">
+        <div class="qv-prompt-label">run this quest with a new instruction</div>
+        <textarea id="qv-prompt-text" class="qv-prompt-text" rows="2" placeholder="e.g. Draft a reply asking for the settlement timeline, then wait for their answer."></textarea>
+        <div class="qv-prompt-row">
+          <span id="qv-prompt-status" class="qv-prompt-status"></span>
+          <button class="btn btn-review" data-action="run-prompt" data-quest-id="${esc(d.id)}">Run</button>
+        </div>
+      </div>
+      <details class="fold"><summary><span class="fold-caret">▸</span> context <span class="fold-count">${d.context_md?'':'empty'}</span></summary><div class="fold-body">${d.context_md?`<div class="drawer-context">${mdToHtml(d.context_md)}</div>`:'<div class="empty">no context</div>'}</div></details>
+      <details class="fold"><summary><span class="fold-caret">▸</span> watches <span class="fold-count">${d.watches.length}</span></summary><div class="fold-body">${d.watches.length?d.watches.map(watchRow).join(''):'<div class="empty">no watches</div>'}</div></details>
     </div>
-    <div id="qv-pending"></div>
-    ${renderQuestOpenItems(d.open_items)}
-    <div class="qv-prompt">
-      <div class="qv-prompt-label">run this quest with a new instruction</div>
-      <textarea id="qv-prompt-text" class="qv-prompt-text" rows="2" placeholder="e.g. Draft a reply asking for the settlement timeline, then wait for their answer."></textarea>
-      <div class="qv-prompt-row">
-        <span id="qv-prompt-status" class="qv-prompt-status"></span>
-        <button class="btn btn-review" data-action="run-prompt" data-quest-id="${esc(d.id)}">Run</button>
+    <div class="qv-side">
+      <div class="timeline-panel">
+        <div class="section-label" style="margin-bottom:10px">timeline <span class="sl-count">${d.timeline_total} entries</span></div>
+        ${d.timeline.length?d.timeline.map(timelineRow).join(''):'<div class="empty">no timeline entries</div>'}
+        ${trunc}
       </div>
     </div>
-    <details class="fold"><summary><span class="fold-caret">▸</span> context <span class="fold-count">${d.context_md?'':'empty'}</span></summary><div class="fold-body">${d.context_md?`<div class="drawer-context">${mdToHtml(d.context_md)}</div>`:'<div class="empty">no context</div>'}</div></details>
-    <div class="timeline-panel">
-      <div class="section-label" style="margin-bottom:10px">timeline <span class="sl-count">${d.timeline_total} entries</span></div>
-      ${d.timeline.length?d.timeline.map(timelineRow).join(''):'<div class="empty">no timeline entries</div>'}
-      ${trunc}
-    </div>
-    <details class="fold"><summary><span class="fold-caret">▸</span> watches <span class="fold-count">${d.watches.length}</span></summary><div class="fold-body">${d.watches.length?d.watches.map(watchRow).join(''):'<div class="empty">no watches</div>'}</div></details>
   </div>`;
   renderQuestPendingCards();
 }

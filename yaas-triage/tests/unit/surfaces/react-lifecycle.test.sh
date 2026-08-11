@@ -35,6 +35,8 @@ _find_triage() {
 }
 SCRIPT_DIR="$(_find_triage "$0")" || exit 1
 LC="$SCRIPT_DIR/surfaces/react-lifecycle.py"
+CHECKER="$SCRIPT_DIR/checkers/reactions.py"
+CONFIG="$SCRIPT_DIR/reaction_config.py"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
 PASS=0; FAIL=0
@@ -124,6 +126,57 @@ mk_react; set_emojis "claude-intensifies"
 adv loading >/dev/null
 grep -q "REACTION LIFECYCLE C1/1.0 -> :claudeloading:" "$TMP/log" \
   && ok "the loading transition is logged" || bad "no lifecycle log line"
+
+echo
+echo "── every workflow emoji is configurable ───────────────────────────────────"
+mk_react; set_emojis "do_it" "+1"
+env YAAS_REACTION_PROCESS_EMOJI=:do_it: \
+    YAAS_REACTION_DRAFT_EMOJI=compose_it \
+    YAAS_REACTION_SAVE_EMOJI=remember_it \
+    YAAS_REACTION_ADOPT_EMOJI=track_it \
+    YAAS_REACTION_LOADING_EMOJI=:in_progress: \
+    YAAS_REACTION_DONE_EMOJI=finished \
+    python3 "$LC" advance C1 1.0 loading --react "$TMP/react.sh" >/dev/null
+eq "custom trigger is replaced by custom loading" "$(emojis)" "+1 in_progress"
+
+echo
+echo "── the checker searches configured trigger names ──────────────────────────"
+mkdir -p "$TMP/check-root/state/triage"
+: > "$TMP/queries"
+cat > "$TMP/mcp.sh" <<EOF
+#!/bin/bash
+echo "\$2" >> "$TMP/queries"
+printf '%s' '{"results":""}'
+EOF
+chmod +x "$TMP/mcp.sh"
+env YAAS_REACTION_PROCESS_EMOJI=do_it \
+    YAAS_REACTION_DRAFT_EMOJI=compose_it \
+    YAAS_REACTION_SAVE_EMOJI=remember_it \
+    YAAS_REACTION_ADOPT_EMOJI=track_it \
+    python3 "$CHECKER" "$TMP/mcp.sh" 2026-01-01 "$TMP/check-root" \
+      "$TMP/check-root/state/triage/pending_reactions.json" >/dev/null
+if grep -q 'hasmy::do_it:' "$TMP/queries" \
+   && grep -q 'hasmy::compose_it:' "$TMP/queries" \
+   && grep -q 'hasmy::remember_it:' "$TMP/queries" \
+   && grep -q 'hasmy::track_it:' "$TMP/queries"; then
+  ok "checker uses all four configured trigger emojis"
+else
+  bad "checker did not use configured trigger emojis"
+fi
+
+echo
+echo "── invalid or duplicate configuration is rejected ─────────────────────────"
+if env YAAS_REACTION_PROCESS_EMOJI=same YAAS_REACTION_DRAFT_EMOJI=same \
+   python3 "$CONFIG" >/dev/null 2>&1; then
+  bad "duplicate lifecycle emojis were accepted"
+else
+  ok "duplicate lifecycle emojis are rejected"
+fi
+if env YAAS_REACTION_DONE_EMOJI='not an emoji' python3 "$CONFIG" >/dev/null 2>&1; then
+  bad "invalid lifecycle emoji was accepted"
+else
+  ok "invalid lifecycle emoji is rejected"
+fi
 
 echo
 echo "── bad usage is rejected ──────────────────────────────────────────────────"

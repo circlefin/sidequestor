@@ -145,6 +145,22 @@ if [ "$N" = "2" ] && grep -q "claude-intensifies" "$REC" && grep -q "writing_han
   ok "reaction files: new ts fires, old ts filtered, both emojis labelled"
 else bad "reaction files: expected 2 (1 claude-intensifies + 1 writing_hand)" "got $N: $(cat "$REC")"; fi
 
+# === CASE 5b: configured reaction names are used in notification labels =====
+R="$(new_root)"; WM="$R/state/last_notified.ts"; REC="$(mktemp)"
+epoch_ago 100 > "$WM"
+NEW_TS="$(epoch_ago 10)"
+printf '{"replied_timestamps":["%s"]}\n' "$NEW_TS" \
+  > "$R/state/claude_intensifies_replied.json"
+printf '{"replied_timestamps":["%s"]}\n' "$NEW_TS" \
+  > "$R/state/writing_hand_replied.json"
+YAAS_REACTION_PROCESS_EMOJI=do_it YAAS_REACTION_DRAFT_EMOJI=compose_it \
+  run_notify "$R" "$WM" "$REC"
+N=$(grep -c . "$REC")
+if [ "$N" = "2" ] && grep -q "do_it" "$REC" && grep -q "compose_it" "$REC" \
+   && ! grep -q "claude-intensifies" "$REC"; then
+  ok "reaction files: configured emoji names label notifications"
+else bad "reaction files: expected configured labels" "got $N: $(cat "$REC")"; fi
+
 # === CASE 6: 10-notification cap =============================================
 R="$(new_root)"; WM="$R/state/last_notified.ts"; REC="$(mktemp)"
 epoch_ago 3600 > "$WM"

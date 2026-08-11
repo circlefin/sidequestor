@@ -1,4 +1,20 @@
 #!/bin/bash
+# Copyright 2026 Circle Internet Group, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 set -eu
 
 # Suites live in yaas-triage/tests/; SCRIPT_DIR points at yaas-triage/ so every
@@ -36,11 +52,11 @@ mkdir -p "$TRIAGE/checkers" "$QUEST" "$BROKEN_QUEST" "$CLEAN_QUEST" "$BUSINESS_Q
 # in ledger/ and dispatch/.
 mkdir -p "$TRIAGE/ledger" "$TRIAGE/dispatch" "$TRIAGE/ops"
 cp "$SCRIPT_DIR/tick.py" "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR/tick_check.py" \
-   "$SCRIPT_DIR/tick_dispatch.py" "$TRIAGE/"
+  "$SCRIPT_DIR/tick_dispatch.py" "$SCRIPT_DIR/reaction_config.py" "$TRIAGE/"
 cp "$SCRIPT_DIR/ledger/ensure-watch-ids.py" "$SCRIPT_DIR/ledger/ack-watch.py" \
    "$SCRIPT_DIR/ledger/checker-health.py" "$SCRIPT_DIR/ledger/watch-guard.py" \
    "$SCRIPT_DIR/ledger/commit.py" "$SCRIPT_DIR/ledger/housekeep.py" "$TRIAGE/ledger/"
-cp "$SCRIPT_DIR/dispatch/source-evidence.py" "$SCRIPT_DIR/dispatch/spend-window.py" \
+cp "$SCRIPT_DIR/dispatch/slack-read-health.py" "$SCRIPT_DIR/dispatch/spend-window.py" \
    "$SCRIPT_DIR/dispatch/run-agent.py" "$SCRIPT_DIR/dispatch/plan.py" "$TRIAGE/dispatch/"
 cp "$SCRIPT_DIR/checkers/result.py" "$TRIAGE/checkers/"
 
@@ -443,14 +459,14 @@ jq -e 'select(.event == "gate_quest_unreadable" and .quest == "quest-broken")' "
 cat > "$TMP_DIR/failed-worker.ndjson" <<'JSON'
 {"type":"item.completed","item":{"type":"mcp_tool_call","tool":"slack.slack_read_thread","status":"completed","error":{"message":"failed"},"result":null}}
 JSON
-if python3 "$SCRIPT_DIR/dispatch/source-evidence.py" slack "$TMP_DIR/failed-worker.ndjson"; then
+if python3 "$SCRIPT_DIR/dispatch/slack-read-health.py" "$TMP_DIR/failed-worker.ndjson"; then
   echo "failed Slack tool call was incorrectly accepted as recovery evidence" >&2
   exit 1
 fi
 cat > "$TMP_DIR/slack-error-body.ndjson" <<'JSON'
 {"type":"item.completed","item":{"type":"mcp_tool_call","tool":"slack.slack_read_thread","status":"completed","error":null,"result":{"content":[{"type":"text","text":"{\"ok\":false,\"error\":\"invalid_auth\"}"}]}}}
 JSON
-if python3 "$SCRIPT_DIR/dispatch/source-evidence.py" slack "$TMP_DIR/slack-error-body.ndjson"; then
+if python3 "$SCRIPT_DIR/dispatch/slack-read-health.py" "$TMP_DIR/slack-error-body.ndjson"; then
   echo "Slack ok:false body was incorrectly accepted as recovery evidence" >&2
   exit 1
 fi
@@ -475,7 +491,7 @@ cat > "$TMP_DIR/prose-worker.ndjson" <<'JSON'
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"mcp__slack__slack_read_thread","input":{}}]}}
 {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"Alice: the API returned ratelimited and invalid_auth all morning"}]}]}}
 JSON
-if ! python3 "$SCRIPT_DIR/dispatch/source-evidence.py" slack "$TMP_DIR/prose-worker.ndjson"; then
+if ! python3 "$SCRIPT_DIR/dispatch/slack-read-health.py" "$TMP_DIR/prose-worker.ndjson"; then
   echo "a successful Slack read was rejected because of its message content" >&2
   exit 1
 fi

@@ -25,7 +25,7 @@ the whole process tree if it runs past its timeout. Two copies meant a fix to th
 watchdog or the log pipeline had to be made twice, and half of it had no test.
 
 What it does NOT do is decide anything. The ack manifest, the Slack infra guard, the
-source-evidence check, token extraction and the commit all stay with the caller, because
+Slack-read recovery check, token extraction and the commit all stay with the caller, because
 those are policy and this is plumbing.
 
 Usage:

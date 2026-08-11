@@ -173,6 +173,42 @@ def _v(verdict, wtype, wid, **kw):
 
 # ── Impure: run the checkers, in parallel, and classify each ────────────────────────────
 
+def rotate_check_order(quest_ids, cursor):
+    """Rotate a STABLE list of quest ids forward by `cursor`, so the tick starts somewhere new.
+
+    WHY THIS EXISTS. The Slack token has a finite request budget and a tick spends it in
+    order. Whoever is at the back when it runs out gets a rate limit and is skipped — and
+    with a fixed order, it is the SAME quests every tick, forever. Measured 2026-08-09: four
+    quests were rate-limited on 100% of ticks purely because they sorted last, so messages to
+    them went unseen for hours while quests near the front were checked every minute. The
+    watermark is held so nothing is lost, but "not lost" is not "noticed".
+
+    Rotation, not randomisation. Random order fixes starvation only on average: a quest can
+    lose the draw many times running, so the worst case stays unbounded and irreproducible.
+    Rotating by a persisted cursor makes the worst case a GUARANTEE — with N quests, every
+    quest reaches the front within N ticks — and keeps a tick replayable, which the
+    differential goldens depend on (they replay a recorded sequence and diff the result; a
+    random order would make them flap).
+
+    Semantics deliberately mirror dispatch/plan.py rotate(): [a,b,c] with cursor 1 → [b,c,a];
+    an unbounded cursor is taken modulo the count; a negative, non-integer or unparseable
+    cursor is treated as 0, because the dangerous outcome here is a crashed tick, not a
+    slightly unfair order. Returns (order, next_cursor); next_cursor advances by one so the
+    starting point walks the list one step per tick.
+    """
+    n = len(quest_ids)
+    if n == 0:
+        return [], 0
+    try:
+        c = int(cursor)
+    except (TypeError, ValueError):
+        c = 0
+    if c < 0:
+        c = 0
+    offset = c % n
+    return [quest_ids[(offset + i) % n] for i in range(n)], offset + 1
+
+
 def run_checks(watches, run_one, classify_ctx, max_parallel=3):
     """Run `run_one(watch)` for each watch concurrently (capped at max_parallel) and classify
     the results. `run_one` returns the parsed checker result (or None); `classify_ctx(watch)`

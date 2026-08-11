@@ -30,7 +30,7 @@ yaas-triage/
 │   ├── cron-due.py           ← cron evaluation logic (used by schedule.py)
 │   └── *.lag                 ← per-type watermark lag in seconds
 ├── dispatch/                 ← "run a worker": run-agent.py, plan.py, spend-window.py,
-│                               source-evidence.py, extract/translate-stream.py, worker.mcp.json
+│                               slack-read-health.py, extract/translate-stream.py, worker.mcp.json
 ├── ledger/                   ← "owns a state file, atomically": ack-watch.py, commit.py,
 │                               housekeep.py, checker-health.py, watch-guard.py, add-watch.py,
 │                               approval-helper.py, ensure-watch-ids.py
@@ -55,10 +55,10 @@ state/
 │   ├── completed/            ← finished quests (kept for audit)
 │   └── archived/             ← cancelled or stale
 ├── run-log.ndjson            ← append-only log of every triage tick + dispatch
-├── claude_intensifies_replied.json ← processed :claude-intensifies: timestamps
-├── writing_hand_replied.json  ← processed :writing_hand: + skipped notes
-├── floppy_disk_saved.json     ← processed :floppy_disk: timestamps
-└── context-memory/           ← :floppy_disk: saves (people/, topics/)
+├── claude_intensifies_replied.json ← processed `process` reaction timestamps
+├── writing_hand_replied.json  ← processed `draft` reactions + skipped notes
+├── floppy_disk_saved.json     ← processed `save` reaction timestamps
+└── context-memory/           ← `save` reaction context (people/, topics/)
 
 logs/
 ├── triage.log                ← human-readable triage run log
@@ -102,7 +102,7 @@ Environment variables available to all checkers (exported by the orchestrator af
 
 ### The reactions sweep
 
-`checkers/reactions.py` is special — it doesn't follow the per-entry interface. It runs once per triage tick (called directly by the orchestrator with 4 positional args) and sweeps Slack globally for `:claude-intensifies:`, `:writing_hand:`, `:floppy_disk:` reactions across a 60-day window. Diffs against `state/*_replied.json` / `state/*_saved.json`. New reactions → writes `state/triage/pending_reactions.json`.
+`checkers/reactions.py` is special — it doesn't follow the per-entry interface. It runs once per triage tick (called directly by the orchestrator with 4 positional args) and sweeps Slack globally for the configured process, draft, save, and adopt reactions across a 60-day window. `.env.example` lists their defaults and override variables. The configured names still map to fixed semantic state files under `state/`. New reactions → writes `state/triage/pending_reactions.json`.
 
 ### Watermark lag
 

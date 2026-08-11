@@ -51,8 +51,11 @@ Everything else is the real code under test: `ack-watch.py`, `add-watch.py`,
 ./mutations.sh                  # prove the harness still catches real breakage
 ```
 
-A full check is ~17 scenarios at roughly 4 seconds each, so about 70 seconds. That is why
-it is a separate command rather than part of `tests/run-all.sh`.
+A full check is 29 scenarios at roughly 4 seconds each, so a couple of minutes.
+`tests/run-all.sh` DOES run it — it is the only coverage `tick.py`'s top-level control flow
+gets, so leaving it out would let the suite go green without ever executing the code that
+runs in production. `./mutations.sh` is the one kept separate, because it re-runs the whole
+check once per mutation and takes a few minutes.
 
 ## Two rules that keep this honest
 

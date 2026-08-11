@@ -218,7 +218,7 @@ HOST_QUEST = "quest-reactions-approvals"
 _HOST_CONTEXT = """# Reaction approval executor
 
 This quest exists for ONE job: hold the `approval` watches for drafts that originated from a
-Slack reaction (`:writing_hand:`), which have no quest of their own, and let the normal
+Slack `draft` reaction, which has no quest of its own, and let the normal
 reviewed-approval execution path (CLAUDE.md §3d) send them once a human approves.
 
 Rules for the worker dispatched here:

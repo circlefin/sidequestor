@@ -37,6 +37,43 @@ Everything below is downstream of that.
 **No LLM runs in steps 1 or 2.** Checking is shell and Python, roughly 150ms when idle. An
 agent costs money, so one is woken only for a target with genuinely new activity.
 
+### Why Slack polling has its own workspace app
+
+Slack is used in two different execution planes:
+
+```
+   POLLING PLANE                              DISPATCH PLANE
+   tick.py + deterministic checkers           Claude / Codex / Cursor
+   runs every ~60s                            runs only after a dirty watch
+   must cost no model tokens                  may use the agent's native Slack connector
+```
+
+A Slack credential identifies two parties, not one: the person granting access and the app
+asking for it. Slack binds the token to that user, app, workspace, and approved scope set. There
+is no free-standing "Guangmian's Slack password" that any local program may reuse.
+
+Native agent connectors already have suitable tokens, but those tokens belong to the Claude,
+Codex, or Cursor Slack app. Each agent keeps its credential and refresh lifecycle inside its own
+runtime. None currently exposes a supported raw Slack tool-call interface that `tick.py` can use
+without invoking a model. Reverse-engineering the credential store would couple polling to one
+vendor's private storage format, make Sidequestor appear as that vendor in Slack's audit trail,
+and break as soon as storage or token refresh changes.
+
+Sidequestor therefore asks each workspace to create or approve its own internal Slack app. Local
+OAuth uses PKCE, stores the resulting user token in the operating-system Keychain, and gives the
+Python checkers a supported credential they can use directly. The app is the workspace-approved
+identity; the token is the local key that lets the no-LLM polling plane act as that identity.
+
+The alternative is one published Sidequestor Marketplace app shared by every workspace. That
+would reduce setup to an install-and-approve flow, but it would make every installation depend on
+a centrally owned app identity, its publication status, and its ongoing support. A hosted OAuth
+or MCP service would add central token custody and uptime as well. Sidequestor intentionally
+chooses repeated local setup over those shared dependencies for now.
+
+This decision should be revisited if workspace-app setup becomes the main adoption barrier, if
+Sidequestor adopts a managed service, or if Slack or agent vendors expose a supported way for
+local deterministic clients to reuse native connector authorization without invoking a model.
+
 ---
 
 ## 2. The one idea that matters: the watermark
@@ -286,7 +323,7 @@ yaas-triage/
 │   ├── manual-dispatch.sh        a dashboard-initiated run with an instruction
 │   ├── format|translate-stream   event stream → transcript / common facts
 │   ├── extract-tokens.py         cost and token counts
-│   ├── source-evidence.py        which sources did the worker actually READ?
+│   ├── slack-read-health.py      did worker Slack access recover after an outage?
 │   └── spend-window.py           rolling spend; evaluates the ceilings
 │
 ├── ledger/         "OWNS A STATE FILE, ATOMICALLY"   (lock, fsync, os.replace)
@@ -360,12 +397,12 @@ answer. Notifications de-duplicate, so a persistent fault does not shout every f
 ## 12. How this is tested
 
 ```
-   28 suites ─┬─ tests/unit/        mirrors the source tree 1:1
+   29 suites ─┬─ tests/unit/        mirrors the source tree 1:1
               └─ tests/behaviour/   named by FAILURE CLASS, may span files
 
-   31 goldens ── tests/differential/   a REAL tick against a throwaway repo,
+   29 goldens ── tests/differential/   a REAL tick against a throwaway repo,
                      │                  run against tick.py
-                     └─ 9 mutations ── break the orchestrator on purpose,
+                     └─ 12 mutations ── break the orchestrator on purpose,
                                        assert the goldens NOTICE
 ```
 
@@ -393,9 +430,7 @@ Worth knowing before trusting the system further than it has earned.
 
 | Limit | Consequence |
 |---|---|
-| Acks are self-attestation | a worker claiming `nothing_to_do` without reading still advances. Detection exists but is **observe-only**: it logs `gate_ack_unverified` and holds nothing. |
-| Evidence is Slack-and-channel only | email, Jira and GitHub acks are unverified. Absence of a warning does not mean everything was checked. |
-| `handled` is unverified | acking `handled` bypasses the evidence check entirely. |
+| Acks are self-attestation | A worker claiming `handled` or `nothing_to_do` can advance a complete checker window. The ledger prevents accidental omission; it does not prove the worker read or understood the source. Reliable proof would require structured receipts from each source wrapper, not inference from agent event streams. |
 | Slack gating is by trigger, not by action | an email-triggered quest whose reply goes to Slack is still dispatched during an outage. The send fails, the item is acked `blocked`, so it costs an invocation rather than data. |
 | Prune rules have no golden | they delete logs, not watches, so a mistake costs history rather than tracking. |
 

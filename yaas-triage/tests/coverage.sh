@@ -47,8 +47,9 @@ exempt_reason() {
     dispatch/format-stream.py)  echo "covered via dispatch/run-agent" ;;
     dispatch/translate-stream.py) echo "covered via dispatch/run-agent" ;;
     dispatch/extract-tokens.py) echo "covered via behaviour/budget-gate" ;;
-    dispatch/source-evidence.py) echo "covered via behaviour/dirty-watch-dispatch" ;;
+    dispatch/slack-read-health.py) echo "covered via unit/dispatch/slack-read-health" ;;
     dispatch/spend-window.py)   echo "covered via behaviour/budget-gate" ;;
+    reaction_config.py)         echo "covered via unit/surfaces/react-lifecycle" ;;
     ledger/ack-watch.py)        echo "covered via behaviour/dirty-watch-dispatch + goldens" ;;
     ledger/checker-health.py)   echo "covered via behaviour/dirty-watch-dispatch" ;;
     ledger/approval-helper.py)  echo "covered via behaviour/approval-lease" ;;

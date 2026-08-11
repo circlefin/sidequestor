@@ -187,5 +187,45 @@ ok("...which is what makes paging terminate at the gap instead of at channel his
 print()
 print("────────────────────────────────────────────────────────────────────────────")
 print(f"slack drain: {PASS} passed, {FAIL} failed")
-sys.exit(1 if FAIL else 0)
+
+# ── search_advance_to(): the watermark rule for SEARCH-backed checkers ──────────
+# Read-backed checkers prove coverage with drain(). Search-backed ones cannot: Slack
+# search reads an eventually-consistent INDEX, so "found nothing" never proves "nothing
+# was posted" for the most recent seconds. Before this rule existed, slack_dm and
+# slack_mention emitted no advance_to at all, tick.py fell back to `now - lag_map[type]`,
+# and lag_map comes from optional checkers/<type>.lag files. slack_mention.lag existed
+# (90s); slack_dm.lag did NOT, so a slack_dm watch advanced to exactly NOW on every clean
+# search and any DM not yet indexed at that instant was buried permanently.
+print()
+print("-- search_advance_to: never claims the unindexed window --")
+NOW = 1_000_000.0
+L = u.SEARCH_INDEX_LAG
+P2 = F2 = 0
+def eq2(name, got, want):
+    global P2, F2
+    if abs(got - want) < 1e-6:
+        P2 += 1; print(f"  PASS {name}")
+    else:
+        F2 += 1; print(f"  FAIL {name} (want {want}, got {got})")
+
+eq2("nothing found -> now-lag, NOT now", u.search_advance_to(0, NOW), NOW - L)
+eq2("an old message -> that message",    u.search_advance_to(NOW - 500, NOW), NOW - 500)
+eq2("a very recent message -> clamped",  u.search_advance_to(NOW - 5, NOW), NOW - L)
+eq2("exactly at the ceiling",            u.search_advance_to(NOW - L, NOW), NOW - L)
+# A future-dated ts (clock skew between Slack and this host) must not slip the ceiling.
+eq2("a future ts cannot skip the ceiling", u.search_advance_to(NOW + 999, NOW), NOW - L)
+
+# The property that matters, over the whole input space: the watermark NEVER lands in the
+# window that may still be unindexed. One counterexample here is a buried-message bug.
+import random
+random.seed(7)
+viol = sum(1 for _ in range(5000)
+           if u.search_advance_to(NOW - random.uniform(-500, 50000), NOW) > NOW - L + 1e-9)
+if viol == 0:
+    P2 += 1; print(f"  PASS property: 0/5000 random inputs advanced past now-{L:.0f}s")
+else:
+    F2 += 1; print(f"  FAIL property: {viol}/5000 advanced into the unindexed window")
+
+print(f"search advance: {P2} passed, {F2} failed")
+sys.exit(1 if (FAIL or F2) else 0)
 PYEOF

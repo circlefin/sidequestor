@@ -51,6 +51,7 @@ sys.path.insert(0, str(_HERE))
 import tick_state
 import tick_check
 import tick_dispatch
+from reaction_config import load_reaction_emojis
 
 
 # ── small I/O helpers ────────────────────────────────────────────────────────
@@ -85,6 +86,10 @@ class Tick:
         # backend + knobs are read from it — NOT bare os.environ, which misses .env-only vars
         # like YAAS_AGENT (the fixture sets it to "stub"; the shell honours that, so must we).
         self.env = dict(self.cfg.env)
+        try:
+            self.reaction_emojis = load_reaction_emojis(self.env)
+        except ValueError as exc:
+            raise SystemExit(f"invalid reaction emoji configuration: {exc}")
         # Knobs (validated in Config.__init__; here as ints/strings for the flow).
         self.agent = self.env.get("YAAS_AGENT", "claude")
         self.unacked_promote = self.cfg.knob("YAAS_UNACKED_PROMOTE")
@@ -113,7 +118,6 @@ class Tick:
         self.reactions_dirty = False
         self.dispatch_run_id = ""
         self.dispatch_exit = 1
-        self.dispatch_ndjson = ""
         self.dispatch_wall = 0
         self.dispatch_start_utc = ""
         self.dispatch_slack_read_ok = 0
@@ -400,7 +404,7 @@ def run_tick(t):
     # NOTE: zero active quests does NOT mean the tick is idle — the global reaction
     # sweep (below) is independent of quests. Returning here would silently stop the
     # bot from ever answering an emoji-triggered message whenever no quest is active
-    # (bug: 2026-08-08, a :claude-intensifies: DM went unanswered while quest_count==0).
+    # (bug: 2026-08-08, a process-reaction DM went unanswered while quest_count==0).
     # With an empty quest_dirs the check block below is a natural no-op, so we fall
     # through to the reaction sweep and the normal dispatch decision.
 
@@ -426,6 +430,20 @@ def run_tick(t):
     # is deterministic regardless of which checker finished first. The dispatch order is
     # separately re-sorted anyway, so ordering here is about a stable log/diff, not correctness.
     checkable = [qd.name for qd in quest_dirs if qd.name not in unreadable]
+    # Fairness rotation for the CHECK phase. The Slack budget runs out partway through a
+    # tick, and with a fixed (alphabetical) order the same tail lost every time: on
+    # 2026-08-09 four quests were rate-limited on 100% of ticks purely for sorting last.
+    # Rotating the START each tick spreads that loss, so a quest waits a few ticks instead
+    # of forever. Execution order only — results are reassembled in quest_dirs order below,
+    # so every log, diff and golden stays deterministic.
+    st0 = t._read_json(t.triage_state, {}) or {}
+    check_cursor = st0.get("check_cursor", 0) if isinstance(st0, dict) else 0
+    checkable, next_check_cursor = tick_check.rotate_check_order(checkable, check_cursor)
+    # Persist BEFORE the checks, not after: a tick killed mid-check (watchdog, reboot, the
+    # flock being stolen) would otherwise replay the same starting point next time and the
+    # rotation would silently stop rotating for exactly the quests it exists to protect.
+    if checkable:
+        t._bump_state(check_cursor=next_check_cursor)
     computed = {}
     if checkable:
         with ThreadPoolExecutor(max_workers=max(1, t.max_parallel)) as pool:
@@ -497,7 +515,10 @@ def run_tick(t):
         t.slog(f"Run OK — idle. {quest_count} quest(s) swept, 0 activity.")
         return 0
 
-    # ── Build the dispatch target list (sorted quests + optional 'reactions' last) ──
+    # ── Build the dispatch target list (sorted quests + optional 'reactions') ──
+    # Appended here for a stable, sorted target list; the dispatch loop moves it to the
+    # FRONT after the fairness rotation, because a reaction is the one target a human is
+    # actively waiting on. See the reordering below.
     dispatch_targets = sorted(t.dirty_quests)
     if t.reactions_dirty:
         dispatch_targets.append("reactions")
@@ -744,11 +765,39 @@ def dispatch_loop(t, dispatch_targets, targets_json):
     if offset:
         t.log(f"Rotated dispatch order by {offset} for fairness: {rotated}")
 
+    # Reactions jump the queue, AFTER the rotation so the cursor cannot push them back.
+    # A reaction is the one target with a human watching: you add the emoji and wait for the
+    # bot to acknowledge it. Everything else is background work nobody is staring at. Queued
+    # last (the previous behaviour) a reaction waited for every dirty quest to finish first —
+    # measured 2026-08-08, a trigger sat 4.5 minutes behind three quest dispatches before its
+    # worker even started, so the emoji showed nothing for minutes and looked broken.
+    # Excluded from the rotation rather than merely sorted first: the rotation exists to stop
+    # a quest starving, and there is only ever one reactions target, so rotating it buys
+    # nothing and would just reintroduce the delay on some ticks.
+    if "reactions" in rotated:
+        # index/slice rather than a filter comprehension: a filter would COLLAPSE two
+        # entries into one, and if a quest folder were ever literally named "reactions"
+        # that would silently drop a real target. Moving the first occurrence preserves
+        # the list exactly. (dispatch_one already treats the name as the reaction fast
+        # path, so such a folder is unsupported anyway — but unsupported should not mean
+        # a vanished dispatch.)
+        _i = rotated.index("reactions")
+        rotated = [rotated[_i]] + rotated[:_i] + rotated[_i + 1:]
+
     tick_spent = 0
     worst_exit = 0
+    quest_dispatched = 0   # fan-out counts QUESTS; see the reactions exemption below
     for target in rotated:
         remaining = t.tick_budget - tick_spent
-        if t.dispatched >= t.max_fanout or remaining < t.min_slice:
+        # Reactions does not consume a quest's fan-out slot. Without this exemption, putting
+        # reactions first turns the priority into starvation: with YAAS_MAX_DISPATCH_FANOUT=1
+        # and a reaction pending across ticks (a slow, failing or partially-acking reaction
+        # worker), reactions takes the only slot every tick and every dirty quest is deferred
+        # indefinitely — trading one starvation bug for a worse one. There is only ever a
+        # single reactions target, so exempting it costs at most one extra invocation per
+        # tick. The TIME budget below still applies to it, so it cannot overrun the tick.
+        over_fanout = target != "reactions" and quest_dispatched >= t.max_fanout
+        if over_fanout or remaining < t.min_slice:
             t.log(f"DEFERRED: {target} (dispatched={t.dispatched} spent={tick_spent}s)")
             t.event({"event": "gate_dispatch_deferred", "target": target,
                      "dispatched": t.dispatched, "spent_sec": tick_spent})
@@ -772,6 +821,8 @@ def dispatch_loop(t, dispatch_targets, targets_json):
         timeout = min(t.worker_timeout, remaining)
         dispatch_one(t, target, timeout, dirty_watches_json)
         t.dispatched += 1
+        if target != "reactions":
+            quest_dispatched += 1
         tick_spent += t.dispatch_wall
         if t.dispatch_exit != 0:
             worst_exit = t.dispatch_exit
@@ -869,7 +920,6 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
         t.dispatch_wall = 0
     worker_ndjson = agent_json.get("ndjson", "") or ""
     worker_log = agent_json.get("log", "")
-    t.dispatch_ndjson = worker_ndjson
     t.log(f"Worker [{target}] exited with {t.dispatch_exit} in {t.dispatch_wall}s (readable: {worker_log})")
 
     # Slack infra-failure guard (Claude backend: read init .mcp_servers status).
@@ -880,10 +930,10 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
             t.dispatch_exit = 9
 
     if t.dispatch_exit == 0:
-        cpe = t.run(t.py(t.helper("dispatch", "source-evidence.py"), "slack", worker_ndjson))
+        cpe = t.run(t.py(t.helper("dispatch", "slack-read-health.py"), worker_ndjson))
         if cpe.returncode == 0:
             t.dispatch_slack_read_ok = 1
-            t.log(f"WORKER SOURCE OK [{target}]: successful Slack read observed")
+            t.log(f"WORKER SLACK READ OK [{target}]: successful Slack read observed")
 
     # Token accounting — emits gate_dispatch_tokens (the event snapshot reads for `dispatches`).
     if t.agent == "claude":
@@ -1056,41 +1106,17 @@ def commit_quest(t, qid, dirty_watches_json):
         return
     acked = [x for x in (cpa.stdout or "").splitlines() if x.strip()]
 
-    # Evidence inputs (only when a worker event stream exists).
-    enforce = t.env.get("YAAS_ACK_EVIDENCE_ENFORCE", "0")
-    ntd, read_channels, evidence_available = [], [], False
-    if t.dispatch_ndjson and os.path.exists(t.dispatch_ndjson):
-        evidence_available = True
-        cpn = t.run(t.py(t.helper("ledger", "ack-watch.py"), "acked-as", t.dispatch_run_id,
-                         "nothing_to_do"))
-        ntd = [x for x in (cpn.stdout or "").splitlines() if x.strip()]
-        cps = t.run(t.py(t.helper("dispatch", "source-evidence.py"), "sources", t.dispatch_ndjson))
-        read_channels = [x for x in (cps.stdout or "").splitlines() if x.strip()]
-
-    watch_entries = (t._read_json(watch, {}) or {}).get("watches", [])
-    decision_in = {"quest_id": qid, "acked": acked, "acked_ntd": ntd,
-                   "dirty_watches": dirty_watches_json, "watch_entries": watch_entries,
-                   "read_channels": read_channels, "evidence_available": evidence_available,
-                   "enforce": enforce}
+    decision_in = {"quest_id": qid, "acked": acked, "dirty_watches": dirty_watches_json}
     cpd = t.run(t.py(t.helper("ledger", "commit.py"), json.dumps(decision_in)))
     try:
         decision = json.loads(cpd.stdout)
     except ValueError:
         decision = {}
 
-    unverified = decision.get("unverified") or []
-    if unverified:
-        t.event({"event": "gate_ack_unverified", "quest": qid, "items": unverified,
-                 "enforced": enforce})
-        if decision.get("unverified_enforced"):
-            t.log(f"UNVERIFIED ACK [{qid}] — watermark HELD (enforce).")
-        else:
-            t.log(f"UNVERIFIED ACK [{qid}] (observing only).")
-
     cpsum = t.run(t.py(t.helper("ledger", "ack-watch.py"), "summary", t.dispatch_run_id))
     t.log(f"ACK SUMMARY [{qid}] {(cpsum.stdout or '').strip()}")
 
-    if not (decision.get("acked_after_veto") or []):
+    if not (decision.get("acked") or []):
         t.log(f"NO ACKS [{qid}] — worker exited 0 without a committable item; every watermark held.")
         t.event({"event": "gate_dispatch_unacked", "quest": qid, "run_id": t.dispatch_run_id})
         _record_progress(t, qid, [])
@@ -1140,10 +1166,10 @@ def commit_reactions(t):
     promote = t.unacked_promote
     done = {i.get("item_id") for i in manifest.get("items", [])
             if i.get("status") in ("handled", "nothing_to_do")}
-    state_files = {"claude-intensifies": "claude_intensifies_replied.json",
-                   "writing_hand": "writing_hand_replied.json",
-                   "floppy_disk": "floppy_disk_saved.json",
-                   "incoming_envelope": "incoming_envelope_adopted.json"}
+    state_files = {t.reaction_emojis["process"]: "claude_intensifies_replied.json",
+                   t.reaction_emojis["draft"]: "writing_hand_replied.json",
+                   t.reaction_emojis["save"]: "floppy_disk_saved.json",
+                   t.reaction_emojis["adopt"]: "incoming_envelope_adopted.json"}
     state_dir = t.repo_root / "state"
     parked, remaining = [], {}
     status_by_iid = {i.get("item_id"): i.get("status", "pending")

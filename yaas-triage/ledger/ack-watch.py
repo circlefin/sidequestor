@@ -271,20 +271,6 @@ def cmd_acked(run_id: str):
             print(i.get("item_id", ""))
 
 
-def cmd_acked_as(run_id: str, want: str):
-    """Item ids acked with exactly this status.
-
-    `nothing_to_do` carries a far stronger claim than `handled`: it asserts "I read the
-    source and it needed no action", and it is the only status that advances a watermark
-    while leaving no other trace anywhere — no reply, no draft, no queue entry. So it is the
-    one the source-evidence check verifies, and that check needs the statuses kept apart
-    rather than merged into one committable set.
-    """
-    for i in _load(run_id, strict=True).get("items", []):
-        if i.get("status") == want:
-            print(i.get("item_id", ""))
-
-
 def cmd_summary(run_id: str):
     items = _load(run_id).get("items", [])
     counts = {"total": len(items), "handled": 0, "nothing_to_do": 0,
@@ -334,8 +320,6 @@ def main():
                     sys.argv[5] if len(sys.argv) > 5 else "")
         elif cmd == "acked":
             cmd_acked(sys.argv[2])
-        elif cmd == "acked-as":
-            cmd_acked_as(sys.argv[2], sys.argv[3])
         elif cmd == "summary":
             cmd_summary(sys.argv[2])
         elif cmd == "prune":

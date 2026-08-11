@@ -132,6 +132,24 @@ printf '%s' "$OUT" | grep -q '"held": true' \
   && ok "YAAS_STALE_REPLY_HOURS=1 holds a 23h-old thread" || bad "the threshold is not configurable"
 
 echo
+echo "── flag-style invocation matches the JSON form ───────────────────────────"
+mk_slack "$FRESH"
+OUT=$( cd "$REPO" && REPO_ROOT="$REPO" python3 "$TRI/surfaces/slack-send.py" \
+       --channel-id C1 --message hi --thread-ts 1785000000.000100 --quest-id q-demo 2>&1 )
+printf '%s' "$OUT" | grep -q '"channel_id": "C1"' \
+  && ok "flag-style invocation sends successfully" || bad "flag-style invocation failed"
+grep -q SENT "$TMP/sent.log" && ok "...and it still goes through Slack once" \
+  || bad "flag-style invocation did not send"
+
+echo
+echo "── --help is real help, not a JSON parse error ────────────────────────────"
+OUT=$( cd "$REPO" && python3 "$TRI/surfaces/slack-send.py" --help 2>&1 )
+printf '%s' "$OUT" | grep -q 'invalid JSON argument' \
+  && bad "--help still trips the JSON parser" || ok "--help bypasses the JSON parser"
+printf '%s' "$OUT" | grep -q 'Usage' \
+  && ok "...and prints the usage text" || bad "help text missing"
+
+echo
 echo "── fails CLOSED when the thread cannot be read ────────────────────────────"
 # An unreadable thread cannot be shown to be live. Sending into unknown state is the
 # exact failure mode this guard exists to prevent, so the safe direction is to queue.

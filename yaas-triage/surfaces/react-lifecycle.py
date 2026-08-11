@@ -18,10 +18,10 @@
 """
 react-lifecycle.py — move a reaction through its visible lifecycle, atomically and logged.
 
-A reaction the agent acts on carries a three-state lifecycle on the Slack message:
-    trigger (claude-intensifies | writing_hand | incoming_envelope)
-      → claudeloading   (picked up)
-      → updatedone      (finished)
+A reaction the agent acts on carries a configurable three-state lifecycle on the Slack message:
+    trigger (process | draft | adopt)
+      → loading   (picked up)
+      → done      (finished)
 Only one lifecycle emoji should ever be on the message at once.
 
 Until now this was hand-composed prose: CLAUDE.md told the worker to remove one emoji and add
@@ -52,16 +52,8 @@ import time
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-
-TRIGGERS = ("claude-intensifies", "writing_hand", "incoming_envelope")
-LOADING = "claudeloading"
-DONE = "updatedone"
-
-# The full set of lifecycle emojis, so "advance to X" can remove every other one regardless of
-# which state the message was actually in. floppy_disk is NOT here: it has no lifecycle.
-ALL_LIFECYCLE = (*TRIGGERS, LOADING, DONE)
-
-TARGETS = {"loading": LOADING, "done": DONE}
+sys.path.insert(0, str(SCRIPT_DIR.parent))
+from reaction_config import load_reaction_emojis
 
 
 def _react(react_bin, verb, channel, ts, emoji):
@@ -74,7 +66,7 @@ def _react(react_bin, verb, channel, ts, emoji):
         return False
 
 
-def advance(channel, ts, state, react_bin, log=None):
+def advance(channel, ts, state, react_bin, log=None, env=None):
     """Move the message to `state` (LOADING or DONE): remove every other lifecycle emoji, add
     the target. Returns True iff the target emoji is present afterwards.
 
@@ -82,12 +74,15 @@ def advance(channel, ts, state, react_bin, log=None):
     what matters — if it fails (auth/transport), the caller must NOT treat the transition as
     complete, so this returns False and the reaction stays at whatever it was.
     """
-    target = TARGETS[state]
+    emojis = load_reaction_emojis(env)
+    target = emojis[state]
+    lifecycle = (emojis["process"], emojis["draft"], emojis["adopt"],
+                 emojis["loading"], emojis["done"])
 
     # Remove every lifecycle emoji that is not the target. Order does not matter; a failed
     # remove (already absent) is fine.
     removed = []
-    for e in ALL_LIFECYCLE:
+    for e in lifecycle:
         if e == target:
             continue
         if _react(react_bin, "remove", channel, ts, e):
@@ -110,7 +105,7 @@ def advance(channel, ts, state, react_bin, log=None):
 
 def main():
     args = sys.argv[1:]
-    if len(args) < 4 or args[0] != "advance" or args[3] not in TARGETS:
+    if len(args) < 4 or args[0] != "advance" or args[3] not in ("loading", "done"):
         print("usage: react-lifecycle.py advance <channel_id> <message_ts> <loading|done>",
               file=sys.stderr)
         return 2
@@ -123,7 +118,11 @@ def main():
     if "--log" in args:
         log = args[args.index("--log") + 1]
 
-    return 0 if advance(channel, ts, state, react_bin, log) else 1
+    try:
+        return 0 if advance(channel, ts, state, react_bin, log) else 1
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

@@ -67,7 +67,7 @@ Ask the user for, in order:
    channels and annoy the humans there. `new-quest.py` validates that the only legal value is
    `"read_only"` — any typo is caught at creation time.
 
-   **Note:** reactions (`:claude-intensifies:`, `:writing_hand:`, `:floppy_disk:`) are tracked globally by the triage orchestrator and are NOT a per-quest watch input. Do not include them in `watches[]`.
+   **Note:** reaction-workflow triggers (`process`, `draft`, `save`, and `adopt`) are tracked globally by the triage orchestrator and are NOT a per-quest watch input. Do not include them in `watches[]`.
 3. **Priority** — high / normal / low. Default to normal if unspecified.
 4. **Context** — ask the user to paste or describe what this quest is about. This becomes the body of `context.md`. If they already gave context earlier in the conversation, use that; don't re-ask.
 
