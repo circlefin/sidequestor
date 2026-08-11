@@ -1,0 +1,32 @@
+{
+  "name": "incomplete_window_holds",
+  "why": "Saturation. The checker could not drain its window (complete=false), so even a handled ack must not advance past unread activity.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\nTest quest.\n",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "type": "slack_thread",
+          "last_checked_ts": "@now-3600",
+          "reason": "test",
+          "channel_id": "C1",
+          "thread_ts": "@now-7200.000100"
+        }
+      ]
+    }
+  },
+  "checkers": {
+    "w1": {
+      "outcome": "dirty",
+      "count": 50,
+      "complete": false
+    }
+  },
+  "agent": {
+    "exit": 0,
+    "acks": {
+      "w1": "handled"
+    }
+  }
+}

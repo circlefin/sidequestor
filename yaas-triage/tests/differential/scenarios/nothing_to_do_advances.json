@@ -1,0 +1,31 @@
+{
+  "name": "nothing_to_do_advances",
+  "why": "A read-and-correctly-ignore must advance, otherwise every quiet channel re-dispatches forever.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\nTest quest.\n",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "type": "slack_thread",
+          "last_checked_ts": "@now-3600",
+          "reason": "test",
+          "channel_id": "C1",
+          "thread_ts": "@now-7200.000100"
+        }
+      ]
+    }
+  },
+  "checkers": {
+    "w1": {
+      "outcome": "dirty",
+      "count": 1
+    }
+  },
+  "agent": {
+    "exit": 0,
+    "acks": {
+      "w1": "nothing_to_do"
+    }
+  }
+}

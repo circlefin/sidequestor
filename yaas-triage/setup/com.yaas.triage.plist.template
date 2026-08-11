@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.yaas.triage</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{REPO_ROOT}}/yaas-triage/triage-loop.sh</string>
+    </array>
+
+    <!-- KeepAlive + an internal sleep loop, NOT StartInterval. On macOS 26.x the
+         interval spawn stops being delivered ("pended nondemand spawn = interval"
+         that never fires), even after a clean bootout/bootstrap. That silently
+         killed all dispatch once. triage-loop.sh paces itself instead, and
+         tick.py holds its own flock so a brief double-spawn during a reload
+         serialises safely. Interval is YAAS_TRIAGE_INTERVAL (default 60s). -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>{{REPO_ROOT}}/logs/triage.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{REPO_ROOT}}/logs/triage.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>{{REPO_ROOT}}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{{HOME}}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+    </dict>
+</dict>
+</plist>
