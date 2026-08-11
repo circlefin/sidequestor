@@ -215,6 +215,8 @@ python3 yaas-triage/ledger/ack-watch.py ack <run_id> <item_id> handled|nothing_t
 
 One call per `watch_id` in `Exact dirty watches (JSON)` (item_id is `<emoji>:<msg_ts>` in a `reactions` dispatch). `handled` = you acted. `nothing_to_do` = you read it and it correctly needs no action. `blocked` = you couldn't finish. `handled` and `nothing_to_do` advance that watch's watermark; `blocked` and anything unacked hold it and come back next tick.
 
+`blocked` comes back next tick but **not forever**: after `YAAS_UNACKED_PROMOTE` (default 3) dispatches with no progress, triage holds the watch before running its checker and files one `stranded_watch` item in the review queue, so the work reaches a human instead of going quiet. That is a backstop, not a plan — three `blocked` acks in a row means the blocker needs saying out loud. Name the actual cause in the ack note and in the `blocked` timeline event, and before you conclude a tool or credential is unavailable, prove it (run the command, read the error); a wrong capability assumption strands the watch and the person waiting behind it.
+
 Two things the ledger cannot check for you:
 
 - **An ack is a claim that you read the source.** A false `nothing_to_do` buries a real message, which is the failure this exists to prevent.

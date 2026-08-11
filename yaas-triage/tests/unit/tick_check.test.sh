@@ -77,8 +77,14 @@ echo
 echo "── no-progress promotion: dispatched repeatedly, nothing acked ────────────"
 eq "unacked below threshold → normal (dirty)" \
    "$(c '{"outcome":"dirty","count":1}' "$W" --unacked 2)" "dirty"
-eq "unacked at threshold (3) → misconfig" \
-   "$(c '{"outcome":"dirty","count":1}' "$W" --unacked 3)" "misconfig"
+eq "unacked at threshold, backoff window still open → backoff (not misconfig, not parked)" \
+   "$(c '{"outcome":"dirty","count":1}' "$W" --unacked 3 --unacked-backoff)" "backoff"
+# The whole point of the 2026-08-12 change: past the threshold but DUE, the watch is checked
+# and dispatched normally. It never stops retrying, so a transient failure self-heals.
+eq "unacked at threshold but due → checked normally (dirty)" \
+   "$(c '{"outcome":"dirty","count":1}' "$W" --unacked 3)" "dirty"
+eq "far past the threshold but due → still retried" \
+   "$(c '{"outcome":"dirty","count":1}' "$W" --unacked 99)" "dirty"
 
 echo
 echo "── structural: a bad watch_id or missing checker is misconfig ─────────────"
@@ -113,8 +119,8 @@ echo
 echo "── priority: structural checks beat the checker result ────────────────────"
 # A dirty result on a watch that is ALSO past its no-progress threshold must still misconfig,
 # because dispatching it again just burns another invocation.
-eq "unacked-promote beats a dirty result" \
-   "$(c '{"outcome":"dirty","count":5}' "$W" --unacked 3)" "misconfig"
+eq "an open unacked-backoff window beats a dirty result" \
+   "$(c '{"outcome":"dirty","count":5}' "$W" --unacked 3 --unacked-backoff)" "backoff"
 
 echo
 echo "── check-phase fairness rotation ──────────────────────────────────────────"
@@ -184,6 +190,19 @@ PY
 [ "$SERVED" != "NEVER" ] && [ "$SERVED" -le 19 ] \
   && ok "with a 10-of-19 budget, all 19 are checked within $SERVED ticks (bounded)" \
   || bad "starvation not bounded (got '$SERVED')"
+
+echo "── no-progress backoff curve: 5m doubling to a 24h cap, never zero after ──"
+bo() { python3 -c "
+import sys; sys.path.insert(0, '$SCRIPT_DIR')
+import tick
+print(tick.unacked_backoff_for(int('$1'), 3))
+"; }
+eq "below the threshold there is no wait" "$(bo 2)" "0"
+eq "first strike past the threshold waits 5m" "$(bo 3)" "300"
+eq "it doubles"                               "$(bo 4)" "600"
+eq "and again"                                "$(bo 5)" "1200"
+eq "capped at 24h"                            "$(bo 12)" "86400"
+eq "and stays capped, never giving up"        "$(bo 500)" "86400"
 
 echo
 echo "────────────────────────────────────────────────────────────────────────────"

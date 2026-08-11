@@ -37,8 +37,10 @@ This is the live orchestrator — `triage-loop.sh` runs it. The port is complete
 the original shell orchestrator has been retired to archive/.
 """
 
+import errno
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -119,6 +121,9 @@ class Tick:
         self.dispatch_run_id = ""
         self.dispatch_exit = 1
         self.dispatch_wall = 0
+        # Last worker-visible failure text for the run in flight, recorded onto the no-progress
+        # counter so the dashboard can show WHY a watch is backing off, not just that it is.
+        self.dispatch_last_error = ""
         self.dispatch_start_utc = ""
         self.dispatch_slack_read_ok = 0
         self.dispatched = 0
@@ -272,6 +277,11 @@ def check_quest(t, qid):
             except (TypeError, ValueError):
                 health["in_backoff"] = False
         unacked = 0
+        # Due unless a no-progress backoff window is still open. Mirrors the checker-health
+        # in_backoff computation directly above, on purpose: same shape, same failure mode,
+        # same reasoning — a repeatedly-failing thing is retried at a decaying rate, never
+        # abandoned and never parked for a human.
+        unacked_due = True
         if wid:
             urec = unacked_counts.get(f"{qid}|{wid}")
             if isinstance(urec, dict):
@@ -279,6 +289,11 @@ def check_quest(t, qid):
                     unacked = int(urec.get("count", 0))
                 except (TypeError, ValueError):
                     unacked = 0
+                try:
+                    nrt = float(urec.get("next_retry_ts", 0) or 0)
+                    unacked_due = not (nrt > t.now_ts)
+                except (TypeError, ValueError):
+                    unacked_due = True
         checker = t.script_dir / "checkers" / f"{wtype}.py"
         checker_exists = os.access(checker, os.X_OK)
 
@@ -286,12 +301,14 @@ def check_quest(t, qid):
         # they pass (so a held watch costs nothing and side-effects nothing). Each maps to a
         # classify() verdict, but we decide them inline because whether to EXEC the checker
         # depends on them; classify then owns the result→verdict routing.
-        structurally_held = (not tick_check.valid_watch_id(wid) or unacked >= t.unacked_promote
+        structurally_held = (not tick_check.valid_watch_id(wid)
+                             or (unacked >= t.unacked_promote and not unacked_due)
                              or bool(health and health.get("in_backoff")) or not checker_exists)
         if structurally_held:
             # A structural gate fired; all of them precede classify's None→error branch, so
             # classify(None) returns exactly that structural verdict (misconfig or in-backoff).
             verdict = tick_check.classify(None, entry, health=health, unacked=unacked,
+                                          unacked_due=unacked_due,
                                           unacked_promote=t.unacked_promote,
                                           error_promote=t.error_promote,
                                           checker_exists=checker_exists)
@@ -299,6 +316,7 @@ def check_quest(t, qid):
             cp = t.run(t.py(checker, json.dumps(entry)))
             result = _parse_checker((cp.stdout or "").strip())
             verdict = tick_check.classify(result, entry, health=health, unacked=unacked,
+                                          unacked_due=unacked_due,
                                           unacked_promote=t.unacked_promote,
                                           error_promote=t.error_promote,
                                           checker_exists=checker_exists)
@@ -313,6 +331,9 @@ def check_quest(t, qid):
             # persist the error side effect if this was the error-promotion path
             if verdict.get("error"):
                 t.run(t.py(t.helper("ledger", "checker-health.py"), "fail", wid, reason))
+            # No-progress no longer reaches here: it backs off forever instead of parking as
+            # misconfig, so it never needs to ask a human for anything. The remaining misconfig
+            # reasons (bad watch_id, missing checker) are repo defects, not stranded work.
             continue
         if v == tick_check.SKIP:
             # `ratelimited: True` distinguishes a genuine Slack rate-limit skip from the other
@@ -391,10 +412,96 @@ def _parse_checker(raw):
         return {"outcome": count, "preview": preview}
 
 
+# The tick's connectivity precondition. Probed against the API the configured worker backend
+# actually needs, not a generic ping target: a captive-portal wifi that resolves and routes but
+# cannot reach the model API is, for our purposes, offline, and a generic probe would call it
+# online. Keyed by YAAS_AGENT because this repo also dispatches to Codex and Cursor, and
+# probing Anthropic on a Codex host would freeze a perfectly healthy system.
+NETWORK_PROBE_HOSTS = {
+    "claude": "api.anthropic.com",
+    "codex":  "chatgpt.com",
+    "cursor": "api2.cursor.sh",
+}
+NETWORK_PROBE_DEFAULT = "api.anthropic.com"
+NETWORK_PROBE_PORT    = 443
+NETWORK_PROBE_TIMEOUT = 3.0
+
+
+def network_probe_host(t):
+    """Which host this tick's connectivity depends on. `YAAS_NETWORK_PROBE_HOST` overrides,
+    for a deployment behind a proxy or a backend this map does not know about."""
+    override = str(t.cfg.env.get("YAAS_NETWORK_PROBE_HOST", "")).strip()
+    if override:
+        return override
+    return NETWORK_PROBE_HOSTS.get(str(t.agent).strip().lower(), NETWORK_PROBE_DEFAULT)
+
+
+def have_network(t):
+    """True if a TCP connection to the worker backend's API can be opened right now.
+
+    FAILS OPEN on anything that is not unambiguously a network failure. A probe that wrongly
+    reports "offline" silently stops the entire orchestrator, which is far worse than the
+    wasted dispatch it exists to prevent. So only DNS-resolution failure, connection refusal /
+    unreachability, and timeout count as offline; every other OSError (fd exhaustion, a
+    sandbox denial, anything else local) is treated as "probe inconclusive, carry on".
+
+    Bounded by a watchdog thread rather than by the socket timeout alone, because
+    `create_connection` resolves the name BEFORE the timeout applies to anything — a stalled
+    resolver would otherwise hang the tick well past NETWORK_PROBE_TIMEOUT. A probe that does
+    not answer in time is inconclusive, so it too fails open.
+    """
+    if str(t.cfg.env.get("YAAS_SKIP_NETWORK_PROBE", "")).strip() == "1":
+        return True
+
+    host = network_probe_host(t)
+    verdict = {}
+
+    def probe():
+        try:
+            with socket.create_connection((host, NETWORK_PROBE_PORT), NETWORK_PROBE_TIMEOUT):
+                verdict["online"] = True
+        except (socket.gaierror, socket.timeout, TimeoutError, ConnectionError) as e:
+            verdict["online"] = False
+            verdict["why"] = f"{type(e).__name__}: {e}"
+        except OSError as e:
+            # Unreachable network/host is a real offline signal; anything else local is not.
+            if e.errno in (errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTDOWN,
+                           errno.EHOSTUNREACH, errno.ENETRESET):
+                verdict["online"] = False
+                verdict["why"] = f"{type(e).__name__}: {e}"
+            else:
+                verdict["online"] = True
+        except Exception:
+            verdict["online"] = True
+
+    th = threading.Thread(target=probe, daemon=True)
+    th.start()
+    th.join(NETWORK_PROBE_TIMEOUT + 1.0)
+    if "online" not in verdict:
+        return True  # watchdog fired: inconclusive, fail open
+    if not verdict["online"]:
+        t.log(f"network probe {host}:{NETWORK_PROBE_PORT} failed — {verdict.get('why', '')}")
+    return verdict["online"]
+
+
 def run_tick(t):
     """The whole tick after config is loaded. Returns the process exit code."""
     # tick start stamp (health-monitor watches started-vs-completed)
     t._bump_state(tick_started_utc=t.now_utc)
+
+    # Nothing this tick does works without a network, and everything it does when the network
+    # is missing is harmful: checkers fail, dispatches burn ~3 minutes each reaching nothing,
+    # and every dispatched watch takes a no-progress strike it did not earn. So the offline
+    # case is a SKIP, not a failure — the tick simply does not happen, exactly as if launchd
+    # had not fired. Nothing is checked, nothing is dispatched, no counter moves, and the next
+    # tick 60 seconds later tries again. A laptop that loses wifi for an hour therefore comes
+    # back with its state untouched rather than with an hour of accumulated backoff.
+    if not have_network(t):
+        t.log("OFFLINE — no network; skipping this tick entirely (no checks, no dispatch).")
+        t.event({"event": "gate_tick_offline", "probe": f"{network_probe_host(t)}:{NETWORK_PROBE_PORT}"})
+        t.slog("Run OK — offline, tick skipped (will retry).")
+        t._bump_state(**{"runs_offline+": 1})
+        return 0
 
     quest_dirs = sorted(d for d in t.quests_dir.iterdir()
                         if d.is_dir()) if t.quests_dir.is_dir() else []
@@ -611,7 +718,20 @@ def analyze(t):
         t.skipped_quests = [q for q in t.skipped_quests if q not in t.dirty_quests]
 
 
+# _bump_unacked and _record_progress both run in the sequential phase and need no lock;
+# cross-process races are already excluded by the tick's own flock.
+
+
 def _bump_unacked(t, key, wtype, status):
+    """Bump the no-progress counter for a watch held OUTSIDE the dispatch path.
+
+    Same ledger, same backoff. `analyze()` calls this for a clean-but-saturated window, which is
+    a livelock, not an unacked dispatch: the watermark cannot move, so the same window re-fires
+    every tick forever (observed on a github_pr watch: 424 ticks over 14 hours). Writing the
+    backoff fields here too means the dashboard's "backing off" badge is telling the truth about
+    these records rather than labelling a record that has no retry schedule at all — and it
+    makes the livelock decay instead of spinning at tick cadence.
+    """
     counts = t._read_json(t.unacked_file, {}) or {}
     if not isinstance(counts, dict):
         counts = {}
@@ -621,6 +741,9 @@ def _bump_unacked(t, key, wtype, status):
     rec["last_utc"] = t.now_utc
     rec["type"] = wtype
     rec["last_status"] = status
+    wait = unacked_backoff_for(rec["count"], t.unacked_promote)
+    rec["next_retry_ts"] = f"{t.now_ts + wait:.6f}" if wait else "0"
+    rec["backoff_sec"] = wait
     counts[key] = rec
     try:
         tmp = str(t.unacked_file) + ".tmp"
@@ -922,6 +1045,14 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
     worker_log = agent_json.get("log", "")
     t.log(f"Worker [{target}] exited with {t.dispatch_exit} in {t.dispatch_wall}s (readable: {worker_log})")
 
+    t.dispatch_last_error = ""
+    if t.dispatch_exit != 0 and worker_ndjson and os.path.exists(worker_ndjson):
+        t.dispatch_last_error = _worker_error_text(worker_ndjson)
+        if t.dispatch_last_error:
+            t.log(f"WORKER ERROR [{target}] — {t.dispatch_last_error}")
+            t.event({"event": "gate_dispatch_error", "targets": [target],
+                     "exit_code": t.dispatch_exit, "error": t.dispatch_last_error})
+
     # Slack infra-failure guard (Claude backend: read init .mcp_servers status).
     if t.dispatch_exit == 0 and worker_ndjson and os.path.exists(worker_ndjson):
         status = _slack_init_status(worker_ndjson)
@@ -953,6 +1084,30 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
             pass
 
 
+def _worker_error_text(ndjson_path):
+    """The worker's own failure message from its final result record, or "".
+
+    Not parsed or classified — whatever the backend put in `result` is what the dashboard
+    shows. The point is that a human reading "backing off" can see "Can't reach the API server
+    (ENOTFOUND)" next to it and know it is the network, without opening a log file.
+    """
+    try:
+        last = None
+        for line in Path(ndjson_path).read_text().splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and rec.get("type") == "result":
+                last = rec
+        if not last or not last.get("is_error"):
+            return ""
+        txt = str(last.get("result") or last.get("terminal_reason") or "").strip()
+        return " ".join(txt.split())
+    except OSError:
+        return ""
+
+
 def _slack_init_status(ndjson_path):
     try:
         for line in Path(ndjson_path).read_text().splitlines():
@@ -964,6 +1119,28 @@ def _slack_init_status(ndjson_path):
     except Exception:
         pass
     return None
+
+
+# No-progress backoff: 5 minutes doubling to a 24h cap, and it never stops retrying.
+#
+# Applied only once the count reaches YAAS_UNACKED_PROMOTE, so the first few retries stay at
+# tick cadence and a one-tick blip costs nothing. From there: 5m, 10m, 20m, 40m, 80m, 160m,
+# 5.3h, 10.6h, 21.3h, then 24h forever. A watch failing for a real reason therefore settles at
+# about one dispatch a day — cheap enough to leave running indefinitely, frequent enough that
+# a fixed credential or a restored network heals it on its own within a day, with no card to
+# clear. Deliberately the same shape as checker-health's backoff, one tier slower, because the
+# thing being retried here is a paid dispatch rather than a local checker process.
+UNACKED_BASE_BACKOFF = 300
+UNACKED_MAX_BACKOFF  = 86400
+
+
+
+def unacked_backoff_for(n, promote):
+    """Seconds to wait before the next dispatch of a watch with `n` no-progress dispatches.
+    0 below the promote threshold (retry at normal tick cadence). PURE."""
+    if n < promote:
+        return 0
+    return min(UNACKED_BASE_BACKOFF * (2 ** (n - promote)), UNACKED_MAX_BACKOFF)
 
 
 def _record_progress(t, scope, committed_ids):
@@ -984,6 +1161,15 @@ def _record_progress(t, scope, committed_ids):
             rec["type"] = itype
         if status:
             rec["last_status"] = status
+        wait = unacked_backoff_for(rec["count"], t.unacked_promote)
+        rec["next_retry_ts"] = f"{t.now_ts + wait:.6f}" if wait else "0"
+        rec["backoff_sec"] = wait
+        # Why the dispatch made no progress, in the worker's own words where we have them.
+        # Without this the dashboard can say a watch is backing off but not what is wrong,
+        # which is the whole reason someone opens the dashboard.
+        note = (t.dispatch_last_error or "").strip()
+        if note:
+            rec["last_error"] = note[:300]
         counts[key] = rec
 
     if manifest is None:

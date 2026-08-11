@@ -42,6 +42,7 @@ import secrets
 import socketserver
 import subprocess
 import sys
+import time
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -807,7 +808,7 @@ def build_config() -> dict:
             knob("YAAS_MAX_DISPATCH_6H", 250, "Dispatch-count cap over 6h (covers Codex/Cursor, which report no cost)."),
         ]},
         {"title": "Promotion & backoff", "items": [
-            knob("YAAS_UNACKED_PROMOTE", 3, "Dispatches with no progress before a watch is held as misconfig."),
+            knob("YAAS_UNACKED_PROMOTE", 3, "Dispatches with no progress before a watch starts backing off (5m doubling to 24h; it never stops retrying)."),
             knob("YAAS_CHECKER_ERROR_PROMOTE", 6, "Consecutive checker errors before a watch is held as misconfig."),
         ]},
         {"title": "Timing", "items": [
@@ -897,24 +898,98 @@ def build_dashboard() -> dict:
             "last_action":   last_action,
             "last_blocked":  last_blocked,
             "last_seen_ts":  last_seen_ts,
-            "misconfig_count": 0,   # filled in below
+            "backoff_count": 0,     # filled in below
+            "backoff_watches": [],  # filled in below
             "ratelimited": False,   # filled in below (transient, from run-log)
             "ratelimited_count": 0,
         })
 
-    # Annotate quests with misconfig_count from unacked-counts.json
+    # Annotate quests with their backing-off watches from unacked-counts.json.
+    #
+    # These used to be labelled "misconfig", which was the wrong word twice over: a watch past
+    # the promote threshold is not necessarily misconfigured (a network outage gets you there
+    # just as fast), and the label implied a dead end when the watch is in fact still retrying.
+    # Carry the detail — how long the wait is now and the worker's last error — because "backing
+    # off" alone tells a reader nothing they can act on.
     unacked_path = STATE_DIR / "triage" / "unacked-counts.json"
     if unacked_path.exists():
         try:
             promote = int(os.environ.get("YAAS_UNACKED_PROMOTE", "3"))
             uc = json.loads(unacked_path.read_text())
-            misconfig_by_quest: dict[str, int] = {}
+            backoff_by_quest: dict[str, list] = {}
             for key, entry in uc.items():
-                qid, _, _ = key.partition("|")
-                if entry.get("count", 0) >= promote:
-                    misconfig_by_quest[qid] = misconfig_by_quest.get(qid, 0) + 1
+                qid, _, wid = key.partition("|")
+                if not isinstance(entry, dict) or entry.get("count", 0) < promote:
+                    continue
+                backoff_by_quest.setdefault(qid, []).append({
+                    "watch_id":      wid,
+                    "type":          entry.get("type", ""),
+                    "count":         entry.get("count", 0),
+                    "backoff_sec":   entry.get("backoff_sec", 0),
+                    "next_retry_ts": entry.get("next_retry_ts", "0"),
+                    "last_error":    entry.get("last_error", ""),
+                    "last_status":   entry.get("last_status", ""),
+                })
             for q in quests:
-                q["misconfig_count"] = misconfig_by_quest.get(q["id"], 0)
+                wl = backoff_by_quest.get(q["id"], [])
+                q["backoff_watches"] = wl
+                q["backoff_count"]   = len(wl)
+        except Exception:
+            pass
+
+    # …and with CHECKER backoff, the other, entirely separate source.
+    #
+    # The header's "checker backoff" tile counts both kinds (tick.py counts every BACKOFF
+    # verdict), but only the unacked kind above was attributable to a quest — so a watch
+    # backing off because its CHECKER keeps erroring showed up as a number at the top of the
+    # dashboard with no way to find out which quest owned it. That is the more common of the
+    # two in practice: an expired credential or a revoked permission lands here, not above.
+    #
+    # checker-health.json is keyed by watch_id alone, so the owning quest has to be recovered
+    # by scanning each quest's watch.json for that id.
+    health_path = STATE_DIR / "triage" / "checker-health.json"
+    if health_path.exists():
+        try:
+            health = json.loads(health_path.read_text())
+            owner, wtype_of = {}, {}
+            for q in quests:
+                try:
+                    wj = json.loads((active_dir / q["id"] / "watch.json").read_text())
+                except Exception:
+                    continue
+                for w in wj.get("watches", []):
+                    if isinstance(w, dict) and w.get("watch_id"):
+                        owner[w["watch_id"]] = q["id"]
+                        wtype_of[w["watch_id"]] = w.get("type", "")
+            now = time.time()
+            extra: dict[str, list] = {}
+            for wid, rec in (health or {}).items():
+                if not isinstance(rec, dict):
+                    continue
+                qid = owner.get(wid)
+                if not qid:
+                    continue  # orphan: the watch or its quest is gone
+                try:
+                    remaining = float(rec.get("next_retry_ts") or 0) - now
+                except (TypeError, ValueError):
+                    remaining = 0
+                if remaining <= 0:
+                    continue  # not currently waiting
+                extra.setdefault(qid, []).append({
+                    "watch_id":      wid,
+                    "type":          wtype_of.get(wid, ""),
+                    "count":         rec.get("consecutive_errors", 0),
+                    "backoff_sec":   int(remaining),
+                    "next_retry_ts": rec.get("next_retry_ts", "0"),
+                    "last_error":    rec.get("last_error", ""),
+                    "last_status":   "checker error",
+                    "source":        "checker",
+                })
+            for q in quests:
+                wl = extra.get(q["id"], [])
+                if wl:
+                    q["backoff_watches"] = list(q.get("backoff_watches") or []) + wl
+                    q["backoff_count"]   = len(q["backoff_watches"])
         except Exception:
             pass
 
@@ -1261,8 +1336,9 @@ def build_quest_detail(quest_id: str) -> dict | None:
         except Exception:
             pass
 
-    # Misconfigured watches: dispatched N times with no progress, now held.
-    misconfig_watches = []
+    # Backing-off watches: dispatched N times with no progress, now retried on a decaying
+    # schedule (never parked, never abandoned). Carries the wait and the worker's last error.
+    backoff_watches = []
     unacked_path = STATE_DIR / "triage" / "unacked-counts.json"
     if unacked_path.exists():
         try:
@@ -1271,15 +1347,52 @@ def build_quest_detail(quest_id: str) -> dict | None:
             for key, entry in uc.items():
                 qid, _, wid = key.partition("|")
                 if qid == quest_id and entry.get("count", 0) >= promote:
-                    misconfig_watches.append({
-                        "watch_id":    wid,
-                        "type":        entry.get("type", "unknown"),
-                        "count":       entry.get("count"),
-                        "last_status": entry.get("last_status"),
-                        "last_utc":    entry.get("last_utc"),
+                    backoff_watches.append({
+                        "watch_id":      wid,
+                        "type":          entry.get("type", "unknown"),
+                        "count":         entry.get("count"),
+                        "last_status":   entry.get("last_status"),
+                        "last_utc":      entry.get("last_utc"),
+                        "backoff_sec":   entry.get("backoff_sec", 0),
+                        "next_retry_ts": entry.get("next_retry_ts", "0"),
+                        "last_error":    entry.get("last_error", ""),
+                        "source":        "dispatch",
                     })
         except Exception:
             pass
+
+    # The other backoff source: the watch's CHECKER keeps erroring (expired credential, revoked
+    # permission, changed upstream shape). Keyed by watch_id alone, so it is matched against this
+    # quest's own watch.json. Without this the quest page showed nothing while the header counted
+    # it, which is how a 27-error github_pr watch stayed anonymous for a day.
+    try:
+        health = json.loads((STATE_DIR / "triage" / "checker-health.json").read_text())
+        wj = json.loads((STATE_DIR / "quests" / "active" / quest_id / "watch.json").read_text())
+        mine = {w.get("watch_id"): w.get("type", "") for w in wj.get("watches", [])
+                if isinstance(w, dict)}
+        now = time.time()
+        for wid, rec in (health or {}).items():
+            if wid not in mine or not isinstance(rec, dict):
+                continue
+            try:
+                remaining = float(rec.get("next_retry_ts") or 0) - now
+            except (TypeError, ValueError):
+                remaining = 0
+            if remaining <= 0:
+                continue
+            backoff_watches.append({
+                "watch_id":      wid,
+                "type":          mine.get(wid, "unknown"),
+                "count":         rec.get("consecutive_errors", 0),
+                "last_status":   "checker error",
+                "last_utc":      rec.get("last_error_utc"),
+                "backoff_sec":   int(remaining),
+                "next_retry_ts": rec.get("next_retry_ts", "0"),
+                "last_error":    rec.get("last_error", ""),
+                "source":        "checker",
+            })
+    except Exception:
+        pass
 
     # Rate-limited watches: transient, from recent run-log events (not a state file).
     ratelimited_watches = []
@@ -1296,7 +1409,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
 
     open_items = {
         "blocked":           blocked_now,
-        "misconfig_watches": misconfig_watches,
+        "backoff_watches": backoff_watches,
         "ratelimited_watches": ratelimited_watches,
         "threads":           open_threads,
         "threads_total":     threads_total,

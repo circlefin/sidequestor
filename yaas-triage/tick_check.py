@@ -64,7 +64,7 @@ def valid_watch_id(wid):
     return bool(wid) and bool(_WATCH_ID.match(wid))
 
 
-def classify(result, watch, health=None, unacked=0,
+def classify(result, watch, health=None, unacked=0, unacked_due=True,
              unacked_promote=3, error_promote=6, checker_exists=True):
     """Return a verdict dict for one watch. PURE.
 
@@ -74,6 +74,8 @@ def classify(result, watch, health=None, unacked=0,
     health   this watch's checker-health record: {consecutive_errors, next_retry_ts, ...} or
              None if it has never failed.
     unacked  how many times this watch has been dispatched with no progress.
+    unacked_due  whether the no-progress backoff window has elapsed (caller computes it from
+             the watch's next_retry_ts). False means "still backing off, do not check yet".
     checker_exists  whether checkers/<type>.py is present and executable.
 
     Returned dict always has: verdict, and (for dirty/clean) advance_to + complete + count +
@@ -86,9 +88,23 @@ def classify(result, watch, health=None, unacked=0,
     if not valid_watch_id(wid):
         return _v(MISCONFIG, wtype, wid, reason=f"[{wtype}] invalid or missing watch_id; watermark held")
 
-    if unacked >= unacked_promote:
-        return _v(MISCONFIG, wtype, wid,
-                  reason=f"[{wtype}] dispatched {unacked} time(s) with no progress; watermark held pending review")
+    # Repeated no-progress dispatches BACK OFF; they never promote to misconfig and never park.
+    #
+    # This used to return MISCONFIG "pending review", which froze the watch until a human
+    # cleared an approval card. Two problems, both observed live. (1) It cannot tell a real
+    # misconfiguration from a blip: on 2026-08-11 a 40-minute DNS outage on the host produced
+    # three cards across three quests, because a worker that never reached the API cannot ack,
+    # and "did not ack" was scored identically to "ran fine and refused to ack". (2) A frozen
+    # watch is worse than a slow one — the work behind it (a partner waiting on a file) sits
+    # untouched until someone notices the card.
+    #
+    # Backing off instead keeps the retry alive forever at a decaying rate, so a transient
+    # failure self-heals with no human in the loop and a permanent one costs ~1 dispatch/day
+    # while staying visible on the dashboard. The watermark is held throughout either way, so
+    # nothing is buried; the only question was ever how often to retry.
+    if unacked >= unacked_promote and not unacked_due:
+        return _v(BACKOFF, wtype, wid, unacked=unacked,
+                  reason=f"[{wtype}] {unacked} dispatch(es) with no progress; backing off, watermark held")
 
     # In an active backoff window? Hold without running the checker. (The caller decides the
     # window has not yet expired; classify only needs to know it is currently backed off.)
@@ -232,7 +248,7 @@ def main():
     args = sys.argv[1:]
     if len(args) < 2:
         print("usage: tick_check.py '<result json>' '<watch json>' [--unacked N] "
-              "[--errors N] [--in-backoff] [--no-checker]", file=sys.stderr)
+              "[--unacked-backoff] [--errors N] [--in-backoff] [--no-checker]", file=sys.stderr)
         return 2
     result = json.loads(args[0]) if args[0] not in ("", "null") else None
     watch = json.loads(args[1])
@@ -244,6 +260,8 @@ def main():
     kw = {}
     if "--unacked" in args:
         kw["unacked"] = int(args[args.index("--unacked") + 1])
+    if "--unacked-backoff" in args:
+        kw["unacked_due"] = False
     if "--no-checker" in args:
         kw["checker_exists"] = False
     print(json.dumps(classify(result, watch, health=health, **kw)))

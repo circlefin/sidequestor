@@ -183,7 +183,7 @@ input.field-error { border-color:var(--amber); }
 .oi-draft { background:#fdf3e1; color:var(--amber); border:1px solid #f1dcb6; }
 .oi-wait { background:#f2ebfc; color:var(--violet); border:1px solid #e2d3f8; }
 .oi-promise { background:#fdeff0; color:var(--red); border:1px solid #f6d3dc; }
-.oi-misconfig { background:#fdeff0; color:var(--red); border:1px solid #f6d3dc; }
+.oi-backoff { background:#fdf3e1; color:var(--amber); border:1px solid #f1dcb6; }
 .oi-row { display:flex; align-items:center; gap:9px; padding:8px 12px; border:1px solid var(--border); border-left-width:3px; border-radius:7px; background:var(--surface); font-size:12.5px; margin-bottom:5px; cursor:pointer; }
 .oi-row:hover { background:var(--surface2); }
 .oi-row.r-blocked { border-left-color:var(--amber); }
@@ -191,7 +191,7 @@ input.field-error { border-color:var(--amber); }
 .oi-row.r-draft { border-left-color:var(--amber); }
 .oi-row.r-wait { border-left-color:var(--violet); }
 .oi-row.r-promise { border-left-color:var(--red); }
-.oi-row.r-misconfig { border-left-color:var(--red); }
+.oi-row.r-backoff { border-left-color:var(--amber); }
 .oi-qtitle { font-weight:600; }
 .oi-reason { color:var(--text2); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .oi-row.expanded { align-items:flex-start; }
@@ -202,6 +202,7 @@ input.field-error { border-color:var(--amber); }
 .oi-row .deeplink.icon-only { flex:none; }
 .rc-revising { background:#fdf3e1; border:1px solid #f1dcb6; color:var(--amber); border-radius:7px; padding:8px 11px; font-size:12px; margin-bottom:10px; }
 .rc-revising-note { display:block; margin-top:3px; color:var(--text2); }
+.rc-action-error { background:#fdecec; border:1px solid #f5c6c6; color:#a33; border-radius:7px; padding:8px 11px; font-size:12px; margin-bottom:10px; }
 .review-card.is-revising { opacity:.92; }
 /* per-quest open items panel */
 .qv-openitems { border:1px solid var(--border); border-radius:9px; background:var(--surface); padding:11px 12px; margin-bottom:14px; }
@@ -246,11 +247,12 @@ tbody tr { border-bottom:1px solid var(--border); cursor:pointer; }
 tbody tr:hover td { background:var(--surface2); }
 tbody td { padding:9px 14px 9px 0; vertical-align:top; }
 .row-blocked td:first-child { border-left:2px solid var(--amber); padding-left:8px; }
-.row-misconfig td:first-child { border-left:2px solid var(--red); padding-left:8px; }
+.row-backoff td:first-child { border-left:2px solid var(--amber); padding-left:8px; }
 .quest-title { font-weight:600; }
 .action-note { color:var(--text2); font-size:12px; margin-top:4px; }
 .blocked-badge { font-size:11px; color:var(--amber); margin-top:4px; }
-.misconfig-badge { font-size:11px; color:var(--red); margin-top:4px; }
+.backoff-badge { font-size:11px; color:var(--amber); margin-top:4px; }
+.backoff-detail { display:block; color:var(--text2); font-size:10px; margin-top:1px; }
 .ratelimit-badge { font-size:11px; color:var(--violet); margin-top:4px; }
 .oi-ratelimit { background:#f2ebfc; color:var(--violet); border:1px solid #e2d3f8; }
 .oi-row.r-ratelimit { border-left-color:var(--violet); }
@@ -577,7 +579,7 @@ function renderMeta(){
     ['quests',quests.length,false],
     ['blocked',blocked,blocked>0],
     ...(misconf?[['misconfigured',misconf,true]]:[]),
-    ...(backoff?[['checker backoff',backoff,true]]:[]),
+    ...(backoff?[['backing off',backoff,true]]:[]),
     ...(trunc?[['held: saturated',trunc,true]]:[]),
     // `last triage` had no threshold, so a dead loop rendered the same as a healthy
     // one, just with a bigger number nobody was watching. Now it goes red past 5
@@ -588,7 +590,7 @@ function renderMeta(){
   ];
   const html=strip.map(([l,v,w])=>{
     const warn=w?' stat-warn':'';
-    const click=(w&&l==='misconfigured')?' onclick="switchTab(\'quests\')" style="cursor:pointer" title="Click to see affected quests"':'';
+    const click=(w&&(l==='misconfigured'||l==='backing off'))?' onclick="switchTab(\'quests\')" style="cursor:pointer" title="Click to see affected quests"':'';
     return `<div class="stat${warn}"${click}><div class="stat-n">${typeof v==='string'?v:v}</div><div class="stat-l">${l}</div></div>`;
   }).join('');
   if(changed('meta',html)) document.getElementById('meta').innerHTML=html;
@@ -794,25 +796,46 @@ function buildCard(item){
     ? `<div class="rc-label" style="margin-bottom:6px">review note · instruction for the worker (required to submit for revision)</div><input type="text" data-field="review_note" placeholder='e.g. "make it more polite"  ·  "loop in a teammate too"'>`
     : `<div class="rc-label" style="margin-bottom:6px">revision prompt · tell the worker what to change (required to submit for revision)</div><textarea class="note-field" data-field="review_note" placeholder="what should the worker change?"></textarea>`;
   const revising=item.status==='needs_reply';
-  const banner=revising?`<div class="rc-revising">⏳ submitted for revision — the worker will revise and re-surface this for another review. ${item.review_note?`<span class="rc-revising-note">asked: ${esc(item.review_note)}</span>`:''}</div>`:'';
-  return `<div class="review-card rc-${esc(at)}${revising?' is-revising':''}" data-appr-id="${esc(item.id)}">
+  // `reviewed` and `executing` stay VISIBLE on purpose (an approval stuck mid-execution
+  // must have a surface), but the server only accepts review/revise/cancel from
+  // pending_review|needs_reply — so rendering live buttons on them produced a card where
+  // every click 409'd silently. Show the state, drop the dead controls.
+  const inFlight=item.status==='reviewed'||item.status==='executing';
+  const flightMsg=item.status==='reviewed'
+    ? 'approved — waiting for a worker to pick it up.'
+    : 'a worker is executing this now.';
+  const stale=item.lease_expires_at && new Date(item.lease_expires_at)<new Date()
+    ? ' <b>Lease expired without a result</b> — the worker likely died mid-run.' : '';
+  const banner=revising
+    ?`<div class="rc-revising">⏳ submitted for revision — the worker will revise and re-surface this for another review. ${item.review_note?`<span class="rc-revising-note">asked: ${esc(item.review_note)}</span>`:''}</div>`
+    :(inFlight?`<div class="rc-revising">🔒 ${flightMsg}${stale} No further review is possible from here.${item.review_note?`<span class="rc-revising-note">you asked: ${esc(item.review_note)}</span>`:''}</div>`:'');
+  const actions=inFlight
+    ? `<button class="btn rc-next" data-nav="1">Next ›</button>`
+    : `<button class="btn btn-review" data-action="review">Mark as Reviewed</button>
+      <button class="btn btn-revise" data-action="revise">Submit for revision</button>
+      <button class="btn btn-cancel" data-action="cancel">Cancel</button>
+      <button class="btn rc-next" data-nav="1">Next ›</button>`;
+  return `<div class="review-card rc-${esc(at)}${revising?' is-revising':''}${inFlight?' is-revising':''}" data-appr-id="${esc(item.id)}">
     <div class="rc-header"><div><div class="rc-title">${esc(item.quest_title||item.quest_id)}</div>${item.risk_reason?`<div class="rc-risk">${esc(item.risk_reason)}</div>`:''}</div>${agoSpan(item.created_at,'rc-age')}</div>
     ${banner}
     ${targetRow}
     ${ctx}
     ${revisionsBlock(item)}
     ${bodyBlock}
-    <div class="rc-note-row">${noteField}</div>
+    ${inFlight?'':`<div class="rc-note-row">${noteField}</div>`}
     <div class="rc-actions">
-      <button class="btn btn-review" data-action="review">Mark as Reviewed</button>
-      <button class="btn btn-revise" data-action="revise">Submit for revision</button>
-      <button class="btn btn-cancel" data-action="cancel">Cancel</button>
-      <button class="btn rc-next" data-nav="1">Next ›</button>
+      ${actions}
     </div>
   </div>`;
 }
 
 const ACTION_LABELS={review:'Mark as Reviewed',revise:'Submit for revision',cancel:'Cancel'};
+function showActionError(card,msg){
+  const row=card.querySelector('.rc-actions'); if(!row) return;
+  let el=card.querySelector('.rc-action-error');
+  if(!el){ el=document.createElement('div'); el.className='rc-action-error'; row.parentNode.insertBefore(el,row); }
+  el.textContent='⚠ '+msg;
+}
 async function submitReview(card,action){
   if(!card) return;
   const btns=[...card.querySelectorAll('.rc-actions .btn')];
@@ -826,31 +849,63 @@ async function submitReview(card,action){
     const id=card.closest('[data-appr-id]').dataset.apprId;
     const r=await fetch(`/api/${action}/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(r.ok){ const slide=card.closest('.review-slide')||card; slide.classList.add('card-done'); if(action==='review') _nextSlideAfterPoll=reviewIndex; lastMsgEtag=null; setTimeout(()=>poll(),400); }
-    else{ btns.forEach(b=>b.disabled=false); if(active) active.textContent=ACTION_LABELS[action]; }
-  }catch{ btns.forEach(b=>b.disabled=false); if(active) active.textContent=ACTION_LABELS[action]; }
+    // A rejected action used to just re-enable the buttons, so a 409 (item already
+    // reviewed/executing) looked exactly like a click that did nothing. Say why, and
+    // re-poll so the card redraws in whatever state the server actually holds.
+    else{
+      let why=''; try{ why=(await r.json()).error||''; }catch{}
+      showActionError(card,why||`request failed (${r.status})`);
+      btns.forEach(b=>b.disabled=false); if(active) active.textContent=ACTION_LABELS[action];
+      lastMsgEtag=null; setTimeout(()=>poll(),400);
+    }
+  }catch(e){ showActionError(card,'could not reach the dashboard server'); btns.forEach(b=>b.disabled=false); if(active) active.textContent=ACTION_LABELS[action]; }
 }
 
 // ── Quests tab ──
 const PRI={high:0,normal:1,low:2};
+function fmtWait(sec){
+  sec=Number(sec)||0;
+  if(sec>=86400) return Math.round(sec/86400)+'d';
+  if(sec>=3600)  return Math.round(sec/3600)+'h';
+  if(sec>=60)    return Math.round(sec/60)+'m';
+  return sec+'s';
+}
+// "backing off" on its own is not actionable. Show the next-retry gap and the worker's own
+// last error, so a network blip and an expired credential are distinguishable at a glance.
+function backoffDetail(q){
+  const w=(q.backoff_watches||[])[0]; if(!w) return '';
+  const bits=[];
+  // Which of the two backoffs this is. They need different fixes: a checker backoff is a
+  // credential/permission problem on the read side, a dispatch backoff is the worker failing
+  // to ack. Saying only "backing off" sends the reader looking in the wrong place.
+  if(w.type) bits.push(w.type);
+  bits.push(w.source==='checker'?'checker failing':'no progress');
+  if(w.backoff_sec) bits.push('next try in '+fmtWait(w.backoff_sec));
+  if(w.last_error)  bits.push(w.last_error);
+  else if(w.last_status) bits.push('last: '+w.last_status);
+  return bits.length?`<span class="backoff-detail">${esc(bits.join(' \u00b7 '))}</span>`:'';
+}
 function renderQuests(quests){
   const sorted=[...quests].sort((a,b)=>{
     const ba=isBlockedNow(a)?0:1,bb=isBlockedNow(b)?0:1; if(ba!==bb) return ba-bb;
-    const ma=(a.misconfig_count||0)>0?0:1,mb=(b.misconfig_count||0)>0?0:1; if(ma!==mb) return ma-mb;
+    const ma=(a.backoff_count||0)>0?0:1,mb=(b.backoff_count||0)>0?0:1; if(ma!==mb) return ma-mb;
     const ra=a.ratelimited?0:1,rb=b.ratelimited?0:1; if(ra!==rb) return ra-rb;
     const pa=PRI[a.priority]??1,pb=PRI[b.priority]??1; if(pa!==pb) return pa-pb;
     return (b.last_action?.ts||'').localeCompare(a.last_action?.ts||'');
   });
   if(!changed('quests',sorted)) return;
   document.getElementById('quest-tbody').innerHTML=sorted.map(q=>{
-    const bl=isBlockedNow(q); const mc=(q.misconfig_count||0)>0; const rl=!!q.ratelimited;
+    const bl=isBlockedNow(q); const mc=(q.backoff_count||0)>0; const rl=!!q.ratelimited;
     const dot=bl?'dot-blocked':'dot-active'; const st=bl?'status-text status-warn':'status-text';
     const mode=q.allow_send?'<span class="tag tag-send">send</span>':'<span class="tag tag-draft">draft</span>';
     const la=q.last_action; const lb=bl?q.last_blocked:null;
-    const mcBadge=mc?`<div class="misconfig-badge">⚠ misconfig${q.misconfig_count>1?` (${q.misconfig_count})`:''}</div>`:'';
+    // A backing-off watch is still retrying, so the badge says when the next attempt is and
+    // what went wrong last time — never "misconfig", which read as a dead end it isn't.
+    const mcBadge=mc?`<div class="backoff-badge">\u21bb backing off${q.backoff_count>1?` (${q.backoff_count})`:''}${backoffDetail(q)}</div>`:'';
     const rlBadge=rl?`<div class="ratelimit-badge">⏳ rate limited${q.ratelimited_count>1?` (${q.ratelimited_count})`:''}</div>`:'';
     const badges=mcBadge+rlBadge;
     const cell=la?`<div class="feed-top">${badge(la.event)}${agoSpan(la.ts)}</div>${la.note?`<div class="action-note">${esc(la.note)}</div>`:''}${lb?`<div class="blocked-badge">⚠ blocked ${ago(lb.ts)}</div>`:''}${badges}`:(lb?`<div class="blocked-badge">⚠ blocked ${ago(lb.ts)}</div>${badges}`:(badges||'<span class="ago">-</span>'));
-    const rowCls=[bl?'row-blocked':'',mc?'row-misconfig':'',(rl&&!mc&&!bl)?'row-ratelimit':''].filter(Boolean).join(' ');
+    const rowCls=[bl?'row-blocked':'',mc?'row-backoff':'',(rl&&!mc&&!bl)?'row-ratelimit':''].filter(Boolean).join(' ');
     return `<tr data-quest-id="${esc(q.id)}"${rowCls?` class="${rowCls}"`:''}><td class="quest-title">${esc(q.title)}</td><td><span class="dot ${dot}"></span><span class="${st}">${esc(q.status)}</span></td><td><span class="pri-${esc(q.priority||'normal')}">${esc(q.priority||'normal')}</span></td><td>${mode}</td><td>${cell}</td></tr>`;
   }).join('')||'<tr><td colspan="5" class="empty">no active quests</td></tr>';
 }
@@ -884,14 +939,17 @@ function expiryLabel(ts){
 function fireTime(ts){ const f=parseFloat(ts); if(!isFinite(f)||f<=0) return ''; const d=new Date(f*1000),now=Date.now(); const past=d.getTime()<now; const s=d.toLocaleDateString(undefined,{month:'short',day:'numeric'}); return `<span class="oi-age${past?' oi-overdue':''}">${past?'due ':'fires '}${esc(s)}</span>`; }
 function renderQuestOpenItems(oi){
   if(!oi) return '';
-  const threads=oi.threads||[], sched=oi.scheduled||[], review=oi.review||[], commits=oi.commitments||[], blocked=oi.blocked, misconfig=oi.misconfig_watches||[], ratelimited=oi.ratelimited_watches||[];
+  const threads=oi.threads||[], sched=oi.scheduled||[], review=oi.review||[], commits=oi.commitments||[], blocked=oi.blocked, backoff=oi.backoff_watches||[], ratelimited=oi.ratelimited_watches||[];
   const total=oi.threads_total||threads.length;
-  const n=(blocked?1:0)+misconfig.length+ratelimited.length+total+sched.length+review.length+commits.length;
+  const n=(blocked?1:0)+backoff.length+ratelimited.length+total+sched.length+review.length+commits.length;
   let body='';
-  misconfig.forEach(w=>{
-    const detail=`${esc(w.type)} · dispatched ${w.count}× with no progress · last: ${esc(w.last_status||'?')}`;
+  backoff.forEach(w=>{
+    const why=w.last_error?` · ${esc(w.last_error)}`:` · last: ${esc(w.last_status||'?')}`;
+    const every=w.backoff_sec?` · next try in ${fmtWait(w.backoff_sec)}`:'';
+    const kind=w.source==='checker'?'checker error':'dispatch with no progress';
+    const detail=`${esc(w.type)} · ${w.count}\u00d7 ${kind}${every}${why}`;
     const age=w.last_utc?`<span class="oi-age" data-ts="${esc(w.last_utc)}">${ago(w.last_utc)}</span>`:'';
-    body+=oiRow(`<span class="oi-badge oi-misconfig">misconfig</span><span class="oi-reason" title="${esc(w.watch_id)}">${detail}</span>${age}`,'r-misconfig');
+    body+=oiRow(`<span class="oi-badge oi-backoff">backing off</span><span class="oi-reason" title="${esc(w.watch_id)}">${detail}</span>${age}`,'r-backoff');
   });
   ratelimited.forEach(w=>{
     const detail=`${esc(w.type)} · Slack rate-limited this watch; watermark held, retries next tick`;
