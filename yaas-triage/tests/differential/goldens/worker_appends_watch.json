@@ -1,0 +1,54 @@
+{
+  "acks": {
+    "q-demo/quest": {
+      "w1": "handled"
+    }
+  },
+  "dispatches": [
+    "q-demo"
+  ],
+  "events": [
+    {
+      "dirty_watches": [
+        {
+          "advance_to": null,
+          "checker_outcome": "dirty",
+          "complete": true,
+          "quest_id": "q-demo",
+          "type": "slack_thread",
+          "watch_id": "w1"
+        }
+      ],
+      "event": "gate_dispatch",
+      "targets": [
+        "q-demo"
+      ]
+    },
+    {
+      "backend": "stub",
+      "event": "gate_dispatch_tokens",
+      "input_tokens": 0,
+      "note": "raw tokens; no cost (non-claude backend)",
+      "output_tokens": 0,
+      "targets": "q-demo"
+    },
+    {
+      "acked": 1,
+      "event": "gate_dispatch_success",
+      "targets": [
+        "q-demo"
+      ]
+    }
+  ],
+  "exit": 0,
+  "planned": [
+    "q-demo"
+  ],
+  "quests": {
+    "q-demo": "active"
+  },
+  "watches": {
+    "q-demo/+appended[0]": "APPENDED:slack_thread",
+    "q-demo/w1": "advanced_to_now"
+  }
+}

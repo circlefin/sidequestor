@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.yaas.heartbeat</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{REPO_ROOT}}/yaas-triage/ops/heartbeat-loop.sh</string>
+    </array>
+
+    <!-- A SEPARATE job from com.yaas.triage on purpose: the whole point is to detect
+         triage being dead, which a check running inside triage can never do. It takes
+         no lock and touches no watch state, so it cannot wedge what it watches.
+         KeepAlive plus an internal sleep loop for the same reason triage uses it —
+         macOS 26.x stops delivering StartInterval, and that failure is itself one of
+         the outages this job exists to catch. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>{{REPO_ROOT}}/logs/heartbeat.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{REPO_ROOT}}/logs/heartbeat.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>{{REPO_ROOT}}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{{HOME}}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+    </dict>
+</dict>
+</plist>

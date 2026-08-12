@@ -1,0 +1,44 @@
+{
+  "name": "agent_timeout_keeps_banked_acks",
+  "why": "A watchdog kill (124) must still honour acks banked BEFORE the kill, which is why acks are written as work completes rather than batched at exit.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\nTest quest.\n",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "type": "slack_thread",
+          "last_checked_ts": "@now-3600",
+          "reason": "test",
+          "channel_id": "C1",
+          "thread_ts": "@now-7200.000100"
+        },
+        {
+          "watch_id": "w2",
+          "type": "slack_thread",
+          "last_checked_ts": "@now-3600",
+          "reason": "test",
+          "channel_id": "C1",
+          "thread_ts": "@now-7200.000100"
+        }
+      ]
+    }
+  },
+  "checkers": {
+    "w1": {
+      "outcome": "dirty",
+      "count": 1
+    },
+    "w2": {
+      "outcome": "dirty",
+      "count": 1
+    }
+  },
+  "agent": {
+    "exit": 124,
+    "timed_out": true,
+    "acks": {
+      "w1": "handled"
+    }
+  }
+}

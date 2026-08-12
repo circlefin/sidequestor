@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<!--
+Copyright 2026 Circle Internet Group, Inc. All rights reserved.
+
+SPDX-License-Identifier: Apache-2.0
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sidequestor</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:#f4f2ef; --surface:#ffffff; --surface2:#faf9f7;
+  --border:#e9e5e0; --border2:#ded9d2;
+  --text:#1a1a1c; --text2:#5f5d5a; --text3:#9c9891;
+  --accent:#5c3d8a; --accent-soft:#efeafa;
+  --blue:#1668b3; --green:#0b7a53; --amber:#a5680a; --violet:#6b34c9; --red:#c9315e;
+  --shadow:0 1px 2px rgba(20,18,30,0.04), 0 2px 8px rgba(20,18,30,0.05);
+  --shadow-lg:0 6px 24px rgba(20,18,30,0.10);
+  --mono:'SF Mono','Fira Code',ui-monospace,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',system-ui,sans-serif;
+}
+html { background:var(--bg); }
+body { background:var(--bg); color:var(--text); font-family:var(--sans); font-size:13.5px; line-height:1.6; padding:24px 36px 72px; max-width:1320px; margin:0 auto; }
+
+.header { display:flex; align-items:center; gap:12px; padding-bottom:16px; }
+.brand { display:flex; align-items:center; gap:11px; }
+.brand-mark { width:30px; height:30px; border-radius:9px; background:linear-gradient(135deg,var(--accent),#7d5bb0); display:flex; align-items:center; justify-content:center; color:#fff; font-family:var(--mono); font-weight:700; font-size:15px; box-shadow:var(--shadow); }
+.brand h1 { font-size:15px; font-weight:700; line-height:1.15; }
+.brand .slogan { font-size:10.5px; color:var(--text3); font-weight:500; margin-top:1px; }
+.header-right { margin-left:auto; display:flex; align-items:center; gap:8px; }
+.live-pill { display:none; align-items:center; gap:7px; font-family:var(--mono); font-size:10.5px; padding:3px 11px; border-radius:20px; background:#e7f5ee; border:1px solid #c3e6d5; color:var(--text2); cursor:pointer; max-width:280px; }
+.live-pill .live-dot { width:7px; height:7px; border-radius:50%; background:var(--green); flex-shrink:0; animation:pulse 1.4s infinite; }
+.live-pill-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(11,122,83,.4);} 70%{box-shadow:0 0 0 6px rgba(11,122,83,0);} 100%{box-shadow:0 0 0 0 rgba(11,122,83,0);} }
+#conn { font-size:11px; font-family:var(--mono); padding:3px 11px; border-radius:20px; background:#e7f5ee; color:var(--green); border:1px solid #c3e6d5; display:inline-flex; align-items:center; gap:6px; }
+#conn::before { content:''; width:6px; height:6px; border-radius:50%; background:var(--green); }
+#conn.err { background:#fdeff0; color:var(--red); border-color:#f6d3dc; }
+#conn.err::before { background:var(--red); }
+#conn.connecting { background:#eef4fc; color:var(--blue); border-color:#cfe1f5; }
+
+.stat-strip { display:flex; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
+.stat { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px 16px; min-width:100px; box-shadow:var(--shadow); }
+.stat.stat-warn { background:linear-gradient(180deg,#fff,#fff8ec); border-color:#f0ddb8; }
+.stat-n { font-family:var(--mono); font-size:19px; font-weight:600; line-height:1.1; }
+.stat-warn .stat-n { color:var(--amber); }
+.stat-l { font-size:9.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.1em; color:var(--text3); margin-top:3px; }
+
+.tabs { display:flex; gap:2px; margin-top:20px; border-bottom:1px solid var(--border); }
+.tab { background:transparent; border:none; border-bottom:2px solid transparent; color:var(--text2); font-size:12.5px; font-weight:600; padding:9px 15px; cursor:pointer; margin-bottom:-1px; border-radius:6px 6px 0 0; }
+.tab:hover { color:var(--text); background:var(--surface2); }
+.tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+.tab .tab-count { font-size:10px; color:#fff; background:var(--accent); border-radius:10px; padding:1px 7px; margin-left:7px; font-family:var(--mono); }
+.tabpane { margin-top:22px; }
+
+.cols { display:grid; grid-template-columns:2fr 1fr; gap:22px; align-items:start; }
+@media (max-width:920px) { .cols { grid-template-columns:1fr; } }
+/* grid items default to min-width:auto, which lets long nowrap content (open-item
+   reasons) blow the column past the viewport; min-width:0 lets them shrink so the
+   ellipsis truncation and click-to-expand both work. */
+.col-main, .col-side { min-width:0; }
+.col-side { position:sticky; top:16px; }
+
+.section { margin-top:24px; }
+.section:first-child { margin-top:0; }
+.section-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.09em; color:var(--text3); display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+.section-label .sl-count { color:var(--text2); font-weight:600; letter-spacing:0; text-transform:none; font-size:11.5px; }
+.empty { color:var(--text3); padding:14px 0; font-size:12px; }
+
+.badge { display:inline-flex; align-items:center; gap:5px; font-size:10.5px; font-weight:600; padding:2px 9px; border-radius:20px; white-space:nowrap; }
+.b-sent, .badge-message_sent, .badge-reply_sent, .badge-dm_sent { background:#e7f5ee; color:var(--green); border:1px solid #c3e6d5; }
+.b-draft, .badge-draft_posted { background:#fdf3e1; color:var(--amber); border:1px solid #f1dcb6; }
+.b-approved, .badge-executed { background:#e8f1fb; color:var(--blue); border:1px solid #cfe1f5; }
+.b-email, .badge-email_replied { background:#f2ebfc; color:var(--violet); border:1px solid #e2d3f8; }
+.badge-status_change { background:#f2ebfc; color:var(--violet); border:1px solid #e2d3f8; }
+.badge-blocked { background:#fdf3e1; color:var(--amber); border:1px solid #f1dcb6; }
+.badge-cancelled { background:#fdeff0; color:var(--red); border:1px solid #f6d3dc; }
+.b-info, .badge-info_received, .badge-default, .badge-note, .badge-created { background:#f0efec; color:var(--text2); border:1px solid var(--border2); }
+
+.tag { display:inline-block; font-size:10.5px; font-weight:600; padding:2px 9px; border-radius:6px; white-space:nowrap; }
+.tag-send { background:#e7f5ee; color:var(--green); border:1px solid #c3e6d5; }
+.tag-draft { background:#fdf3e1; color:var(--amber); border:1px solid #f1dcb6; }
+.tag-mode { background:var(--surface2); color:var(--text2); border:1px solid var(--border2); }
+.pri-high { background:#fdeff0; color:var(--red); border:1px solid #f6d3dc; border-radius:20px; padding:2px 10px; font-size:10.5px; font-weight:600; }
+.pri-normal, .pri-low { color:var(--text3); font-size:10.5px; font-weight:600; }
+.dot { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:6px; }
+.dot-active { background:var(--green); box-shadow:0 0 0 3px #e7f5ee; }
+.dot-blocked { background:var(--amber); box-shadow:0 0 0 3px #fdf3e1; }
+.status-text { font-size:12.5px; color:var(--text2); }
+.status-warn { color:var(--amber); }
+.ago { font-family:var(--mono); color:var(--text3); font-size:11px; }
+
+.deeplink { display:inline-flex; align-items:center; gap:4px; color:var(--blue); text-decoration:none; font-size:11px; font-weight:600; border:1px solid #cfe1f5; background:#eef4fc; padding:2px 8px; border-radius:6px; }
+.deeplink:hover { background:#e0edfa; border-color:#a9cbee; }
+.deeplink svg { width:11px; height:11px; stroke:currentColor; fill:none; }
+.deeplink.icon-only { padding:3px; }
+.deeplink.icon-only svg { width:13px; height:13px; }
+/* one tint per surface so Slack / Jira / GitHub / Gmail replies read apart */
+.deeplink.k-jira { color:#2563c9; border-color:#cfdcf7; background:#eef2fd; }
+.deeplink.k-jira:hover { background:#e2eafc; border-color:#aec2f0; }
+.deeplink.k-github { color:#3b3f46; border-color:#d8dade; background:#f2f3f5; }
+.deeplink.k-github:hover { background:#e8eaed; border-color:#bfc3ca; }
+.deeplink.k-email { color:#a8402f; border-color:#f0d3cd; background:#fdf0ee; }
+.deeplink.k-email:hover { background:#fbe4e0; border-color:#e6b5ab; }
+.deeplink.k-link { color:var(--text2); border-color:#dcdee2; background:#f4f5f7; }
+
+/* ── review carousel ── */
+.stage-head { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.pager-nav { margin-left:auto; display:flex; align-items:center; gap:10px; }
+.pg-arrow { width:30px; height:30px; border-radius:8px; border:1px solid var(--border2); background:var(--surface); color:var(--text2); font-size:16px; cursor:pointer; box-shadow:var(--shadow); }
+.pg-arrow:hover { color:var(--accent); border-color:var(--accent); }
+.pg-arrow:disabled { opacity:.4; cursor:default; }
+.pg-count { font-family:var(--mono); font-size:12px; color:var(--text2); }
+.pg-count b { color:var(--text); }
+.pager { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-bottom:16px; }
+.pager-chip { display:inline-flex; align-items:center; gap:7px; background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:5px 12px 5px 10px; font-family:var(--sans); font-size:11.5px; font-weight:600; color:var(--text2); cursor:pointer; box-shadow:var(--shadow); }
+.pager-chip:hover { border-color:var(--border2); color:var(--text); }
+.pager-chip.is-active { background:var(--accent-soft); border-color:#c9b8ea; color:var(--accent); }
+.pc-dot { width:8px; height:8px; border-radius:50%; }
+.pc-dot.msg { background:var(--amber); } .pc-dot.file { background:var(--blue); } .pc-dot.remote { background:var(--violet); }
+.pc-age { font-family:var(--mono); font-size:10px; color:var(--text3); font-weight:500; }
+.pager-chip.is-active .pc-age { color:var(--accent); }
+.pager-sep { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--text3); padding:0 4px; }
+.review-slide { display:none; }
+.review-slide.is-active { display:block; animation:fade .16s ease; }
+@keyframes fade { from{opacity:0;transform:translateY(4px);} to{opacity:1;transform:none;} }
+
+.review-card { background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--amber); border-radius:12px; padding:20px 22px; box-shadow:var(--shadow); }
+.review-card.rc-file_edit { border-left-color:var(--blue); }
+.review-card.rc-remote_request { border-left-color:var(--violet); }
+.rc-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; gap:12px; }
+.rc-title { font-weight:700; font-size:15px; }
+.rc-risk { font-size:11.5px; color:var(--amber); margin-top:3px; }
+.rc-age { font-family:var(--mono); color:var(--text3); font-size:11px; flex-shrink:0; }
+.rc-target { font-size:11.5px; color:var(--text2); margin-bottom:14px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.rc-atype { font-family:var(--mono); font-size:9.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; padding:2px 7px; border-radius:5px; }
+.at-slack_message { background:#eef4fc; color:var(--blue); border:1px solid #cfe1f5; }
+.at-email_reply { background:#f2ebfc; color:var(--violet); border:1px solid #e2d3f8; }
+.at-file_edit { background:#e7f5ee; color:var(--green); border:1px solid #c3e6d5; }
+.at-remote_request { background:#f2ebfc; color:var(--violet); border:1px solid #e2d3f8; }
+.rc-chan { font-family:var(--mono); color:var(--text3); word-break:break-all; }
+.rc-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.09em; color:var(--text3); margin-bottom:6px; }
+.rc-context { background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 13px; color:var(--text2); font-size:12.5px; line-height:1.6; margin-bottom:14px; white-space:pre-wrap; }
+textarea, input[type=text] { width:100%; background:var(--surface); border:1px solid var(--border2); border-radius:8px; color:var(--text); font-family:var(--sans); font-size:13.5px; padding:12px 14px; outline:none; resize:vertical; line-height:1.7; }
+textarea.msg-field { min-height:190px; field-sizing:content; }
+textarea.note-field { min-height:60px; }
+textarea:focus, input[type=text]:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+input.field-error { border-color:var(--amber); }
+.rc-note-row { margin-top:12px; }
+.rc-actions { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; }
+.btn { padding:9px 18px; border:none; border-radius:8px; font-family:var(--sans); font-size:12.5px; font-weight:600; cursor:pointer; transition:all .12s; }
+.btn:disabled { opacity:.5; cursor:default; }
+.btn-review { background:var(--green); color:#fff; box-shadow:var(--shadow); }
+.btn-review:hover:not(:disabled) { background:#0a6647; }
+.btn-revise { background:var(--surface); color:var(--blue); border:1px solid #cfe1f5; }
+.btn-revise:hover:not(:disabled) { background:#eef4fc; }
+.btn-cancel { background:var(--surface); color:var(--text2); border:1px solid var(--border2); }
+.btn-cancel:hover:not(:disabled) { border-color:var(--text3); color:var(--text); }
+.rc-next { margin-left:auto; background:var(--surface); color:var(--accent); border:1px solid #c9b8ea; }
+.rc-next:hover { background:var(--accent-soft); }
+/* open items — grouped open loops */
+.oi-count { font-family:var(--mono); font-size:10.5px; color:var(--text3); font-weight:400; margin-left:8px; }
+.oi-group { margin-bottom:14px; }
+.oi-group-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.oi-badge { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; padding:2px 9px; border-radius:20px; }
+.oi-n { font-family:var(--mono); font-size:10.5px; color:var(--text3); }
+.oi-blocked { background:#fdf3e1; color:var(--amber); border:1px solid #f1dcb6; }
+.oi-review { background:#e8f1fb; color:var(--blue); border:1px solid #cfe1f5; }
+.oi-draft { background:#fdf3e1; color:var(--amber); border:1px solid #f1dcb6; }
+.oi-wait { background:#f2ebfc; color:var(--violet); border:1px solid #e2d3f8; }
+.oi-promise { background:#fdeff0; color:var(--red); border:1px solid #f6d3dc; }
+.oi-backoff { background:#fdf3e1; color:var(--amber); border:1px solid #f1dcb6; }
+.oi-row { display:flex; align-items:center; gap:9px; padding:8px 12px; border:1px solid var(--border); border-left-width:3px; border-radius:7px; background:var(--surface); font-size:12.5px; margin-bottom:5px; cursor:pointer; }
+.oi-row:hover { background:var(--surface2); }
+.oi-row.r-blocked { border-left-color:var(--amber); }
+.oi-row.r-review { border-left-color:var(--blue); }
+.oi-row.r-draft { border-left-color:var(--amber); }
+.oi-row.r-wait { border-left-color:var(--violet); }
+.oi-row.r-promise { border-left-color:var(--red); }
+.oi-row.r-backoff { border-left-color:var(--amber); }
+.oi-qtitle { font-weight:600; }
+.oi-reason { color:var(--text2); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.oi-row.expanded { align-items:flex-start; }
+.oi-row.expanded .oi-reason { white-space:pre-wrap; overflow:visible; text-overflow:clip; word-break:break-word; }
+.oi-age { font-family:var(--mono); font-size:10.5px; color:var(--text3); margin-left:auto; white-space:nowrap; }
+.oi-overdue { color:var(--red); font-weight:600; }
+.oi-more { font-size:11px; color:var(--text3); padding:4px 12px 2px; }
+.oi-row .deeplink.icon-only { flex:none; }
+.rc-revising { background:#fdf3e1; border:1px solid #f1dcb6; color:var(--amber); border-radius:7px; padding:8px 11px; font-size:12px; margin-bottom:10px; }
+/* A stuck item is the one thing that should shout: it got here by going quiet. */
+.rc-stalled { background:#fdeaea; border-color:#f2c4c4; color:var(--red); font-weight:600; }
+.rc-revising-note { display:block; margin-top:3px; color:var(--text2); }
+.rc-action-error { background:#fdecec; border:1px solid #f5c6c6; color:#a33; border-radius:7px; padding:8px 11px; font-size:12px; margin-bottom:10px; }
+.review-card.is-revising { opacity:.92; }
+/* per-quest open items panel */
+.qv-openitems { border:1px solid var(--border); border-radius:9px; background:var(--surface); padding:11px 12px; margin-bottom:14px; }
+.qv-oi-label { font-family:var(--mono); font-size:10.5px; color:var(--text3); margin-bottom:9px; text-transform:uppercase; letter-spacing:.04em; display:flex; align-items:center; gap:8px; }
+.qv-oi-label .oi-count { margin-left:auto; }
+/* per-quest manual prompt */
+.qv-prompt { border:1px solid var(--border); border-radius:9px; background:var(--surface2); padding:11px 12px; margin-bottom:14px; }
+.qv-prompt-label { font-family:var(--mono); font-size:10.5px; color:var(--text3); margin-bottom:7px; text-transform:uppercase; letter-spacing:.04em; }
+.qv-prompt-text { width:100%; box-sizing:border-box; resize:vertical; font-family:inherit; font-size:12.5px; padding:8px 10px; border:1px solid var(--border2); border-radius:7px; background:var(--surface); color:var(--text); }
+.qv-prompt-text:focus { outline:none; border-color:var(--accent); }
+.qv-prompt-row { display:flex; align-items:center; gap:10px; margin-top:8px; }
+.qv-prompt-status { font-size:11.5px; color:var(--text2); flex:1; }
+.qv-prompt-status.err { color:var(--red); }
+.qv-prompt-row .btn-review { margin-left:auto; }
+.card-done { opacity:.3; pointer-events:none; transition:opacity .4s; }
+/* Acted-on card leaves immediately; the undo toast is the safety net. */
+.card-dismissing { opacity:0; transform:translateY(-6px) scale(.985); pointer-events:none; transition:opacity .18s ease, transform .18s ease; }
+#undo-toast { display:flex; align-items:center; gap:14px; margin-top:12px; padding:10px 14px; border:1px solid var(--border); border-radius:10px; background:var(--surface2); font-size:12.5px; color:var(--text2);
+  opacity:0; transform:translateY(4px); pointer-events:none; transition:opacity .18s ease, transform .18s ease; }
+#undo-toast.is-up { opacity:1; transform:none; pointer-events:auto; }
+#undo-toast .ut-label { flex:1; }
+#undo-toast .ut-undo { background:none; border:1px solid var(--border); border-radius:7px; color:var(--accent); font:inherit; font-weight:700; padding:4px 12px; cursor:pointer; }
+#undo-toast .ut-undo:hover:not(:disabled) { border-color:var(--accent); }
+#undo-toast .ut-undo:disabled { opacity:.5; cursor:default; }
+.rc-revisions { background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:11px 14px; margin-bottom:14px; font-size:12.5px; line-height:1.55; }
+.rc-rev-line { color:var(--text2); margin-top:6px; } .rc-rev-line:first-child { margin-top:0; }
+.rc-rev-k { color:var(--accent); font-weight:700; margin-right:8px; text-transform:uppercase; font-size:9.5px; letter-spacing:0.06em; }
+.rc-code { background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:11px 14px; margin-bottom:14px; font-family:var(--mono); font-size:12px; line-height:1.7; white-space:pre-wrap; word-break:break-word; max-height:340px; overflow:auto; }
+
+/* ── right rail ── */
+.rail { background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); overflow:hidden; }
+.rail-head { padding:13px 15px; border-bottom:1px solid var(--border); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--text3); display:flex; align-items:center; gap:8px; }
+.rail-scope { margin-left:auto; font-family:var(--mono); font-size:10px; font-weight:600; letter-spacing:0; text-transform:none; color:var(--accent); background:var(--accent-soft); border-radius:20px; padding:2px 9px; }
+.rail-list { max-height:74vh; overflow-y:auto; }
+.side-item { padding:12px 15px; border-bottom:1px solid var(--border); cursor:pointer; }
+.side-item:last-child { border-bottom:none; }
+.side-item:hover { background:var(--surface2); }
+.side-quest { font-size:11.5px; font-weight:600; margin-bottom:3px; }
+.side-top { display:flex; align-items:center; gap:7px; margin-bottom:5px; flex-wrap:wrap; }
+.side-time { margin-left:auto; font-family:var(--mono); font-size:10px; color:var(--text3); }
+.side-chan { font-family:var(--mono); font-size:10px; color:var(--text3); word-break:break-all; }
+.side-text { font-size:12px; color:var(--text2); line-height:1.5; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; white-space:pre-wrap; }
+.side-foot-row { display:flex; align-items:center; gap:8px; margin-top:7px; }
+.await-pill { font-size:10px; font-weight:600; color:var(--amber); background:#fdf3e1; border:1px solid #f1dcb6; border-radius:20px; padding:1px 9px; }
+.rail-foot { padding:11px 15px; font-size:11px; color:var(--text3); font-style:italic; border-top:1px solid var(--border); background:var(--surface2); }
+
+/* ── quest table (Quests tab) ── */
+table { width:100%; border-collapse:collapse; }
+thead th { text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.09em; color:var(--text3); padding:9px 14px 9px 0; border-bottom:1px solid var(--border); }
+tbody tr { border-bottom:1px solid var(--border); cursor:pointer; }
+tbody tr:hover td { background:var(--surface2); }
+tbody td { padding:9px 14px 9px 0; vertical-align:top; }
+.row-blocked td:first-child { border-left:2px solid var(--amber); padding-left:8px; }
+.row-backoff td:first-child { border-left:2px solid var(--amber); padding-left:8px; }
+.quest-title { font-weight:600; }
+.action-note { color:var(--text2); font-size:12px; margin-top:4px; }
+.blocked-badge { font-size:11px; color:var(--amber); margin-top:4px; }
+.backoff-badge { font-size:11px; color:var(--amber); margin-top:4px; }
+.backoff-detail { display:block; color:var(--text2); font-size:10px; margin-top:1px; }
+.ratelimit-badge { font-size:11px; color:var(--violet); margin-top:4px; }
+.oi-ratelimit { background:#f2ebfc; color:var(--violet); border:1px solid #e2d3f8; }
+.oi-row.r-ratelimit { border-left-color:var(--violet); }
+.row-ratelimit td:first-child { border-left:2px solid var(--violet); padding-left:8px; }
+/* ── config tab ── */
+.cfg-orch { font-size:11px; color:var(--text2); font-weight:400; margin-left:8px; }
+.cfg-note { font-size:12px; color:var(--text2); margin-top:14px; line-height:1.5; }
+.cfg-note code { background:var(--surface2); padding:1px 5px; border-radius:4px; font-size:11.5px; }
+.cfg-group { margin-bottom:18px; }
+.cfg-group-title { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--text2); font-weight:600; margin:0 0 7px; }
+.cfg-row { padding:8px 12px; border:1px solid var(--border); border-radius:7px; background:var(--surface); margin-bottom:5px; }
+.cfg-kv { display:flex; align-items:baseline; gap:9px; }
+.cfg-val { font-weight:700; font-size:14px; font-variant-numeric:tabular-nums; }
+.cfg-key { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; color:var(--text2); }
+.cfg-src { font-size:10px; padding:1px 6px; border-radius:9px; margin-left:auto; }
+.cfg-src.cfg-default { background:var(--surface2); color:var(--text2); }
+.cfg-src.cfg-set { background:#f2ebfc; color:var(--violet); border:1px solid #e2d3f8; }
+.cfg-desc { font-size:12px; color:var(--text2); margin-top:4px; line-height:1.45; }
+.cfg-defnote { color:var(--violet); }
+
+/* ── activity feed ── */
+.feed-item { display:grid; grid-template-columns:78px 1fr; gap:0 12px; padding:8px 0; border-bottom:1px solid var(--border); }
+.feed-item:last-child { border-bottom:none; }
+.feed-time { font-family:var(--mono); color:var(--text3); font-size:10.5px; padding-top:2px; }
+.feed-top { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:3px; }
+.feed-quest { font-size:11px; color:var(--text2); }
+.feed-note { font-size:12px; color:var(--text2); line-height:1.5; }
+.tl-link { color:var(--blue); font-size:11px; text-decoration:none; }
+.tl-link:hover { text-decoration:underline; }
+
+/* ── quest view ── */
+.qv-back { margin-bottom:14px; }
+.qv-layout { display:grid; grid-template-columns:minmax(0,55%) minmax(320px,45%); gap:22px; align-items:start; }
+.qv-main, .qv-side { min-width:0; }
+.qv-side { position:sticky; top:16px; }
+@media (max-width:1100px) {
+  .qv-layout { grid-template-columns:1fr; }
+  .qv-side { position:static; top:auto; }
+}
+.quest-head { background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:18px 20px; margin-bottom:14px; }
+.qh-top { display:flex; align-items:flex-start; gap:12px; }
+.quest-vtitle { font-size:17px; font-weight:700; line-height:1.35; }
+.quest-vid { font-family:var(--mono); font-size:10px; color:var(--text3); margin-top:4px; word-break:break-all; }
+.icon-btn { flex-shrink:0; background:var(--surface2); border:1px solid var(--border2); border-radius:8px; color:var(--text2); font-size:13px; padding:6px 12px; cursor:pointer; font-weight:600; }
+.icon-btn:hover { color:var(--text); border-color:var(--text3); }
+.quest-tags { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:14px; }
+details.fold { border:1px solid var(--border); border-radius:10px; margin-bottom:10px; background:var(--surface); overflow:hidden; box-shadow:var(--shadow); }
+details.fold > summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:9px; padding:13px 16px; user-select:none; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--text2); }
+details.fold > summary::-webkit-details-marker { display:none; }
+details.fold > summary:hover { background:var(--surface2); }
+details.fold[open] > summary { border-bottom:1px solid var(--border); }
+.fold-caret { color:var(--text3); font-size:11px; transition:transform .15s; }
+details.fold[open] .fold-caret { transform:rotate(90deg); }
+.fold-count { margin-left:auto; font-family:var(--mono); font-size:10px; color:var(--text3); font-weight:500; letter-spacing:0; text-transform:none; }
+.fold-body { padding:14px 16px; }
+.drawer-context { color:var(--text2); font-size:12.5px; line-height:1.65; max-height:360px; overflow-y:auto; }
+.drawer-context h2 { font-size:14px; color:var(--text); margin:14px 0 6px; }
+.drawer-context h3 { font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:0.08em; margin:14px 0 5px; }
+.drawer-context ul { margin:6px 0 6px 2px; list-style:none; }
+.drawer-context li { padding:2px 0 2px 15px; position:relative; }
+.drawer-context li::before { content:"›"; position:absolute; left:0; color:var(--text3); }
+.drawer-context a { color:var(--blue); text-decoration:none; }
+.drawer-context code { font-family:var(--mono); font-size:12px; background:var(--surface2); padding:1px 5px; border-radius:3px; }
+.watch-item { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; padding:8px 0; border-bottom:1px solid var(--border); font-size:12px; }
+.watch-item:last-child { border-bottom:none; }
+.watch-reason { color:var(--text2); flex:1 1 60%; }
+.watch-meta { font-family:var(--mono); font-size:10.5px; color:var(--text3); margin-left:auto; }
+.tl-truncated { color:var(--text3); font-size:11px; padding:8px 0; }
+.tl-msg { display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+.tl-now-divider { display:flex; align-items:center; gap:10px; padding:10px 16px; color:var(--accent); font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; }
+.tl-now-divider::before, .tl-now-divider::after { content:''; flex:1; height:1px; background:var(--accent); opacity:0.35; }
+.tl-clickable { cursor:pointer; border-radius:6px; margin:0 -4px; padding-left:4px; padding-right:4px; }
+.tl-clickable:hover { background:var(--surface2); }
+.timeline-panel { margin-bottom:14px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:16px 18px; }
+.qv-side .timeline-panel { margin-bottom:0; max-height:calc(100vh - 32px); overflow-y:auto; }
+.queued-strip { margin-top:14px; }
+.queued-row { border:1px solid var(--border); border-left:3px solid var(--blue); border-radius:7px; background:var(--surface); font-size:12px; margin-bottom:5px; overflow:hidden; }
+.queued-row-head { display:flex; align-items:center; gap:9px; padding:7px 12px; cursor:pointer; }
+.queued-row-head:hover { background:var(--hover); }
+.queued-title { font-weight:600; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.queued-status { font-family:var(--mono); font-size:10.5px; color:var(--text3); white-space:nowrap; }
+.queued-row.is-executing { border-left-color:var(--green); }
+.queued-row.is-executing .queued-row-head { cursor:default; }
+.queued-row.is-revising-row { border-left-color:var(--amber,var(--accent)); }
+.queued-ask { padding:8px 12px 10px; font-size:11.5px; color:var(--text3); }
+.queued-age { font-family:var(--mono); font-size:10.5px; color:var(--text3); margin-left:auto; white-space:nowrap; }
+.queued-edit { padding:0 12px 10px; display:none; }
+.queued-row.expanded .queued-edit { display:block; }
+.queued-edit textarea { width:100%; box-sizing:border-box; min-height:80px; font-size:12px; font-family:var(--mono); padding:6px 8px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--text1); resize:vertical; }
+.queued-edit-foot { display:flex; gap:7px; margin-top:6px; }
+.queued-save { padding:4px 13px; font-size:11.5px; border:none; border-radius:5px; background:var(--blue); color:#fff; cursor:pointer; font-weight:600; }
+.queued-save:disabled { opacity:0.5; cursor:default; }
+.queued-save-note { font-size:11px; color:var(--text3); align-self:center; }
+
+/* ── briefs ── */
+.brief { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:12px; box-shadow:var(--shadow); overflow:hidden; }
+.brief > summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:10px; padding:13px 18px; user-select:none; }
+.brief > summary::-webkit-details-marker { display:none; }
+.brief > summary:hover { background:var(--surface2); }
+.brief[open] > summary { border-bottom:1px solid var(--border); }
+.brief-type { font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:5px; background:#eef4fc; color:var(--blue); border:1px solid #cfe1f5; }
+.brief-type.morning { background:#fdf3e1; color:var(--amber); border-color:#f1dcb6; }
+.brief-type.evening { background:#f2ebfc; color:var(--violet); border-color:#e2d3f8; }
+.brief-type.weekly { background:#e7f5ee; color:var(--green); border-color:#c3e6d5; }
+.brief-title { font-weight:600; }
+.brief-ago { margin-left:auto; font-family:var(--mono); color:var(--text3); font-size:11px; }
+.brief-body { padding:8px 22px 20px; }
+.brief-body h2 { font-size:15px; margin:16px 0 8px; }
+.brief-body h3 { font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:0.09em; margin:16px 0 6px; }
+.brief-body p { margin:8px 0; }
+.brief-body ul { margin:6px 0 6px 2px; list-style:none; }
+.brief-body li { padding:3px 0 3px 16px; position:relative; }
+.brief-body li::before { content:"›"; position:absolute; left:0; color:var(--text3); }
+.brief-body a { color:var(--blue); text-decoration:none; }
+.brief-body code { font-family:var(--mono); font-size:12px; background:var(--surface2); padding:1px 5px; border-radius:3px; }
+.brief-body strong { font-weight:700; }
+
+/* ── history ── */
+.hist-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:13px 18px; margin-bottom:10px; box-shadow:var(--shadow); }
+.hist-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.hist-head .rc-age { margin-left:auto; }
+.hist-title { font-weight:600; }
+.hist-line { font-size:12px; color:var(--text2); margin-top:7px; }
+.hist-k { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--text3); margin-right:7px; }
+.hist-trail { font-family:var(--mono); font-size:10px; color:var(--text3); margin-top:9px; }
+.hist-msg { margin-top:8px; }
+.hist-msg > summary { cursor:pointer; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--text3); }
+.hist-msg .rc-context { margin-bottom:0; }
+.runs-err { color:var(--red); font-size:12px; }
+
+/* ── live panel ── */
+#live-backdrop { position:fixed; inset:0; background:rgba(20,18,30,.4); z-index:19; }
+#live-panel { position:fixed; top:0; right:0; bottom:0; width:min(640px,94vw); background:var(--surface); border-left:1px solid var(--border2); box-shadow:var(--shadow-lg); overflow-y:auto; z-index:20; padding:22px 26px 40px; }
+.live-panel-head { display:flex; align-items:flex-start; gap:12px; }
+.live-panel-targets { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.live-panel-targets .chip { font-family:var(--mono); font-size:11px; background:var(--surface2); border:1px solid var(--border2); border-radius:6px; padding:2px 8px; color:var(--text2); }
+.live-panel-tail { margin-top:16px; font-family:var(--mono); font-size:12px; line-height:1.7; color:var(--text2); white-space:pre-wrap; word-break:break-word; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="brand">
+    <div class="brand-mark">S</div>
+    <div>
+      <h1>Sidequestor</h1>
+      <div class="slogan">Yourself-as-a-service while you AFK</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="live-pill" id="live-pill" title="a worker is running — click for details">
+      <span class="live-dot"></span><span class="live-pill-text" id="live-pill-text"></span>
+    </div>
+    <span id="conn" class="connecting">connecting</span>
+  </div>
+</div>
+
+<div class="stat-strip" id="meta"></div>
+
+<div class="tabs">
+  <button class="tab active" data-tab="messages">Timeline</button>
+  <button class="tab" data-tab="quests">Quests</button>
+  <button class="tab" data-tab="briefs">Briefs<span class="tab-count" id="briefs-count"></span></button>
+  <button class="tab" data-tab="history">Review<span class="tab-count" id="history-count"></span></button>
+  <button class="tab" data-tab="config">Config</button>
+</div>
+
+<!-- TIMELINE -->
+<div class="tabpane" id="tab-messages">
+  <div id="msg-rail" style="padding:4px 0"></div>
+</div>
+
+<!-- QUESTS -->
+<div class="tabpane" id="tab-quests" style="display:none">
+  <div class="section">
+    <div class="section-label">active quests</div>
+    <table>
+      <thead><tr><th>quest</th><th style="width:14%">status</th><th style="width:10%">priority</th><th style="width:9%">mode</th><th style="width:34%">last action</th></tr></thead>
+      <tbody id="quest-tbody"></tbody>
+    </table>
+  </div>
+  <div class="section">
+    <div class="section-label">recent activity</div>
+    <div id="activity-feed"></div>
+  </div>
+</div>
+
+<!-- BRIEFS -->
+<div class="tabpane" id="tab-briefs" style="display:none">
+  <div id="briefs-list"></div>
+</div>
+
+<!-- CONFIG -->
+<div class="tabpane" id="tab-config" style="display:none">
+  <div class="section">
+    <div class="section-label">triage configuration <span id="config-orch" class="cfg-orch"></span></div>
+    <div id="config-body"></div>
+    <div class="cfg-note">Read from the environment, then <code>.env</code>, then the built-in default — the same order the orchestrator reads them. Change a value in <code>.env</code> and it takes effect on the next tick.</div>
+  </div>
+</div>
+
+<!-- REVIEW & HISTORY -->
+<div class="tabpane" id="tab-history" style="display:none">
+  <div class="section">
+    <div class="stage-head">
+      <div class="section-label">to review <span class="sl-count" id="review-count"></span></div>
+      <div class="pager-nav" id="review-nav" style="display:none">
+        <button class="pg-arrow" data-nav="-1">‹</button>
+        <span class="pg-count"><b id="review-now">0</b> / <span id="review-total">0</span></span>
+        <button class="pg-arrow" data-nav="1">›</button>
+      </div>
+    </div>
+    <div class="pager" id="review-pager"></div>
+    <div id="review-slides"></div>
+    <div id="review-queued"></div>
+    <div id="review-empty" class="empty" style="display:none">Nothing waiting for you. All clear.</div>
+    <div id="undo-toast"><span class="ut-label"></span><button class="ut-undo">Undo</button></div>
+  </div>
+  <div class="section">
+    <div class="section-label">approvals log</div>
+    <div id="history-approvals"></div>
+  </div>
+  <div class="section">
+    <div class="section-label">dispatch log</div>
+    <div id="history-runs"></div>
+  </div>
+</div>
+
+<!-- QUEST VIEW (two-pane, replaces tab content) -->
+<div class="tabpane" id="quest-view" style="display:none"></div>
+
+<div id="live-backdrop" hidden></div>
+<aside id="live-panel" hidden></aside>
+
+<script>
+const POLL_MS = 2000;
+const SLK = '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M10 13a5 5 0 007 0l3-3a5 5 0 00-7-7l-1 1"/><path d="M14 11a5 5 0 00-7 0l-3 3a5 5 0 007 7l1-1"/></svg>';
+// A reply is not always Slack: the worker also posts Jira comments, GitHub PR
+// comments and Gmail replies. One icon + label per surface, keyed by link_kind.
+const ICON_JIRA   = '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M12 3l8 8-8 8-8-8z"/><path d="M12 9l4 4-4 4-4-4z" fill="currentColor" stroke="none"/></svg>';
+const ICON_GITHUB = '<svg viewBox="0 0 24 24" stroke-width="2"><circle cx="7" cy="5" r="2.4"/><circle cx="7" cy="19" r="2.4"/><circle cx="17" cy="8" r="2.4"/><path d="M7 7.4v9.2"/><path d="M17 10.4v1.6a3 3 0 01-3 3H9.4"/></svg>';
+const ICON_MAIL   = '<svg viewBox="0 0 24 24" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 7l8.5 6 8.5-6"/></svg>';
+const ICON_LINK   = '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M14 5h5v5"/><path d="M19 5l-8 8"/><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4"/></svg>';
+const SURFACES = {
+  slack:  {icon:SLK,        label:'Slack',  title:'open in Slack'},
+  jira:   {icon:ICON_JIRA,  label:'Jira',   title:'open in Jira'},
+  github: {icon:ICON_GITHUB,label:'GitHub', title:'open on GitHub'},
+  email:  {icon:ICON_MAIL,  label:'Gmail',  title:'open in Gmail'},
+  link:   {icon:ICON_LINK,  label:'Open',   title:'open link'},
+};
+const TZ_ABBR = (() => { try { const p=new Intl.DateTimeFormat('en',{timeZoneName:'short'}).formatToParts(new Date()); return (p.find(x=>x.type==='timeZoneName')||{}).value||''; } catch(e){ return ''; } })();
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function safeUrl(u){ try{ const p=new URL(u,location.href); return ['https:','mailto:','slack:'].includes(p.protocol)?u:''; }catch{ return ''; } }
+function ago(iso){ if(!iso) return ''; const s=(Date.now()-new Date(iso).getTime())/1000; if(!isFinite(s)) return ''; if(s<60) return Math.max(0,Math.floor(s))+'s'; if(s<3600) return Math.floor(s/60)+'m'; if(s<86400) return Math.floor(s/3600)+'h'; return Math.floor(s/86400)+'d'; }
+function hhmm(iso){ const d=new Date(iso); return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false}); }
+function feedTime(iso){ if(!iso) return ''; const d=new Date(iso); if(isNaN(d)) return esc(iso); const now=new Date(); const same=d.toDateString()===now.toDateString()&&d<=now; const t=same?hhmm(iso):d.toLocaleDateString('en-US',{month:'short',day:'2-digit'})+' '+hhmm(iso); return TZ_ABBR?t+' '+TZ_ABBR:t; }
+function agoSpan(iso,cls='ago'){ return `<span class="${cls}" data-ts="${esc(iso||'')}">${ago(iso)}</span>`; }
+function agoEpoch(s){ const f=parseFloat(s); return (isFinite(f)&&f>0)?ago(new Date(f*1000).toISOString()):''; }
+function badge(ev){ const cls='badge-'+String(ev||'default').replace(/[^a-z_]/gi,''); return `<span class="badge ${cls}">${esc(ev)}</span>`; }
+function tick(){ document.querySelectorAll('[data-ts]').forEach(el=>{ const t=el.dataset.ts; if(t) el.textContent=ago(t); }); }
+
+// minimal, escape-first markdown for briefs + quest context
+function mdInline(s){ return esc(s).replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/`(.+?)`/g,'<code>$1</code>').replace(/\[(.+?)\]\((.+?)\)/g,(m,t,u)=>{const s=safeUrl(u);return s?`<a href="${esc(s)}" target="_blank" rel="noopener">${esc(t)}</a>`:esc(t);}); }
+function mdToHtml(md){ let html='',inList=false; const close=()=>{ if(inList){html+='</ul>';inList=false;} }; (md||'').split('\n').forEach(line=>{ if(/^#{2}\s/.test(line)){close();html+=`<h2>${mdInline(line.replace(/^#{2}\s/,''))}</h2>`;} else if(/^#{3,}\s/.test(line)){close();html+=`<h3>${mdInline(line.replace(/^#{3,}\s/,''))}</h3>`;} else if(/^[-*]\s/.test(line)){ if(!inList){html+='<ul>';inList=true;} html+=`<li>${mdInline(line.replace(/^[-*]\s/,''))}</li>`; } else if(line.trim()===''){close();} else {close();html+=`<p>${mdInline(line)}</p>`;} }); close(); return html; }
+
+const _sig={};
+function changed(key,obj){ const s=JSON.stringify(obj); if(_sig[key]===s) return false; _sig[key]=s; return true; }
+
+// ── state ──
+let dashData=null, msgData=null, activeTab='messages', openQuestId=null;
+
+// ── tabs ──
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>switchTab(t.dataset.tab)));
+function switchTab(name){
+  activeTab=name; openQuestId=null;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
+  ['messages','quests','briefs','history','config'].forEach(n=>{ const el=document.getElementById('tab-'+n); if(el) el.style.display=(n===name)?'':'none'; });
+  document.getElementById('quest-view').style.display='none';
+  if(name==='history') pollHistory();
+}
+
+// ── polling ──
+const connEl=document.getElementById('conn');
+let lastDashEtag=null,lastMsgEtag=null,lastHistEtag=null;
+async function poll(){
+  try{
+    const dh=lastDashEtag?{'If-None-Match':lastDashEtag}:{};
+    const dr=await fetch('/api/dashboard',{cache:'no-store',headers:dh});
+    if(dr.status!==304){ if(!dr.ok) throw new Error(dr.status); lastDashEtag=dr.headers.get('ETag'); dashData=await dr.json(); renderDash(); }
+    const mh=lastMsgEtag?{'If-None-Match':lastMsgEtag}:{};
+    const mr=await fetch('/api/messages',{cache:'no-store',headers:mh});
+    if(mr.status!==304){ if(!mr.ok) throw new Error(mr.status); lastMsgEtag=mr.headers.get('ETag'); msgData=await mr.json(); renderMessages(); }
+    renderMeta();
+    if(activeTab==='history') await pollHistory();
+    connEl.textContent='live'; connEl.className='';
+  }catch{ connEl.textContent='disconnected'; connEl.className='err'; }
+  tick();
+}
+
+// ── meta / stats ──
+function isBlockedNow(q){ if(!q.last_blocked) return false; const lb=q.last_blocked.ts||''; const ls=q.last_seen_ts||''; return lb>=ls; }
+// True when the last COMPLETED tick is older than 5 minutes. Ticks run every 60s, so
+// five missed ticks is unambiguous rather than a slow-tick false alarm.
+function staleTriage(iso){
+  if(!iso) return true;
+  const t=Date.parse(iso);
+  return isNaN(t) ? true : (Date.now()-t) > 5*60*1000;
+}
+function renderMeta(){
+  const tr=(dashData&&dashData.triage)||{};
+  const quests=(dashData&&dashData.quests)||[];
+  const blocked=quests.filter(isBlockedNow).length;
+  const needs=msgData?msgData.needs_you.length:0;
+  const other=msgData?msgData.other_actions.length:0;
+  // Triage health. Every one of these was already in the API payload (the server
+  // ships all of last-run.json) but only `last triage` was ever rendered, so a
+  // misconfigured watch — a watch that has silently stopped being checked at all —
+  // reached no human surface anywhere. Shown only when non-zero so the strip stays
+  // quiet in the normal case.
+  const misconf=+(tr.watches_misconfigured||0);
+  const backoff=+(tr.watches_in_backoff||0);
+  const trunc=+(tr.watches_truncated||0);
+  const strip=[
+    ['needs you',needs,needs>0],
+    ['other actions',other,false],
+    ['quests',quests.length,false],
+    ['blocked',blocked,blocked>0],
+    ...(misconf?[['misconfigured',misconf,true]]:[]),
+    ...(backoff?[['backing off',backoff,true]]:[]),
+    ...(trunc?[['held: saturated',trunc,true]]:[]),
+    // `last triage` had no threshold, so a dead loop rendered the same as a healthy
+    // one, just with a bigger number nobody was watching. Now it goes red past 5
+    // minutes, which is the cheapest possible version of the heartbeat alarm and is
+    // wired to a field that only means "completed" since the stamp moved to
+    // end-of-tick.
+    ['last triage',agoSpan(tr.last_triage_completed_utc,'stat-ago'),staleTriage(tr.last_triage_completed_utc)],
+  ];
+  const html=strip.map(([l,v,w])=>{
+    const warn=w?' stat-warn':'';
+    const click=(w&&(l==='misconfigured'||l==='backing off'))?' onclick="switchTab(\'quests\')" style="cursor:pointer" title="Click to see affected quests"':'';
+    return `<div class="stat${warn}"${click}><div class="stat-n">${typeof v==='string'?v:v}</div><div class="stat-l">${l}</div></div>`;
+  }).join('');
+  if(changed('meta',html)) document.getElementById('meta').innerHTML=html;
+  document.getElementById('history-count').textContent=(needs+other)||'';
+  renderLive(dashData&&dashData.live_run);
+}
+
+function renderDash(){
+  if(!dashData) return;
+  renderQuests(dashData.quests||[]);
+  renderFeed(dashData.recent_activity||[]);
+  renderBriefs(dashData.briefs||[]);
+  document.getElementById('briefs-count').textContent=(dashData.briefs||[]).length||'';
+  renderConfig(dashData.config);
+  if(openQuestId) return; // keep quest view stable
+}
+
+// ── Config tab ──
+function renderConfig(cfg){
+  const body=document.getElementById('config-body'); if(!body) return;
+  if(!cfg||!cfg.groups){ body.innerHTML='<div class="empty">no config reported</div>'; return; }
+  const orch=document.getElementById('config-orch');
+  if(orch) orch.textContent=`orchestrator: ${cfg.orchestrator||'?'} · worker timeout ${cfg.worker_timeout_sec||'?'}s`;
+  const html=cfg.groups.map(g=>`
+    <div class="cfg-group">
+      <div class="cfg-group-title">${esc(g.title)}</div>
+      ${g.items.map(it=>`
+        <div class="cfg-row">
+          <div class="cfg-kv">
+            <span class="cfg-val">${esc(it.value)}</span>
+            <span class="cfg-key">${esc(it.key)}</span>
+            <span class="cfg-src ${it.set?'cfg-set':'cfg-default'}">${it.set?'override':'default'}</span>
+          </div>
+          <div class="cfg-desc">${esc(it.desc||'')}${it.set?` <span class="cfg-defnote">(default ${esc(it.default)})</span>`:''}</div>
+        </div>`).join('')}
+    </div>`).join('');
+  if(changed('config',html)) body.innerHTML=html;
+}
+
+// ── Messages tab ──
+function kindBadge(rec){
+  if(rec.awaiting_send) return '<span class="badge b-draft">draft</span>';
+  if(rec.event==='executed') return '<span class="badge b-approved">sent · approved</span>';
+  if(rec.kind==='draft') return '<span class="badge b-draft">draft</span>';
+  if(rec.kind==='email') return '<span class="badge b-email">email</span>';
+  if(rec.kind) return '<span class="badge b-sent">sent</span>';
+  return badge(rec.event);
+}
+function deeplink(url,iconOnly,kind){ const s=url?safeUrl(url):''; if(!s) return ''; const sf=SURFACES[kind]||SURFACES.slack; return `<a class="deeplink k-${esc(kind||'slack')}${iconOnly?' icon-only':''}" href="${esc(s)}" target="_blank" rel="noopener" title="${esc(sf.title)}">${sf.icon}${iconOnly?'':esc(sf.label)}</a>`; }
+// Any record from the server: prefer the generic link, fall back to slack_url.
+function recLink(rec,iconOnly){ if(!rec) return ''; const u=rec.link_url||rec.slack_url; return deeplink(u,iconOnly,rec.link_kind||(u?'slack':null)); }
+
+function railItem(rec,showQuest){
+  const txt=rec.message_text||rec.note||'';
+  const chan=rec.channel_id?`<span class="side-chan">${esc(rec.channel_id)}</span>`:'';
+  const foot=(rec.awaiting_send?`<span class="await-pill">⏳ awaiting send</span>`:'')+recLink(rec,true);
+  return `<div class="side-item" ${rec.quest_id?`data-quest-id="${esc(rec.quest_id)}"`:''}>
+    ${showQuest&&rec.quest_title?`<div class="side-quest">${esc(rec.quest_title)}</div>`:''}
+    <div class="side-top">${kindBadge(rec)}${chan}<span class="side-time">${feedTime(rec.ts)}</span></div>
+    <div class="side-text">${esc(txt)}</div>
+    ${foot?`<div class="side-foot-row">${foot}</div>`:''}
+  </div>`;
+}
+
+function renderMessages(){
+  if(!msgData) return;
+  renderReviewQueue(msgData.needs_you.concat(msgData.other_actions));
+  // Queued strip: approved items awaiting the worker
+  const queued=msgData.queued_items||[];
+  const qd=document.getElementById('review-queued');
+  if(qd && changed('queued',queued)){
+    if(queued.length){
+      const rows=queued.map(q=>{
+        const executing=q.status==='executing';
+        const revising=q.status==='needs_reply';
+        // Only an approved-but-unclaimed draft is still editable. A worker is
+        // mid-run on `executing`, and is rewriting the text itself on
+        // `needs_reply`, so an edit box on either is a lost edit waiting to happen.
+        const locked=executing||revising;
+        const state=executing?'executing…':(revising?'revising…':'awaiting worker…');
+        const ask=revising&&q.review_note?`<div class="queued-ask">you asked: ${esc(q.review_note)}</div>`:'';
+        const head=`<div class="queued-row-head"><span class="rc-atype at-${esc(q.action_type||'slack_message')}">${esc(q.action_type||'slack_message')}</span><span class="queued-title">${esc(q.quest_title||q.quest_id||'')}</span><span class="queued-status">${state}</span><span class="queued-age">${agoSpan(q.executing_at||q.asked_at||q.reviewed_at||'')}</span></div>`;
+        const edit=locked?ask:`<div class="queued-edit"><textarea data-orig="${esc(q.message_text||'')}">${esc(q.message_text||'')}</textarea><div class="queued-edit-foot"><button class="queued-save" data-id="${esc(q.id||'')}">Save changes</button><span class="queued-save-note"></span></div></div>`;
+        return `<div class="queued-row${locked?' is-executing':''}${revising?' is-revising-row':''}" data-qid="${esc(q.id||'')}">${head}${edit}</div>`;
+      }).join('');
+      qd.innerHTML=`<div class="queued-strip"><div class="section-label" style="margin-bottom:8px">in flight · nothing for you to do here <span class="sl-count">${queued.length}</span></div>${rows}</div>`;
+      // Toggle expand on head click; save edits
+      qd.querySelectorAll('.queued-row-head').forEach(h=>{
+        h.addEventListener('click',()=>{
+          const row=h.closest('.queued-row');
+          if(row.classList.contains('is-executing')) return;
+          row.classList.toggle('expanded');
+        });
+      });
+      qd.querySelectorAll('.queued-save').forEach(btn=>{
+        btn.addEventListener('click', async()=>{
+          const id=btn.dataset.id;
+          const ta=btn.closest('.queued-edit').querySelector('textarea');
+          const note=btn.closest('.queued-edit').querySelector('.queued-save-note');
+          const txt=ta.value.trim();
+          if(!txt){ note.textContent='Cannot save empty text.'; return; }
+          btn.disabled=true; note.textContent='Saving…';
+          try{
+            const r=await fetch(`/api/edit/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message_text:txt})});
+            if(!r.ok){ const e=await r.json(); note.textContent='Error: '+(e.error||r.status); btn.disabled=false; return; }
+            ta.dataset.orig=txt;
+            note.textContent='Saved.';
+            btn.closest('.queued-row').classList.remove('expanded');
+          } catch(e){ note.textContent='Network error.'; btn.disabled=false; }
+        });
+      });
+    } else { qd.innerHTML=''; }
+  }
+  const rail=msgData.recent_activity||[];
+  if(changed('msgrail',rail)){
+    if(!rail.length){ document.getElementById('msg-rail').innerHTML='<div class="empty" style="padding:8px 0">no activity yet</div>'; }
+    else {
+      const now=new Date(); let html='', split=false;
+      for(const r of rail){
+        const d=new Date(r.ts||'');
+        if(!split&&!isNaN(d)&&d<=now){ split=true; html+='<div class="tl-now-divider"><span>now</span></div>'; }
+        html+=timelineRow(r,true);
+      }
+      document.getElementById('msg-rail').innerHTML=html;
+    }
+  }
+  if(openQuestId) renderQuestPendingCards();
+}
+
+// carousel: preserve in-progress edits by patching slides by id + reordering
+let reviewIndex=0, reviewOrder=[];
+function renderReviewQueue(items){
+  const cont=document.getElementById('review-slides');
+  const pager=document.getElementById('review-pager');
+  const nav=document.getElementById('review-nav');
+  const empty=document.getElementById('review-empty');
+  // An item acted on this tick is gone from the queue before the server agrees;
+  // don't let the next poll flash it back in during the undo window.
+  items=items.filter(i=>!_dismissed.has(i.id));
+  // Where the "other" separator goes. Counted off the surviving items, not off
+  // msgData.needs_you, so a dismissal doesn't shift the divider onto the wrong card.
+  const needsCount=items.filter(isMsgType).length;
+  reviewOrder=items.map(i=>i.id);
+  document.getElementById('review-count').textContent=items.length?`· ${items.length} item${items.length>1?'s':''}`:'';
+  if(!items.length){
+    cont.innerHTML=''; pager.innerHTML=''; nav.style.display='none';
+    // "All clear" is a lie when three things are mid-flight. Say what's pending
+    // so a drained carousel never reads as "everything vanished".
+    const inFlight=(msgData&&msgData.queued_items||[]).length;
+    empty.innerHTML=inFlight
+      ? `Queue clear · <b>${inFlight}</b> in flight below.`
+      : 'Nothing waiting for you. All clear.';
+    empty.style.display='';
+    return;
+  }
+  empty.style.display='none';
+  // patch slides
+  const have=new Set([...cont.querySelectorAll('[data-appr-id]')].map(el=>el.dataset.apprId));
+  const want=new Set(reviewOrder);
+  have.forEach(id=>{ if(!want.has(id)) cont.querySelector(`[data-appr-id="${CSS.escape(id)}"]`)?.remove(); });
+  const byId={}; items.forEach(i=>byId[i.id]=i);
+  reviewOrder.forEach(id=>{
+    const it=byId[id];
+    const sig=cardSig(it);
+    const hasNext=reviewOrder.indexOf(id)<reviewOrder.length-1;
+    if(!have.has(id)){
+      const div=document.createElement('div'); div.className='review-slide'; div.dataset.apprId=id; div.dataset.sig=sig; div.innerHTML=buildCard(it,{hasNext}); cont.appendChild(div);
+    } else {
+      // Reuse the existing card (keeps in-progress edits) UNLESS the server-side
+      // data changed — status flip (e.g. revise → needs_reply → worker answered)
+      // or a revised draft. Then rebuild so the new state shows and any stuck
+      // "Submitting…"/disabled/faded state is cleared.
+      const el=cont.querySelector(`[data-appr-id="${CSS.escape(id)}"]`);
+      if(el && el.dataset.sig!==sig){ el.classList.remove('card-done'); el.dataset.sig=sig; el.innerHTML=buildCard(it,{hasNext}); }
+    }
+  });
+  reviewOrder.forEach(id=>{ const el=cont.querySelector(`[data-appr-id="${CSS.escape(id)}"]`); if(el) cont.appendChild(el); }); // reorder, keeps inputs
+  // pager
+  pager.innerHTML=items.map((it,i)=>{
+    const dot=it.action_type==='file_edit'?'file':(it.action_type==='remote_request'?'remote':'msg');
+    const sep=(i===needsCount&&needsCount>0&&items.length>needsCount)?'<span class="pager-sep">other</span>':'';
+    return `${sep}<button class="pager-chip" data-i="${i}"><span class="pc-dot ${dot}"></span>${esc(shortTitle(it))}<span class="pc-age">${ago(it.created_at)}</span></button>`;
+  }).join('');
+  nav.style.display=items.length>1?'':'none';
+  document.getElementById('review-total').textContent=items.length;
+  // dismissSlide already moved us to the right card; a poll just re-renders under it.
+  showSlide(reviewIndex);
+}
+// Mirrors _MSG_ACTION_TYPES on the server: which approvals are message-shaped.
+function isMsgType(it){ const at=(it&&it.action_type)||'slack_message'; return at==='slack_message'||at==='email_reply'; }
+function shortTitle(it){ return (it.quest_title||it.quest_id||'').replace(/^quest-/,'').replace(/-\d{4}-\d{2}-\d{2}$/,'').slice(0,32); }
+// Server-meaningful signature: rebuild a card only when one of these changes,
+// so local edits survive polls but worker/status updates always render.
+function cardSig(it){ return JSON.stringify([it.status,it.message_text,it.review_note,it.worker_reply,(it.review_history||[]).length]); }
+function showSlide(i){
+  const n=reviewOrder.length; if(!n){ return; }
+  reviewIndex=Math.max(0,Math.min(i,n-1));
+  const cont=document.getElementById('review-slides');
+  [...cont.children].forEach(el=>el.classList.toggle('is-active',el.dataset.apprId===reviewOrder[reviewIndex]));
+  document.querySelectorAll('#review-pager .pager-chip').forEach(c=>c.classList.toggle('is-active',+c.dataset.i===reviewIndex));
+  document.getElementById('review-now').textContent=reviewIndex+1;
+  document.querySelector('#review-nav [data-nav="-1"]').disabled=reviewIndex===0;
+  document.querySelector('#review-nav [data-nav="1"]').disabled=reviewIndex===n-1;
+}
+
+function revisionsBlock(item){
+  const h=item.review_history||[]; if(!h.length) return '';
+  const lines=h.map(x=>x.from==='reviewer'?`<div class="rc-rev-line"><span class="rc-rev-k">you asked</span>${esc(x.note||'')}</div>`:`<div class="rc-rev-line"><span class="rc-rev-k">yaas</span>${esc(x.reply||'')}</div>`).join('');
+  return `<div class="rc-label" style="margin-bottom:8px">revision history</div><div class="rc-revisions">${lines}</div>`;
+}
+function buildCard(item,opts={}){
+  const hasNext=opts.hasNext!==false;
+  const at=item.action_type||'slack_message';
+  const isMsg=isMsgType(item);
+  const t=item.target||{};
+  const chan=at==='email_reply'?`to: ${esc(t.to||'')}`:(at==='slack_message'?`${esc(t.channel_id||'')}${t.thread_ts?' · thread':' · new thread'}`:esc(t.path||t.channel_id||''));
+  const targetRow=`<div class="rc-target"><span class="rc-atype at-${esc(at)}">${esc(at)}</span><span class="rc-chan">${chan}</span>${recLink(item,false)}</div>`;
+  const ctx=item.context?`<div class="rc-label">context</div><div class="rc-context">${esc(item.context)}</div>`:'';
+  let bodyBlock;
+  if(isMsg){
+    bodyBlock=`<div class="rc-label">message</div><textarea class="msg-field" data-field="message_text">${esc(item.message_text||'')}</textarea>`;
+  }else if(at==='file_edit'){
+    bodyBlock=`<div class="rc-label">proposed change</div><div class="rc-code">${esc(item.message_text||'(no preview)')}</div>`;
+  }else{
+    bodyBlock=`<div class="rc-label">request</div><div class="rc-code">${esc(item.message_text||item.context||'')}</div>`;
+  }
+  const noteField=isMsg
+    ? `<div class="rc-label" style="margin-bottom:6px">review note · instruction for the worker (required to submit for revision)</div><input type="text" data-field="review_note" placeholder='e.g. "make it more polite"  ·  "loop in a teammate too"'>`
+    : `<div class="rc-label" style="margin-bottom:6px">revision prompt · tell the worker what to change (required to submit for revision)</div><textarea class="note-field" data-field="review_note" placeholder="what should the worker change?"></textarea>`;
+  // In-flight items (reviewed / executing / needs_reply) no longer reach the
+  // carousel at all; they live in the in-flight strip below it. The one
+  // exception is a stalled item, promoted back here precisely because nobody is
+  // coming for it, so it gets the single control that can rescue it.
+  const stalled=!!item.stalled&&item.status!=='pending_review';
+  const stallMsg=item.status==='needs_reply'
+    ? 'sent back for revision, but the worker never answered.'
+    : 'the worker took this and died mid-run: the lease expired with no result.';
+  const banner=stalled
+    ?`<div class="rc-revising rc-stalled">⚠ Stuck · ${stallMsg} Reclaim it to put it back in the queue.${item.review_note?`<span class="rc-revising-note">you asked: ${esc(item.review_note)}</span>`:''}</div>`
+    :'';
+  const body=`${ctx}${revisionsBlock(item)}${bodyBlock}`;
+  // A stalled item can't take review/revise/cancel (the server rejects those
+  // from reviewed/executing), so it gets exactly the one action that works.
+  const actions=stalled
+    ? `<button class="btn btn-review btn-reclaim" data-action="reclaim">Reclaim for review</button>
+      ${hasNext?'<button class="btn rc-next" data-nav="1">Next ›</button>':''}`
+    : `<button class="btn btn-review" data-action="review">Mark as Reviewed</button>
+      <button class="btn btn-revise" data-action="revise">Submit for revision</button>
+      <button class="btn btn-cancel" data-action="cancel">Cancel</button>
+      ${hasNext?'<button class="btn rc-next" data-nav="1">Next ›</button>':''}`;
+  return `<div class="review-card rc-${esc(at)}${stalled?' is-revising':''}" data-appr-id="${esc(item.id)}">
+    <div class="rc-header"><div><div class="rc-title">${esc(item.quest_title||item.quest_id)}</div>${item.risk_reason?`<div class="rc-risk">${esc(item.risk_reason)}</div>`:''}</div>${agoSpan(item.created_at,'rc-age')}</div>
+    ${banner}
+    ${targetRow}
+    ${body}
+    ${stalled?'':`<div class="rc-note-row">${noteField}</div>`}
+    <div class="rc-actions">
+      ${actions}
+    </div>
+  </div>`;
+}
+
+const ACTION_LABELS={review:'Mark as Reviewed',revise:'Submit for revision',cancel:'Cancel',reclaim:'Reclaim for review'};
+function showActionError(card,msg){
+  const row=card.querySelector('.rc-actions'); if(!row) return;
+  let el=card.querySelector('.rc-action-error');
+  if(!el){ el=document.createElement('div'); el.className='rc-action-error'; row.parentNode.insertBefore(el,row); }
+  el.textContent='⚠ '+msg;
+}
+// Optimistic dismissal. The card used to sit there until the next poll re-drew
+// it in its new state, so acting on something left it on screen: the exact
+// opposite of the feedback the click should give. Now it leaves immediately and
+// the undo toast carries the safety net.
+const UNDO_MS=6000, DISMISS_MS=180;
+let _dismissed=new Set(), _undoTimer=null;
+const UNDO_LABELS={review:'Approved',revise:'Sent back for revision',cancel:'Cancelled'};
+function dismissSlide(id){
+  _dismissed.add(id);
+  const el=document.querySelector(`#review-slides [data-appr-id="${CSS.escape(id)}"]`);
+  if(el) el.classList.add('card-dismissing');
+  const i=reviewOrder.indexOf(id);
+  if(i>=0) reviewOrder.splice(i,1);
+  // Land on the next card, or the last one if we just cleared the tail.
+  const target=Math.min(i<0?reviewIndex:i,reviewOrder.length-1);
+  setTimeout(()=>{ el?.remove(); renderMessages(); showSlide(target); },DISMISS_MS);
+  showSlide(target);
+}
+function hideToast(){
+  const t=document.getElementById('undo-toast');
+  if(t) t.classList.remove('is-up');
+  if(_undoTimer){ clearTimeout(_undoTimer); _undoTimer=null; }
+}
+function showUndoToast(id,action){
+  const t=document.getElementById('undo-toast'); if(!t) return;
+  t.querySelector('.ut-label').textContent=UNDO_LABELS[action]||'Done';
+  const btn=t.querySelector('.ut-undo');
+  btn.disabled=false; btn.textContent='Undo';
+  btn.onclick=async()=>{
+    btn.disabled=true; btn.textContent='Undoing…';
+    try{
+      const r=await fetch(`/api/undo/${encodeURIComponent(id)}`,{method:'POST'});
+      if(!r.ok){
+        let why=''; try{ why=(await r.json()).error||''; }catch{}
+        t.querySelector('.ut-label').textContent=why||`could not undo (${r.status})`;
+        btn.style.display='none';
+        setTimeout(hideToast,3000);
+        return;
+      }
+    }catch(e){
+      t.querySelector('.ut-label').textContent='could not reach the dashboard server';
+      btn.style.display='none'; setTimeout(hideToast,3000); return;
+    }
+    // Let it back into the queue and re-poll so it reappears as pending.
+    _dismissed.delete(id);
+    hideToast();
+    lastMsgEtag=null; poll();
+  };
+  btn.style.display='';
+  t.classList.add('is-up');
+  if(_undoTimer) clearTimeout(_undoTimer);
+  _undoTimer=setTimeout(()=>{ hideToast(); _dismissed.delete(id); },UNDO_MS);
+}
+
+async function submitReview(card,action){
+  if(!card) return;
+  const btns=[...card.querySelectorAll('.rc-actions .btn')];
+  const active=card.querySelector('.btn-'+action);
+  // Reclaim is the odd one out: it puts a stuck item BACK into the queue, so the
+  // card must stay and redraw as a normal pending review, not fly away.
+  const endpoint=action==='reclaim'?'undo':action;
+  const msgField=card.querySelector('[data-field="message_text"]');
+  const noteField=card.querySelector('[data-field="review_note"]');
+  if(action==='revise' && !noteField?.value.trim()){ noteField?.focus(); noteField?.classList.add('field-error'); setTimeout(()=>noteField?.classList.remove('field-error'),1500); return; }
+  btns.forEach(b=>b.disabled=true); if(active) active.textContent='Submitting…';
+  const payload={}; if(msgField) payload.message_text=msgField.value; if(noteField?.value.trim()) payload.review_note=noteField.value.trim();
+  try{
+    const id=card.closest('[data-appr-id]').dataset.apprId;
+    const r=await fetch(`/api/${endpoint}/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(r.ok){
+      if(action!=='reclaim'){ dismissSlide(id); showUndoToast(id,action); }
+      lastMsgEtag=null;
+      setTimeout(()=>poll(),400);
+    }
+    // A rejected action used to just re-enable the buttons, so a 409 (item already
+    // reviewed/executing) looked exactly like a click that did nothing. Say why, and
+    // re-poll so the card redraws in whatever state the server actually holds.
+    else{
+      let why=''; try{ why=(await r.json()).error||''; }catch{}
+      showActionError(card,why||`request failed (${r.status})`);
+      btns.forEach(b=>b.disabled=false); if(active) active.textContent=ACTION_LABELS[action];
+      lastMsgEtag=null; setTimeout(()=>poll(),400);
+    }
+  }catch(e){ showActionError(card,'could not reach the dashboard server'); btns.forEach(b=>b.disabled=false); if(active) active.textContent=ACTION_LABELS[action]; }
+}
+
+// ── Quests tab ──
+const PRI={high:0,normal:1,low:2};
+function fmtWait(sec){
+  sec=Number(sec)||0;
+  if(sec>=86400) return Math.round(sec/86400)+'d';
+  if(sec>=3600)  return Math.round(sec/3600)+'h';
+  if(sec>=60)    return Math.round(sec/60)+'m';
+  return sec+'s';
+}
+// "backing off" on its own is not actionable. Show the next-retry gap and the worker's own
+// last error, so a network blip and an expired credential are distinguishable at a glance.
+function backoffDetail(q){
+  const w=(q.backoff_watches||[])[0]; if(!w) return '';
+  const bits=[];
+  // Which of the two backoffs this is. They need different fixes: a checker backoff is a
+  // credential/permission problem on the read side, a dispatch backoff is the worker failing
+  // to ack. Saying only "backing off" sends the reader looking in the wrong place.
+  if(w.type) bits.push(w.type);
+  bits.push(w.source==='checker'?'checker failing':'no progress');
+  if(w.backoff_sec) bits.push('next try in '+fmtWait(w.backoff_sec));
+  if(w.last_error)  bits.push(w.last_error);
+  else if(w.last_status) bits.push('last: '+w.last_status);
+  return bits.length?`<span class="backoff-detail">${esc(bits.join(' \u00b7 '))}</span>`:'';
+}
+function renderQuests(quests){
+  const sorted=[...quests].sort((a,b)=>{
+    const ba=isBlockedNow(a)?0:1,bb=isBlockedNow(b)?0:1; if(ba!==bb) return ba-bb;
+    const ma=(a.backoff_count||0)>0?0:1,mb=(b.backoff_count||0)>0?0:1; if(ma!==mb) return ma-mb;
+    const ra=a.ratelimited?0:1,rb=b.ratelimited?0:1; if(ra!==rb) return ra-rb;
+    const pa=PRI[a.priority]??1,pb=PRI[b.priority]??1; if(pa!==pb) return pa-pb;
+    return (b.last_action?.ts||'').localeCompare(a.last_action?.ts||'');
+  });
+  if(!changed('quests',sorted)) return;
+  document.getElementById('quest-tbody').innerHTML=sorted.map(q=>{
+    const bl=isBlockedNow(q); const mc=(q.backoff_count||0)>0; const rl=!!q.ratelimited;
+    const dot=bl?'dot-blocked':'dot-active'; const st=bl?'status-text status-warn':'status-text';
+    const mode=q.allow_send?'<span class="tag tag-send">send</span>':'<span class="tag tag-draft">draft</span>';
+    const la=q.last_action; const lb=bl?q.last_blocked:null;
+    // A backing-off watch is still retrying, so the badge says when the next attempt is and
+    // what went wrong last time — never "misconfig", which read as a dead end it isn't.
+    const mcBadge=mc?`<div class="backoff-badge">\u21bb backing off${q.backoff_count>1?` (${q.backoff_count})`:''}${backoffDetail(q)}</div>`:'';
+    const rlBadge=rl?`<div class="ratelimit-badge">⏳ rate limited${q.ratelimited_count>1?` (${q.ratelimited_count})`:''}</div>`:'';
+    const badges=mcBadge+rlBadge;
+    const cell=la?`<div class="feed-top">${badge(la.event)}${agoSpan(la.ts)}</div>${la.note?`<div class="action-note">${esc(la.note)}</div>`:''}${lb?`<div class="blocked-badge">⚠ blocked ${ago(lb.ts)}</div>`:''}${badges}`:(lb?`<div class="blocked-badge">⚠ blocked ${ago(lb.ts)}</div>${badges}`:(badges||'<span class="ago">-</span>'));
+    const rowCls=[bl?'row-blocked':'',mc?'row-backoff':'',(rl&&!mc&&!bl)?'row-ratelimit':''].filter(Boolean).join(' ');
+    return `<tr data-quest-id="${esc(q.id)}"${rowCls?` class="${rowCls}"`:''}><td class="quest-title">${esc(q.title)}</td><td><span class="dot ${dot}"></span><span class="${st}">${esc(q.status)}</span></td><td><span class="pri-${esc(q.priority||'normal')}">${esc(q.priority||'normal')}</span></td><td>${mode}</td><td>${cell}</td></tr>`;
+  }).join('')||'<tr><td colspan="5" class="empty">no active quests</td></tr>';
+}
+function renderFeed(feed){
+  if(!changed('feed',feed)) return;
+  document.getElementById('activity-feed').innerHTML=feed.map(a=>`<div class="feed-item"><div class="feed-time">${feedTime(a.ts)}</div><div><div class="feed-top">${badge(a.event)}<span class="feed-quest">${esc(a.quest_title)}</span></div>${a.note?`<div class="feed-note">${esc(a.note)}</div>`:''}</div></div>`).join('')||'<div class="empty">no recent activity</div>';
+}
+
+// ── Per-quest open items (rendered inside the quest detail view): what THIS
+//    quest is still waiting on — blocked reason, tracked threads, items awaiting
+//    your review, and promised-but-unfulfilled commitments. Derived from the
+//    quest's watch.json + timeline + approvals; no tokens. ──
+function oiRow(inner,cls){ return `<div class="oi-row ${cls}">${inner}</div>`; }
+function oiThreadRow(t){
+  const ro=t.read_only?'<span class="tag tag-mode">read-only</span>':'';
+  // A reply-catcher and a permanent subscription otherwise look identical here, which is
+  // how two of them outlived their purpose by 3 and 12 days unnoticed. Show when it dies;
+  // "expiring" with no date means housekeep has not stamped its clock yet.
+  const eph=t.ephemeral?`<span class="tag tag-mode" title="Temporary reply-catcher — retired automatically">${t.expires_ts?'expires '+esc(expiryLabel(t.expires_ts)):'expiring'}</span>`:'';
+  const link=(t.link_url||t.slack_url)?recLink(t,false):(t.query?`<span class="oi-query">${esc(t.query)}</span>`:'');
+  const age=t.last_checked_ts?`<span class="oi-age">${agoEpoch(t.last_checked_ts)}</span>`:'';
+  return oiRow(`${badge(t.type||'watch')}${ro}${eph}<span class="oi-reason">${esc(t.reason||'(no reason)')}</span>${age}${link}`,'r-wait');
+}
+function expiryLabel(ts){
+  const f=parseFloat(ts); if(!isFinite(f)||f<=0) return '';
+  const days=Math.round((f*1000-Date.now())/86400000);
+  if(days<0) return 'overdue';
+  if(days===0) return 'today';
+  return days===1?'in 1d':`in ${days}d`;
+}
+function fireTime(ts){ const f=parseFloat(ts); if(!isFinite(f)||f<=0) return ''; const d=new Date(f*1000),now=Date.now(); const past=d.getTime()<now; const s=d.toLocaleDateString(undefined,{month:'short',day:'numeric'}); return `<span class="oi-age${past?' oi-overdue':''}">${past?'due ':'fires '}${esc(s)}</span>`; }
+function renderQuestOpenItems(oi){
+  if(!oi) return '';
+  const threads=oi.threads||[], sched=oi.scheduled||[], review=oi.review||[], commits=oi.commitments||[], blocked=oi.blocked, backoff=oi.backoff_watches||[], ratelimited=oi.ratelimited_watches||[];
+  const total=oi.threads_total||threads.length;
+  const n=(blocked?1:0)+backoff.length+ratelimited.length+total+sched.length+review.length+commits.length;
+  let body='';
+  backoff.forEach(w=>{
+    const why=w.last_error?` · ${esc(w.last_error)}`:` · last: ${esc(w.last_status||'?')}`;
+    const every=w.backoff_sec?` · next try in ${fmtWait(w.backoff_sec)}`:'';
+    const kind=w.source==='checker'?'checker error':'dispatch with no progress';
+    const detail=`${esc(w.type)} · ${w.count}\u00d7 ${kind}${every}${why}`;
+    const age=w.last_utc?`<span class="oi-age" data-ts="${esc(w.last_utc)}">${ago(w.last_utc)}</span>`:'';
+    body+=oiRow(`<span class="oi-badge oi-backoff">backing off</span><span class="oi-reason" title="${esc(w.watch_id)}">${detail}</span>${age}`,'r-backoff');
+  });
+  ratelimited.forEach(w=>{
+    const detail=`${esc(w.type)} · Slack rate-limited this watch; watermark held, retries next tick`;
+    const age=w.last_utc?`<span class="oi-age" data-ts="${esc(w.last_utc)}">${ago(w.last_utc)}</span>`:'';
+    body+=oiRow(`<span class="oi-badge oi-ratelimit">rate limited</span><span class="oi-reason" title="${esc(w.watch_id)}">${detail}</span>${age}`,'r-ratelimit');
+  });
+  if(blocked) body+=oiRow(`<span class="oi-badge oi-blocked">blocked</span><span class="oi-reason">${esc(blocked.reason||'(no reason logged)')}</span>${blocked.ts?`<span class="oi-age" data-ts="${esc(blocked.ts)}">${ago(blocked.ts)}</span>`:''}`,'r-blocked');
+  review.forEach(r=>{ body+=oiRow(`<span class="oi-badge oi-review">${esc(r.status)}</span><span class="oi-reason">${esc(r.message_text||r.action_type||'awaiting your review')}</span>`,'r-review'); });
+  commits.forEach(c=>{ body+=oiRow(`<span class="oi-badge oi-promise">promised</span><span class="oi-reason">${esc(c.text||c.note||'')}</span>${c.ts?`<span class="oi-age" data-ts="${esc(c.ts)}">${ago(c.ts)}</span>`:''}`,'r-promise'); });
+  sched.forEach(s=>{ body+=oiRow(`<span class="oi-badge oi-promise">follow-up</span><span class="oi-reason">${esc(s.reason||'(scheduled)')}</span>${fireTime(s.next_fire_ts)}`,'r-promise'); });
+  threads.forEach(t=>{ body+=oiThreadRow(t); });
+  if(total>threads.length) body+=`<div class="oi-more">+ ${total-threads.length} older tracked thread${total-threads.length>1?'s':''} (see watches below)</div>`;
+  if(!n) body='<div class="empty">nothing open — this quest is idle or fully handled</div>';
+  return `<div class="qv-openitems"><div class="qv-oi-label">open items <span class="oi-count">${n} open</span></div>${body}</div>`;
+}
+
+// ── Briefs ──
+function renderBriefs(briefs){
+  if(!changed('briefs',briefs)) return;
+  document.getElementById('briefs-list').innerHTML=briefs.length?briefs.map((b,i)=>{
+    const t=(b.type||'').toLowerCase();
+    return `<details class="brief"${i===0?' open':''}><summary><span class="brief-type ${esc(t)}">${esc(b.type||'note')}</span><span class="brief-title">${esc(b.title)}</span><span class="brief-ago" data-ts="${esc(b.ts||'')}">${ago(b.ts)}</span></summary><div class="brief-body">${mdToHtml(b.markdown)}</div></details>`;
+  }).join(''):'<div class="empty">no briefs yet</div>';
+}
+
+// ── Quest view ──
+async function openQuest(id){
+  openQuestId=id;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  ['messages','quests','briefs','history'].forEach(n=>{ const el=document.getElementById('tab-'+n); if(el) el.style.display='none'; });
+  const view=document.getElementById('quest-view'); view.style.display='';
+  view.innerHTML='<div class="empty">loading…</div>';
+  try{
+    const r=await fetch(`/api/quest/${encodeURIComponent(id)}`,{cache:'no-store'});
+    if(!r.ok) throw new Error(r.status);
+    const d=await r.json(); if(openQuestId===id) renderQuestView(d);
+  }catch{ if(openQuestId===id) view.innerHTML='<div class="empty">failed to load quest</div>'; }
+}
+function questPendingCards(id){
+  if(!msgData) return [];
+  return msgData.needs_you.concat(msgData.other_actions).filter(i=>i.quest_id===id);
+}
+function renderQuestPendingCards(){
+  const wrap=document.getElementById('qv-pending'); if(!wrap) return;
+  const cards=questPendingCards(openQuestId);
+  wrap.innerHTML=cards.map(c=>`<div class="review-slide is-active" data-appr-id="${esc(c.id)}">${buildCard(c,{hasNext:false})}</div>`).join('');
+}
+function watchRow(w){
+  const mode=w.watch_mode?`<span class="tag tag-mode">${esc(w.watch_mode)}</span>`:'';
+  const meta=w.type==='schedule'?[w.cron,w.tz].filter(Boolean).join(' '):(w.last_checked_ts?`checked ${agoEpoch(w.last_checked_ts)}`:'');
+  return `<div class="watch-item">${badge(w.type||'watch')}${mode}<span class="watch-reason">${esc(w.reason||w.query||w.approval_id||'')}</span><span class="watch-meta">${esc(meta)}</span></div>`;
+}
+function timelineRow(e, showQuest){
+  const link=recLink(e,false);
+  const note=e.note||e.reason||'';
+  const msg=e.message_text||'';
+  const textHtml=msg?`<div class="feed-note tl-msg">${esc(msg)}</div>`:(note?`<div class="feed-note">${esc(note)}</div>`:'');
+  const questLine=showQuest&&e.quest_title?`<div class="feed-quest" style="margin-bottom:2px;font-weight:600">${esc(e.quest_title)}</div>`:'';
+  return `<div class="feed-item${showQuest?' tl-clickable':''}" ${showQuest&&e.quest_id?`data-quest-id="${esc(e.quest_id)}"`:''}>` +
+    `<div class="feed-time">${feedTime(e.ts)}</div>` +
+    `<div>${questLine}<div class="feed-top">${badge(e.event||'?')}${link}</div>${textHtml}</div></div>`;
+}
+function renderQuestView(d){
+  const m=d.meta||{}; const bl=m.status==='blocked';
+  const tags=`<span><span class="dot ${bl?'dot-blocked':'dot-active'}"></span><span class="status-text${bl?' status-warn':''}">${esc(m.status||'active')}</span></span>${m.priority?`<span class="pri-${esc(m.priority)}">${esc(m.priority)}</span>`:''}${m.allow_send?'<span class="tag tag-send">send enabled</span>':'<span class="tag tag-draft">draft only</span>'}${m.created?`<span class="ago">created ${esc(String(m.created).slice(0,10))}</span>`:''}`;
+  const trunc=d.timeline.length<d.timeline_total?`<div class="tl-truncated">showing ${d.timeline.length} of ${d.timeline_total} entries</div>`:'';
+  document.getElementById('quest-view').innerHTML=`
+  <div class="qv-back"><button class="icon-btn" data-action="close-quest">‹ back to quests</button></div>
+  <div class="qv-layout">
+    <div class="qv-main">
+      <div class="quest-head">
+        <div class="qh-top"><div><div class="quest-vtitle">${esc(m.title||d.id)}</div><div class="quest-vid">${esc(d.id)}</div></div></div>
+        <div class="quest-tags">${tags}</div>
+      </div>
+      <div id="qv-pending"></div>
+      ${renderQuestOpenItems(d.open_items)}
+      <div class="qv-prompt">
+        <div class="qv-prompt-label">run this quest with a new instruction</div>
+        <textarea id="qv-prompt-text" class="qv-prompt-text" rows="2" placeholder="e.g. Draft a reply asking for the settlement timeline, then wait for their answer."></textarea>
+        <div class="qv-prompt-row">
+          <span id="qv-prompt-status" class="qv-prompt-status"></span>
+          <button class="btn btn-review" data-action="run-prompt" data-quest-id="${esc(d.id)}">Run</button>
+        </div>
+      </div>
+      <details class="fold"><summary><span class="fold-caret">▸</span> context <span class="fold-count">${d.context_md?'':'empty'}</span></summary><div class="fold-body">${d.context_md?`<div class="drawer-context">${mdToHtml(d.context_md)}</div>`:'<div class="empty">no context</div>'}</div></details>
+      <details class="fold"><summary><span class="fold-caret">▸</span> watches <span class="fold-count">${d.watches.length}</span></summary><div class="fold-body">${d.watches.length?d.watches.map(watchRow).join(''):'<div class="empty">no watches</div>'}</div></details>
+    </div>
+    <div class="qv-side">
+      <div class="timeline-panel">
+        <div class="section-label" style="margin-bottom:10px">timeline <span class="sl-count">${d.timeline_total} entries</span></div>
+        ${d.timeline.length?d.timeline.map(timelineRow).join(''):'<div class="empty">no timeline entries</div>'}
+        ${trunc}
+      </div>
+    </div>
+  </div>`;
+  renderQuestPendingCards();
+}
+
+// ── History ──
+function histStatusBadge(st){ const cls=st==='executed'?'badge-executed':st==='cancelled'?'badge-cancelled':(st==='reviewed'||st==='executing')?'badge-executed':'badge-default'; return `<span class="badge ${cls}">${esc(st||'?')}</span>`; }
+const TRAIL=[['created_at','created'],['reviewed_at','reviewed'],['executing_at','executing'],['sent_at','sent'],['cancelled_at','cancelled']];
+function histCard(i){
+  const msg=i.message_text||''; const long=msg.length>350||msg.split('\n').length>4;
+  const msgHtml=!msg?'':long?`<details class="hist-msg"><summary>message</summary><div class="rc-context" style="margin-top:6px">${esc(msg)}</div></details>`:`<div class="rc-context" style="margin-top:8px">${esc(msg)}</div>`;
+  const trail=TRAIL.filter(([k])=>i[k]).map(([k,l])=>`${l} ${feedTime(i[k])}`).join('  ·  ');
+  return `<div class="hist-card"><div class="hist-head">${histStatusBadge(i.status)}<span class="hist-title">${esc(i.quest_title||i.quest_id||'')}</span>${i.human_edited?'<span class="tag tag-draft">edited</span>':''}${recLink(i,false)}${agoSpan(i.created_at,'rc-age')}</div>${msgHtml}${i.review_note?`<div class="hist-line"><span class="hist-k">review note</span>${esc(i.review_note)}</div>`:''}<div class="hist-trail">${esc(trail)}</div></div>`;
+}
+function runRow(r){
+  let res,err=false;
+  if(r.kind==='dispatch'){res=r.ok?'ok':'failed';err=!r.ok;} else if(r.kind==='failure'){res=`exit ${r.exit_code??'?'}`;err=true;} else if(r.kind==='skip_locked'){res=`locked pid ${r.holder_pid??'?'}`;} else {res=[r.reason,r.status].filter(Boolean).join(' ');}
+  const cls=r.kind==='dispatch'?'badge-executed':(err?'badge-cancelled':'badge-default');
+  const cost=r.cost_usd!=null?'$'+Number(r.cost_usd).toFixed(2):''; const dur=r.wall_sec!=null?r.wall_sec+'s':'';
+  const chips=(r.targets||[]).map(t=>`<span class="tag tag-mode">${esc(String(t).replace(/^quest-/,'').replace(/-\d{4}-\d{2}-\d{2}$/,''))}</span>`).join(' ');
+  return `<tr><td class="ago">${feedTime(r.ts)}</td><td><span class="badge ${cls}">${esc(r.kind)}</span></td><td>${chips}</td><td class="ago">${cost}</td><td class="ago">${dur}</td><td class="${err?'runs-err':'ago'}">${esc(res)}</td></tr>`;
+}
+async function pollHistory(){
+  const h=lastHistEtag?{'If-None-Match':lastHistEtag}:{};
+  const r=await fetch('/api/history',{cache:'no-store',headers:h});
+  if(r.status===304) return; if(!r.ok) return; lastHistEtag=r.headers.get('ETag'); const d=await r.json();
+  if(changed('histA',d.approvals)) document.getElementById('history-approvals').innerHTML=(d.approvals||[]).map(histCard).join('')||'<div class="empty">no reviewed items yet</div>';
+  if(changed('histR',d.runs)) document.getElementById('history-runs').innerHTML=(d.runs||[]).length?`<table><thead><tr><th style="width:11%">time</th><th style="width:11%">kind</th><th>targets</th><th style="width:7%">cost</th><th style="width:9%">duration</th><th style="width:16%">result</th></tr></thead><tbody>${d.runs.map(runRow).join('')}</tbody></table>`:'<div class="empty">no dispatch history</div>';
+}
+
+// ── live panel ──
+let livePanelOpen=false;
+function renderLive(live){
+  const pill=document.getElementById('live-pill');
+  if(live&&live.running){ pill.style.display='flex'; document.getElementById('live-pill-text').textContent=(live.targets||[])[0]||'working'; }
+  else { pill.style.display='none'; if(livePanelOpen) renderLivePanel(live); }
+  if(livePanelOpen) renderLivePanel(live);
+}
+function renderLivePanel(live){
+  const p=document.getElementById('live-panel');
+  if(!live||!live.running){ p.innerHTML=`<div class="live-panel-head"><div class="quest-vtitle">Nothing running</div><button class="icon-btn" data-action="close-live" style="margin-left:auto">✕</button></div><div class="empty">No worker dispatched right now.</div>`; return; }
+  const targets=(live.targets||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')||'<span class="chip">-</span>';
+  p.innerHTML=`<div class="live-panel-head"><div><div class="quest-vtitle">Running now</div><div class="live-panel-targets">${targets}</div><div class="ago" style="margin-top:8px">started ${agoSpan(live.started_at)}</div></div><button class="icon-btn" data-action="close-live" style="margin-left:auto">✕</button></div><div class="live-panel-tail">${(live.tail||[]).map(l=>esc(l)).join('\n')}</div>`;
+}
+function openLive(){ livePanelOpen=true; document.getElementById('live-backdrop').hidden=false; document.getElementById('live-panel').hidden=false; renderLivePanel(dashData&&dashData.live_run); }
+function closeLive(){ livePanelOpen=false; document.getElementById('live-backdrop').hidden=true; document.getElementById('live-panel').hidden=true; }
+document.getElementById('live-pill').addEventListener('click',openLive);
+document.getElementById('live-backdrop').addEventListener('click',closeLive);
+
+// ── delegated clicks (CSP-safe: no inline handlers) ──
+document.addEventListener('click',e=>{
+  const el=e.target.closest('[data-action],[data-nav],[data-i],[data-quest-id]');
+  if(!el) return;
+  if(el.dataset.action==='close-quest'){ switchTab('quests'); return; }
+  if(el.dataset.action==='close-live'){ closeLive(); return; }
+  if(['review','revise','cancel','reclaim'].includes(el.dataset.action)){ submitReview(el.closest('.review-card'),el.dataset.action); return; }
+  if(el.dataset.nav!==undefined){ showSlide(reviewIndex+(+el.dataset.nav)); return; }
+  if(el.dataset.i!==undefined){ showSlide(+el.dataset.i); return; }
+  if(el.dataset.action==='run-prompt'){ runQuestPrompt(el,el.dataset.questId); return; }
+  if(el.dataset.questId){ openQuest(el.dataset.questId); return; }
+});
+// Click an open-item row to expand its full (otherwise truncated) reason text.
+// Ignore clicks on links inside the row so deeplinks still open Slack.
+document.addEventListener('click',e=>{
+  if(e.target.closest('a')) return;
+  const row=e.target.closest('.oi-row');
+  if(row) row.classList.toggle('expanded');
+});
+async function runQuestPrompt(btn,id){
+  const ta=document.getElementById('qv-prompt-text');
+  const st=document.getElementById('qv-prompt-status');
+  const instruction=(ta&&ta.value||'').trim();
+  if(!instruction){ ta&&ta.focus(); return; }
+  btn.disabled=true; ta.disabled=true; st.className='qv-prompt-status'; st.textContent='launching…';
+  try{
+    const r=await fetch(`/api/prompt/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction})});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok){ st.textContent='running — watch the live panel'; ta.value=''; lastDashEtag=null; setTimeout(()=>poll(),600); }
+    else { st.className='qv-prompt-status err'; st.textContent=(d.busy?'busy: ':'')+(d.error||('error '+r.status)); }
+  }catch{ st.className='qv-prompt-status err'; st.textContent='request failed'; }
+  finally{ btn.disabled=false; ta.disabled=false; }
+}
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ if(livePanelOpen) closeLive(); else if(openQuestId) switchTab('quests'); return; }
+  if(activeTab!=='messages'||openQuestId) return;
+  if(e.target.matches('textarea,input')) return;
+  if(e.key==='ArrowLeft') showSlide(reviewIndex-1);
+  if(e.key==='ArrowRight') showSlide(reviewIndex+1);
+});
+
+poll();
+setInterval(poll,POLL_MS);
+setInterval(tick,15000);
+</script>
+</body>
+</html>
