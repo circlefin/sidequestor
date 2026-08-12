@@ -1,9 +1,9 @@
 name: Scan
 on:
   pull_request:
-    branches: [master]
+    branches: [main]
   push:
-    branches: [master]
+    branches: [main]
 jobs:
   scan:
     if: github.event_name == 'pull_request'
