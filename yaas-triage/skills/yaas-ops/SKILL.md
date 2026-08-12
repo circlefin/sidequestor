@@ -24,6 +24,7 @@ yaas-triage/
 │   ├── schedule.py · email.py
 │   ├── jira.py               ← Jira issues via ../surfaces/jira-call.sh (no MCP needed)
 │   ├── github_pr.py          ← PR activity via `gh search prs`
+│   ├── github_issue.py       ← issue activity via `gh search issues` (excludes PRs)
 │   ├── reactions.py          ← global reaction sweep (not per-quest)
 │   ├── result.py             ← the outcome contract every checker returns
 │   ├── slack_utils.py        ← shared drain()/parse helpers
@@ -125,11 +126,14 @@ Keep the lag as small as the source allows. Every second of lag widens the windo
     {"type": "email",         "query": "from:partner@company.com subject:Re:", "last_checked_ts": "0", "reason": "..."},
     {"type": "jira",          "jql": "labels=my-label", "last_checked_ts": "0", "reason": "..."},
     {"type": "github_pr",     "repo": "owner/repo", "last_checked_ts": "0", "reason": "..."}
+    {"type": "github_issue",  "repo": "owner/repo", "last_checked_ts": "0", "reason": "..."}
   ]
 }
 ```
 
-`jira` needs the REST bridge (`yaas-triage/surfaces/jira-call.sh`, Basic-auth API token in Keychain `jira-api-token`/`yaas`) because the Atlassian MCP is interactive-OAuth only and is absent in headless dispatch. `github_pr` accepts optional `search` (extra GitHub qualifiers) and `limit` (default 100) — read the warning in `checkers/github_pr.py`'s docstring before adding a `search`, since repeated qualifiers AND rather than OR and can silently match nothing.
+`jira` needs the REST bridge (`yaas-triage/surfaces/jira-call.sh`, Basic-auth API token in Keychain `jira-api-token`/`yaas`) because the Atlassian MCP is interactive-OAuth only and is absent in headless dispatch. `github_pr` and `github_issue` both accept optional `search` (extra GitHub qualifiers), `limit` (default 100), and `gh_account` (a `gh` login whose token to use, for a repo the ACTIVE `gh` account cannot see; resolved per-run via `gh auth token -u`, never persisted). Read the warning in `checkers/github_pr.py`'s docstring before adding a `search`, since repeated qualifiers AND rather than OR and can silently match nothing. A `search` may contain qualifiers only: anything starting with `-` is refused as `misconfig`, because the string is spliced into argv ahead of gh's own flags and e.g. `--include-prs` would make a `github_issue` watch double-report every PR against a `github_pr` watch on the same repo.
+
+`.lag` note: `github_issue.lag = 30`, same as `github_pr` and for the same reason (GitHub's search index is eventually consistent).
 
 `last_checked_ts` is always a Unix epoch float string. The orchestrator is the sole owner of this field — the worker must never modify existing entries (it may only append new ones).
 

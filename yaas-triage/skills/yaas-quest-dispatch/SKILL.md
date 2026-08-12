@@ -77,6 +77,14 @@ Post a comment with `POST /rest/api/3/issue/<KEY>/comment` only when the quest a
 
 The watch is usually repo-wide, so it fires on PRs unrelated to the quest. **If the changed PR is out of scope, log nothing and exit** — do not investigate it, comment on it, or add a watch for it.
 
+**GitHub issue watch type** (`github_issue`): fires when an issue in the entry's `repo` changed (opened, commented, relabelled, closed). Pull requests are excluded, so it never double-reports with a `github_pr` watch on the same repo; pair the two when you want both halves. Use `gh`:
+- `gh issue view <n> --repo <repo> --json number,title,body,state,author,labels,comments` — the issue and its discussion.
+- `gh search issues --repo <repo> --sort updated --order desc --limit 20 --json number,title,state,updatedAt` — re-locate what moved.
+
+Repo-wide, and the same out-of-scope rule applies. Two extra traps specific to this type: a fire may be a **comment or label change on an issue already handled**, which is not an instruction to act again, and it may be **the quest's own write** coming back around, which must never trigger a second round. Check the quest's `timeline.ndjson` for the issue number before acting.
+
+If the entry carries `gh_account`, every `gh` call for that repo needs the same identity: prefix `GH_TOKEN=$(gh auth token -u <account>)`. Never run `gh auth switch` — it mutates global state and breaks every other repo for the rest of the run.
+
 **`gh` write access is per-action, not all-or-nothing. Probe before declaring a block.** Run `gh api repos/<owner>/<repo> -q .permissions` and read the actual grant. With `pull: true, push: false`, all of these still work: PR comments (`gh api repos/<r>/issues/<n>/comments -X POST`), replies to inline review comments (`.../pulls/<n>/comments/<id>/replies`), new inline review comments including a ` ```suggestion ` block (`.../pulls/<n>/comments` with `commit_id`, `path`, `line`, `side`), and submitting a review (`.../pulls/<n>/reviews`). Only pushing a commit or branch returns `403`.
 
 So a reviewer question, a correction, or a one-line fix is **never** blocked by `push: false` — answer it in-tick per §3b, using a suggestion block when the fix is a line or two so the author can commit it. Only a genuine multi-line or multi-file code change needs the approval queue or a DM. Never write "no gh write access" as a blanket reason without having run the permissions probe; a wrong capability assumption strands a reviewer for days. The same applies to any bridged service: try the REST bridge before concluding the service is unreachable because its MCP server is absent.

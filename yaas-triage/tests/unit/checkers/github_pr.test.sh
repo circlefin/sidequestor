@@ -179,6 +179,33 @@ chmod +x "$TMP/gh"
 eq "a rate limit is ratelimited, not error" \
    "$(field "$(run "$WM" 10)" outcome)" "ratelimited"
 
+# A repo that does not exist or is not visible to this token. Retrying cannot fix either, so
+# it goes straight to misconfig rather than burning a day of exponential backoff first.
+cat > "$TMP/gh" <<'SH'
+#!/bin/bash
+echo "Could not resolve to a Repository with the name 'o/r'." >&2
+exit 1
+SH
+chmod +x "$TMP/gh"
+eq "an invisible or missing repo is misconfig, not retryable error" \
+   "$(field "$(run "$WM" 10)" outcome)" "misconfig"
+
+echo
+echo "── \`search\` may carry qualifiers, never gh flags ──────────────────────────"
+# The `search` string is spliced into argv AHEAD of the flags gh parses, so a leading dash
+# is a real flag rather than a qualifier: --owner, --json and --limit each silently change
+# what the result means, and the checker would report on a set nobody asked for.
+run_s() {  # run_s <search>
+  GH_BIN="$TMP/gh" timeout 30 python3 "$SCRIPT_DIR/checkers/github_pr.py" \
+    "{\"type\":\"github_pr\",\"repo\":\"o/r\",\"last_checked_ts\":\"$WM\",\"search\":\"$1\"}" 2>&1
+}
+mk_gh '[]'
+eq "a smuggled gh flag is refused" "$(field "$(run_s '--json number')" outcome)" "misconfig"
+[ ! -s "$TMP/gh.args" ] && ok "...before gh is invoked at all" || bad "gh ran with the flag"
+mk_gh '[]'
+eq "ordinary qualifiers still pass through" \
+   "$(field "$(run_s 'author:someone')" outcome)" "clean"
+
 echo
 echo "────────────────────────────────────────────────────────────────────────────"
 echo "github_pr: $PASS passed, $FAIL failed"

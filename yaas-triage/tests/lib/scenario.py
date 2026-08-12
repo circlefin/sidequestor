@@ -292,7 +292,7 @@ def build(scenario_path, dest):
 
     # ── Stubs over every external seam ──────────────────────────────────────────
     for watch_type in ("slack_thread", "slack_channel", "slack_dm", "slack_mention",
-                       "email", "jira", "github_pr", "schedule", "approval"):
+                       "email", "jira", "github_pr", "github_issue", "schedule", "approval"):
         _write(tri / "checkers" / f"{watch_type}.py", CHECKER_STUB, executable=True)
     _write(tri / "checkers" / "reactions.py", REACTIONS_STUB, executable=True)
     _write(tri / "dispatch" / "run-agent.py", RUN_AGENT_STUB, executable=True)

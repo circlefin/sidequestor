@@ -74,6 +74,7 @@ entry_for() {
     email)          echo '{"type":"email","query":"from:nobody@example.invalid","last_checked_ts":"1"}' ;;
     jira)           echo '{"type":"jira","jql":"project = NOPE","last_checked_ts":"1"}' ;;
     github_pr)      echo '{"type":"github_pr","repo":"nope/nope","last_checked_ts":"1"}' ;;
+    github_issue)   echo '{"type":"github_issue","repo":"nope/nope","last_checked_ts":"1"}' ;;
     schedule)       echo '{"type":"schedule","cron":"* * * * *","tz":"UTC","last_checked_ts":"1"}' ;;
     approval)       echo '{"type":"approval","approval_id":"appr-does-not-exist","last_checked_ts":"1"}' ;;
     *)              echo '{"type":"'"$1"'","last_checked_ts":"1"}' ;;
@@ -166,7 +167,7 @@ for h in $HELPERS; do
 done
 # ...and the converse: every real watch type must have an EXECUTABLE plugin, or tick.py
 # silently classifies that watch as misconfig and holds its watermark forever.
-for t in slack_thread slack_channel slack_dm slack_mention email jira github_pr schedule approval; do
+for t in slack_thread slack_channel slack_dm slack_mention email jira github_pr github_issue schedule approval; do
   f="$SCRIPT_DIR/checkers/$t.py"
   [ -x "$f" ] && ok "plugin $t.py is executable" \
                || bad "plugin $t.py is missing or not executable — that watch type is dead"

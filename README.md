@@ -194,7 +194,7 @@ Things you can watch:
 | `slack_thread` · `slack_channel` · `slack_dm` | replies · new posts · DMs |
 | `slack_mention` | anyone @mentioning you, anywhere |
 | `email` | a Gmail search query |
-| `jira` · `github_pr` | an issue set changing · PR activity |
+| `jira` · `github_pr` · `github_issue` | an issue set changing · PR activity · GitHub issue activity |
 | `schedule` | a cron expression or a one-off time |
 | `approval` | you reviewing one of its drafts |
 

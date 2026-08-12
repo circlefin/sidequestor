@@ -63,7 +63,9 @@ you're mid-conversation about it. These rules keep the two coherent and apply in
 
 Per-watch-type querying, logging, approvals, and quest completion live in the dispatch skill above.
 Slack access (native MCP tool, or the `yaas-triage/surfaces/mcp-call.sh` shell fallback) and the wider state
-layout live in `yaas-triage/skills/yaas-ops/SKILL.md`.
+layout live in `yaas-triage/skills/yaas-ops/SKILL.md`. Adding a NEW watch type (the checker, its
+registration points, its tests, and the docs it makes stale) is
+`yaas-triage/skills/yaas-checker-authoring/SKILL.md`.
 
 ---
 ## ▲ YOUR OWN AGENT RULES GO ABOVE THIS BLOCK ▲

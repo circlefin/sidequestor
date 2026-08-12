@@ -50,6 +50,12 @@ Watch entry fields by type:
                  comment, merge). `search` adds GitHub qualifiers, but read the
                  warning in checkers/github_pr.py first: repeated qualifiers AND
                  rather than OR, so a bad one silently matches nothing forever.
+  github_issue:  repo ("owner/name"), reason  [optional: search, limit, gh_account]
+                 Fires on any ISSUE update in the repo (new issue, comment, label,
+                 close). Pull requests are excluded, so this does not double-report
+                 with github_pr. `search` carries the same AND-not-OR trap as above.
+                 `gh_account` pins the gh login whose token is used, for a repo the
+                 ACTIVE gh account cannot see.
 
 Optional pre-dispatch filters (slack_channel + slack_thread only) — set these to avoid
 waking the worker on irrelevant messages; evaluated inside the checker scripts
@@ -105,6 +111,7 @@ REQUIRED_FIELDS = {
     "email":         ["query"],
     "jira":          ["jql"],
     "github_pr":     ["repo"],
+    "github_issue":  ["repo"],
     # Runtime-only: the worker appends these itself when it queues a manual-review
     # item (§3d). Registered so the type system matches checkers/, not because a
     # new quest should normally scaffold one (no approval exists at creation time).

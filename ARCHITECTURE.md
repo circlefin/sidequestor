@@ -227,6 +227,7 @@ in a file; nothing else changes.
 | `email` | a Gmail query matches something new |
 | `jira` | an issue in a JQL set changed |
 | `github_pr` | PR activity — a PR review does **not** bump the linked Jira, hence both |
+| `github_issue` | issue activity in a repo (create, comment, label, close); excludes PRs |
 | `schedule` | a cron expression or a one-shot time came due |
 | `approval` | a human reviewed a queued draft |
 

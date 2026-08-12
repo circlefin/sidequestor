@@ -86,6 +86,7 @@ REQUIRED = {
     "email":         ("query",),
     "jira":          ("jql",),
     "github_pr":     ("repo",),
+    "github_issue":  ("repo",),
     "schedule":      (),           # needs cron+tz OR next_fire_ts; checked below
     "approval":      ("approval_id",),
 }
@@ -98,6 +99,10 @@ IDENTITY = {
     "email":         ("query",),
     "jira":          ("jql",),
     "github_pr":     ("repo",),
+    # `search` is part of the identity here, unlike github_pr: two github_issue watches on
+    # one repo with different qualifiers (say `label:bug` and `label:docs`) are genuinely
+    # different watches, and collapsing them onto `repo` alone would silently drop one.
+    "github_issue":  ("repo", "search"),
     "schedule":      ("id", "cron", "next_fire_ts"),
     "approval":      ("approval_id",),
 }

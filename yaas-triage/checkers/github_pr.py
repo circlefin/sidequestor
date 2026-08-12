@@ -40,7 +40,18 @@ Input:  watch entry JSON as argv[1]
                          a prose reference), silently losing PRs you care about.
                      Prefer no `search` unless you have verified recall against
                      a known set of PRs that MUST match.
+                     QUALIFIERS ONLY: a token starting with `-` is refused as
+                     misconfig — the string is spliced into argv ahead of gh's own
+                     flags, so a leading dash lands as a real flag and silently
+                     changes what was searched. See _search_tokens().
           "limit"  — max PRs to pull per tick (default 100).
+          "gh_account" — a `gh` account login whose token to use, e.g.
+                     "octocat-work". Needed when the repo is private to a
+                     second GitHub account and the ACTIVE gh account cannot see
+                     it: without this the search 404s, which gh reports as a hard
+                     error every tick. Resolved per-run via `gh auth token -u`
+                     and passed as GH_TOKEN, so it does not mutate global gh
+                     state; the token is never written to disk or state.
 
 Output: count|preview   (preview = "#<num> [state] title" of most-recently
                          updated changed PR; count = number of changed PRs)
@@ -86,15 +97,68 @@ TRANSIENT_MARKERS = (
     "tls handshake", "temporary failure", "no such host", "eof",
 )
 
+# A repo that does not exist, or that this token cannot see. Retrying cannot fix either, so
+# these are misconfig (hold, page a human) rather than error (exponential backoff, then
+# promote to misconfig anyway after burning a day of retries).
+NOT_FOUND_MARKERS = (
+    "could not resolve to a repository",
+    "cannot be searched either because the resources do not exist",
+    "http 404", "not found",
+)
+
 
 class Transient(Exception):
     """Retryable upstream condition — skip the tick, don't dispatch."""
 
 
+class Misconfig(Exception):
+    """Permanent condition needing a human — never dispatch, never back off."""
+
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import result
 
-def gh_search(repo, extra, limit, timeout=30, since_iso=None, order="desc"):
+
+def gh_env(account):
+    """Environment for the gh call, optionally pinned to a non-active account.
+
+    GH_TOKEN wins over the active account's keyring entry, so this switches
+    identity for one subprocess without mutating global gh state (which
+    `gh auth switch` would, breaking every other repo in the session).
+    """
+    env = dict(os.environ)
+    if not account:
+        return env
+    r = subprocess.run([GH, "auth", "token", "-u", account],
+                       capture_output=True, text=True, timeout=15)
+    token = (r.stdout or "").strip()
+    if r.returncode != 0 or not token:
+        err = (r.stderr or "").strip() or f"gh auth token exit {r.returncode}"
+        raise Misconfig(f"no gh token for account {account!r}: {err}")
+    env["GH_TOKEN"] = token
+    env.pop("GITHUB_TOKEN", None)
+    return env
+
+
+def _search_tokens(extra):
+    """Split a watch's `search` string into argv tokens, refusing gh FLAGS.
+
+    The tokens are spliced in ahead of the flags gh parses, so anything starting with `-`
+    lands as a real flag rather than a search qualifier — `--owner`, `--json`, and `--limit`
+    all silently change what the result means, and on the sibling github_issue checker
+    `--include-prs` would make two watches report the same PR twice. Qualifiers never need a
+    leading dash, so refusing them costs nothing. Negated qualifiers (`-label:bug`) need a
+    `--` separator gh cannot receive through this field; write the positive form instead.
+    """
+    tokens = extra.split()
+    flags = [t for t in tokens if t.startswith("-")]
+    if flags:
+        raise Misconfig(
+            f"\"search\" may only contain search qualifiers, not gh flags: {' '.join(flags)}")
+    return tokens
+
+
+def gh_search(repo, extra, limit, env=None, timeout=30, since_iso=None, order="desc"):
     cmd = [GH, "search", "prs", "--repo", repo,
            "--sort", "updated", "--order", order,
            "--limit", str(limit),
@@ -108,13 +172,15 @@ def gh_search(repo, extra, limit, timeout=30, since_iso=None, order="desc"):
         cmd.append(f"updated:>={since_iso}")
     if extra:
         # Positional search terms/qualifiers go before the flags gh parses.
-        cmd = cmd[:3] + extra.split() + cmd[3:]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        cmd = cmd[:3] + _search_tokens(extra) + cmd[3:]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     if r.returncode != 0 or not r.stdout.strip():
         err = (r.stderr or "").strip()
         low = err.lower()
         if any(m in low for m in TRANSIENT_MARKERS):
             raise Transient(err.splitlines()[-1] if err else "gh transient failure")
+        if any(m in low for m in NOT_FOUND_MARKERS):
+            raise Misconfig(err.splitlines()[-1] if err else "repo not found or not visible")
         raise RuntimeError(err.splitlines()[-1] if err else f"gh exit {r.returncode}")
     return json.loads(r.stdout)
 
@@ -153,6 +219,7 @@ def main():
     extra = entry.get("search") or ""
     limit = int(entry.get("limit") or 100)
     since_ts = float(entry.get("last_checked_ts") or 0)
+    env = gh_env(entry.get("gh_account"))
 
     # Ask for the OLDEST unseen changes first, bounded below by the watermark. One second
     # is subtracted because GitHub's `updated:>=` is inclusive and coarse; the post-filter
@@ -161,7 +228,7 @@ def main():
     if since_ts > 0:
         since_iso = datetime.fromtimestamp(since_ts - 1, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    rows = gh_search(repo, extra, limit, since_iso=since_iso, order="asc")
+    rows = gh_search(repo, extra, limit, env, since_iso=since_iso, order="asc")
     changed = [pr for pr in rows if updated_epoch(pr) > since_ts]
     drained = _drained(rows, limit)
 
@@ -221,5 +288,7 @@ if __name__ == "__main__":
     except Transient as e:
         # Not dirty: skip the tick. Watermark is held, so nothing is lost.
         result.ratelimited(str(e))
+    except Misconfig as e:
+        result.misconfig(str(e))
     except Exception as e:
         result.error(f"{type(e).__name__}: {e}")
