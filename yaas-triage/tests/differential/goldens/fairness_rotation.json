@@ -1,0 +1,115 @@
+{
+  "acks": {
+    "q-alpha/quest": {
+      "w-q-alpha": "handled"
+    },
+    "q-beta/quest": {
+      "w-q-beta": "handled"
+    },
+    "q-gamma/quest": {
+      "w-q-gamma": "handled"
+    }
+  },
+  "dispatches": [
+    "q-beta",
+    "q-gamma",
+    "q-alpha"
+  ],
+  "events": [
+    {
+      "dirty_watches": [
+        {
+          "advance_to": null,
+          "checker_outcome": "dirty",
+          "complete": true,
+          "quest_id": "q-alpha",
+          "type": "slack_thread",
+          "watch_id": "w-q-alpha"
+        },
+        {
+          "advance_to": null,
+          "checker_outcome": "dirty",
+          "complete": true,
+          "quest_id": "q-beta",
+          "type": "slack_thread",
+          "watch_id": "w-q-beta"
+        },
+        {
+          "advance_to": null,
+          "checker_outcome": "dirty",
+          "complete": true,
+          "quest_id": "q-gamma",
+          "type": "slack_thread",
+          "watch_id": "w-q-gamma"
+        }
+      ],
+      "event": "gate_dispatch",
+      "targets": [
+        "q-alpha",
+        "q-beta",
+        "q-gamma"
+      ]
+    },
+    {
+      "backend": "stub",
+      "event": "gate_dispatch_tokens",
+      "input_tokens": 0,
+      "note": "raw tokens; no cost (non-claude backend)",
+      "output_tokens": 0,
+      "targets": "q-beta"
+    },
+    {
+      "acked": 1,
+      "event": "gate_dispatch_success",
+      "targets": [
+        "q-beta"
+      ]
+    },
+    {
+      "backend": "stub",
+      "event": "gate_dispatch_tokens",
+      "input_tokens": 0,
+      "note": "raw tokens; no cost (non-claude backend)",
+      "output_tokens": 0,
+      "targets": "q-gamma"
+    },
+    {
+      "acked": 1,
+      "event": "gate_dispatch_success",
+      "targets": [
+        "q-gamma"
+      ]
+    },
+    {
+      "backend": "stub",
+      "event": "gate_dispatch_tokens",
+      "input_tokens": 0,
+      "note": "raw tokens; no cost (non-claude backend)",
+      "output_tokens": 0,
+      "targets": "q-alpha"
+    },
+    {
+      "acked": 1,
+      "event": "gate_dispatch_success",
+      "targets": [
+        "q-alpha"
+      ]
+    }
+  ],
+  "exit": 0,
+  "planned": [
+    "q-alpha",
+    "q-beta",
+    "q-gamma"
+  ],
+  "quests": {
+    "q-alpha": "active",
+    "q-beta": "active",
+    "q-gamma": "active"
+  },
+  "watches": {
+    "q-alpha/w-q-alpha": "advanced_to_now",
+    "q-beta/w-q-beta": "advanced_to_now",
+    "q-gamma/w-q-gamma": "advanced_to_now"
+  }
+}
