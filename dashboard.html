@@ -201,6 +201,8 @@ input.field-error { border-color:var(--amber); }
 .oi-more { font-size:11px; color:var(--text3); padding:4px 12px 2px; }
 .oi-row .deeplink.icon-only { flex:none; }
 .rc-revising { background:#fdf3e1; border:1px solid #f1dcb6; color:var(--amber); border-radius:7px; padding:8px 11px; font-size:12px; margin-bottom:10px; }
+/* A stuck item is the one thing that should shout: it got here by going quiet. */
+.rc-stalled { background:#fdeaea; border-color:#f2c4c4; color:var(--red); font-weight:600; }
 .rc-revising-note { display:block; margin-top:3px; color:var(--text2); }
 .rc-action-error { background:#fdecec; border:1px solid #f5c6c6; color:#a33; border-radius:7px; padding:8px 11px; font-size:12px; margin-bottom:10px; }
 .review-card.is-revising { opacity:.92; }
@@ -218,6 +220,15 @@ input.field-error { border-color:var(--amber); }
 .qv-prompt-status.err { color:var(--red); }
 .qv-prompt-row .btn-review { margin-left:auto; }
 .card-done { opacity:.3; pointer-events:none; transition:opacity .4s; }
+/* Acted-on card leaves immediately; the undo toast is the safety net. */
+.card-dismissing { opacity:0; transform:translateY(-6px) scale(.985); pointer-events:none; transition:opacity .18s ease, transform .18s ease; }
+#undo-toast { display:flex; align-items:center; gap:14px; margin-top:12px; padding:10px 14px; border:1px solid var(--border); border-radius:10px; background:var(--surface2); font-size:12.5px; color:var(--text2);
+  opacity:0; transform:translateY(4px); pointer-events:none; transition:opacity .18s ease, transform .18s ease; }
+#undo-toast.is-up { opacity:1; transform:none; pointer-events:auto; }
+#undo-toast .ut-label { flex:1; }
+#undo-toast .ut-undo { background:none; border:1px solid var(--border); border-radius:7px; color:var(--accent); font:inherit; font-weight:700; padding:4px 12px; cursor:pointer; }
+#undo-toast .ut-undo:hover:not(:disabled) { border-color:var(--accent); }
+#undo-toast .ut-undo:disabled { opacity:.5; cursor:default; }
 .rc-revisions { background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:11px 14px; margin-bottom:14px; font-size:12.5px; line-height:1.55; }
 .rc-rev-line { color:var(--text2); margin-top:6px; } .rc-rev-line:first-child { margin-top:0; }
 .rc-rev-k { color:var(--accent); font-weight:700; margin-right:8px; text-transform:uppercase; font-size:9.5px; letter-spacing:0.06em; }
@@ -336,6 +347,8 @@ details.fold[open] .fold-caret { transform:rotate(90deg); }
 .queued-status { font-family:var(--mono); font-size:10.5px; color:var(--text3); white-space:nowrap; }
 .queued-row.is-executing { border-left-color:var(--green); }
 .queued-row.is-executing .queued-row-head { cursor:default; }
+.queued-row.is-revising-row { border-left-color:var(--amber,var(--accent)); }
+.queued-ask { padding:8px 12px 10px; font-size:11.5px; color:var(--text3); }
 .queued-age { font-family:var(--mono); font-size:10.5px; color:var(--text3); margin-left:auto; white-space:nowrap; }
 .queued-edit { padding:0 12px 10px; display:none; }
 .queued-row.expanded .queued-edit { display:block; }
@@ -467,6 +480,7 @@ details.fold[open] .fold-caret { transform:rotate(90deg); }
     <div id="review-slides"></div>
     <div id="review-queued"></div>
     <div id="review-empty" class="empty" style="display:none">Nothing waiting for you. All clear.</div>
+    <div id="undo-toast"><span class="ut-label"></span><button class="ut-undo">Undo</button></div>
   </div>
   <div class="section">
     <div class="section-label">approvals log</div>
@@ -665,11 +679,18 @@ function renderMessages(){
     if(queued.length){
       const rows=queued.map(q=>{
         const executing=q.status==='executing';
-        const head=`<div class="queued-row-head"><span class="rc-atype at-${esc(q.action_type||'slack_message')}">${esc(q.action_type||'slack_message')}</span><span class="queued-title">${esc(q.quest_title||q.quest_id||'')}</span><span class="queued-status">${executing?'executing…':'awaiting worker…'}</span><span class="queued-age">${agoSpan(q.executing_at||q.reviewed_at||'')}</span></div>`;
-        const edit=executing?'':`<div class="queued-edit"><textarea data-orig="${esc(q.message_text||'')}">${esc(q.message_text||'')}</textarea><div class="queued-edit-foot"><button class="queued-save" data-id="${esc(q.id||'')}">Save changes</button><span class="queued-save-note"></span></div></div>`;
-        return `<div class="queued-row${executing?' is-executing':''}" data-qid="${esc(q.id||'')}">${head}${edit}</div>`;
+        const revising=q.status==='needs_reply';
+        // Only an approved-but-unclaimed draft is still editable. A worker is
+        // mid-run on `executing`, and is rewriting the text itself on
+        // `needs_reply`, so an edit box on either is a lost edit waiting to happen.
+        const locked=executing||revising;
+        const state=executing?'executing…':(revising?'revising…':'awaiting worker…');
+        const ask=revising&&q.review_note?`<div class="queued-ask">you asked: ${esc(q.review_note)}</div>`:'';
+        const head=`<div class="queued-row-head"><span class="rc-atype at-${esc(q.action_type||'slack_message')}">${esc(q.action_type||'slack_message')}</span><span class="queued-title">${esc(q.quest_title||q.quest_id||'')}</span><span class="queued-status">${state}</span><span class="queued-age">${agoSpan(q.executing_at||q.asked_at||q.reviewed_at||'')}</span></div>`;
+        const edit=locked?ask:`<div class="queued-edit"><textarea data-orig="${esc(q.message_text||'')}">${esc(q.message_text||'')}</textarea><div class="queued-edit-foot"><button class="queued-save" data-id="${esc(q.id||'')}">Save changes</button><span class="queued-save-note"></span></div></div>`;
+        return `<div class="queued-row${locked?' is-executing':''}${revising?' is-revising-row':''}" data-qid="${esc(q.id||'')}">${head}${edit}</div>`;
       }).join('');
-      qd.innerHTML=`<div class="queued-strip"><div class="section-label" style="margin-bottom:8px">queued · awaiting worker <span class="sl-count">${queued.length}</span></div>${rows}</div>`;
+      qd.innerHTML=`<div class="queued-strip"><div class="section-label" style="margin-bottom:8px">in flight · nothing for you to do here <span class="sl-count">${queued.length}</span></div>${rows}</div>`;
       // Toggle expand on head click; save edits
       qd.querySelectorAll('.queued-row-head').forEach(h=>{
         h.addEventListener('click',()=>{
@@ -687,7 +708,7 @@ function renderMessages(){
           if(!txt){ note.textContent='Cannot save empty text.'; return; }
           btn.disabled=true; note.textContent='Saving…';
           try{
-            const r=await fetch(`/api/review/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'edit',message_text:txt})});
+            const r=await fetch(`/api/edit/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message_text:txt})});
             if(!r.ok){ const e=await r.json(); note.textContent='Error: '+(e.error||r.status); btn.disabled=false; return; }
             ta.dataset.orig=txt;
             note.textContent='Saved.';
@@ -714,16 +735,31 @@ function renderMessages(){
 }
 
 // carousel: preserve in-progress edits by patching slides by id + reordering
-let reviewIndex=0, reviewOrder=[], _nextSlideAfterPoll=null;
+let reviewIndex=0, reviewOrder=[];
 function renderReviewQueue(items){
   const cont=document.getElementById('review-slides');
   const pager=document.getElementById('review-pager');
   const nav=document.getElementById('review-nav');
   const empty=document.getElementById('review-empty');
-  const needsCount=msgData?msgData.needs_you.length:0;
+  // An item acted on this tick is gone from the queue before the server agrees;
+  // don't let the next poll flash it back in during the undo window.
+  items=items.filter(i=>!_dismissed.has(i.id));
+  // Where the "other" separator goes. Counted off the surviving items, not off
+  // msgData.needs_you, so a dismissal doesn't shift the divider onto the wrong card.
+  const needsCount=items.filter(isMsgType).length;
   reviewOrder=items.map(i=>i.id);
   document.getElementById('review-count').textContent=items.length?`· ${items.length} item${items.length>1?'s':''}`:'';
-  if(!items.length){ cont.innerHTML=''; pager.innerHTML=''; nav.style.display='none'; empty.style.display=''; return; }
+  if(!items.length){
+    cont.innerHTML=''; pager.innerHTML=''; nav.style.display='none';
+    // "All clear" is a lie when three things are mid-flight. Say what's pending
+    // so a drained carousel never reads as "everything vanished".
+    const inFlight=(msgData&&msgData.queued_items||[]).length;
+    empty.innerHTML=inFlight
+      ? `Queue clear · <b>${inFlight}</b> in flight below.`
+      : 'Nothing waiting for you. All clear.';
+    empty.style.display='';
+    return;
+  }
   empty.style.display='none';
   // patch slides
   const have=new Set([...cont.querySelectorAll('[data-appr-id]')].map(el=>el.dataset.apprId));
@@ -733,15 +769,16 @@ function renderReviewQueue(items){
   reviewOrder.forEach(id=>{
     const it=byId[id];
     const sig=cardSig(it);
+    const hasNext=reviewOrder.indexOf(id)<reviewOrder.length-1;
     if(!have.has(id)){
-      const div=document.createElement('div'); div.className='review-slide'; div.dataset.apprId=id; div.dataset.sig=sig; div.innerHTML=buildCard(it); cont.appendChild(div);
+      const div=document.createElement('div'); div.className='review-slide'; div.dataset.apprId=id; div.dataset.sig=sig; div.innerHTML=buildCard(it,{hasNext}); cont.appendChild(div);
     } else {
       // Reuse the existing card (keeps in-progress edits) UNLESS the server-side
       // data changed — status flip (e.g. revise → needs_reply → worker answered)
       // or a revised draft. Then rebuild so the new state shows and any stuck
       // "Submitting…"/disabled/faded state is cleared.
       const el=cont.querySelector(`[data-appr-id="${CSS.escape(id)}"]`);
-      if(el && el.dataset.sig!==sig){ el.classList.remove('card-done'); el.dataset.sig=sig; el.innerHTML=buildCard(it); }
+      if(el && el.dataset.sig!==sig){ el.classList.remove('card-done'); el.dataset.sig=sig; el.innerHTML=buildCard(it,{hasNext}); }
     }
   });
   reviewOrder.forEach(id=>{ const el=cont.querySelector(`[data-appr-id="${CSS.escape(id)}"]`); if(el) cont.appendChild(el); }); // reorder, keeps inputs
@@ -753,10 +790,11 @@ function renderReviewQueue(items){
   }).join('');
   nav.style.display=items.length>1?'':'none';
   document.getElementById('review-total').textContent=items.length;
-  const target=_nextSlideAfterPoll!==null?_nextSlideAfterPoll:reviewIndex;
-  _nextSlideAfterPoll=null;
-  showSlide(target);
+  // dismissSlide already moved us to the right card; a poll just re-renders under it.
+  showSlide(reviewIndex);
 }
+// Mirrors _MSG_ACTION_TYPES on the server: which approvals are message-shaped.
+function isMsgType(it){ const at=(it&&it.action_type)||'slack_message'; return at==='slack_message'||at==='email_reply'; }
 function shortTitle(it){ return (it.quest_title||it.quest_id||'').replace(/^quest-/,'').replace(/-\d{4}-\d{2}-\d{2}$/,'').slice(0,32); }
 // Server-meaningful signature: rebuild a card only when one of these changes,
 // so local edits survive polls but worker/status updates always render.
@@ -777,9 +815,10 @@ function revisionsBlock(item){
   const lines=h.map(x=>x.from==='reviewer'?`<div class="rc-rev-line"><span class="rc-rev-k">you asked</span>${esc(x.note||'')}</div>`:`<div class="rc-rev-line"><span class="rc-rev-k">yaas</span>${esc(x.reply||'')}</div>`).join('');
   return `<div class="rc-label" style="margin-bottom:8px">revision history</div><div class="rc-revisions">${lines}</div>`;
 }
-function buildCard(item){
+function buildCard(item,opts={}){
+  const hasNext=opts.hasNext!==false;
   const at=item.action_type||'slack_message';
-  const isMsg=(at==='slack_message'||at==='email_reply');
+  const isMsg=isMsgType(item);
   const t=item.target||{};
   const chan=at==='email_reply'?`to: ${esc(t.to||'')}`:(at==='slack_message'?`${esc(t.channel_id||'')}${t.thread_ts?' · thread':' · new thread'}`:esc(t.path||t.channel_id||''));
   const targetRow=`<div class="rc-target"><span class="rc-atype at-${esc(at)}">${esc(at)}</span><span class="rc-chan">${chan}</span>${recLink(item,false)}</div>`;
@@ -795,51 +834,107 @@ function buildCard(item){
   const noteField=isMsg
     ? `<div class="rc-label" style="margin-bottom:6px">review note · instruction for the worker (required to submit for revision)</div><input type="text" data-field="review_note" placeholder='e.g. "make it more polite"  ·  "loop in a teammate too"'>`
     : `<div class="rc-label" style="margin-bottom:6px">revision prompt · tell the worker what to change (required to submit for revision)</div><textarea class="note-field" data-field="review_note" placeholder="what should the worker change?"></textarea>`;
-  const revising=item.status==='needs_reply';
-  // `reviewed` and `executing` stay VISIBLE on purpose (an approval stuck mid-execution
-  // must have a surface), but the server only accepts review/revise/cancel from
-  // pending_review|needs_reply — so rendering live buttons on them produced a card where
-  // every click 409'd silently. Show the state, drop the dead controls.
-  const inFlight=item.status==='reviewed'||item.status==='executing';
-  const flightMsg=item.status==='reviewed'
-    ? 'approved — waiting for a worker to pick it up.'
-    : 'a worker is executing this now.';
-  const stale=item.lease_expires_at && new Date(item.lease_expires_at)<new Date()
-    ? ' <b>Lease expired without a result</b> — the worker likely died mid-run.' : '';
-  const banner=revising
-    ?`<div class="rc-revising">⏳ submitted for revision — the worker will revise and re-surface this for another review. ${item.review_note?`<span class="rc-revising-note">asked: ${esc(item.review_note)}</span>`:''}</div>`
-    :(inFlight?`<div class="rc-revising">🔒 ${flightMsg}${stale} No further review is possible from here.${item.review_note?`<span class="rc-revising-note">you asked: ${esc(item.review_note)}</span>`:''}</div>`:'');
-  const actions=inFlight
-    ? `<button class="btn rc-next" data-nav="1">Next ›</button>`
+  // In-flight items (reviewed / executing / needs_reply) no longer reach the
+  // carousel at all; they live in the in-flight strip below it. The one
+  // exception is a stalled item, promoted back here precisely because nobody is
+  // coming for it, so it gets the single control that can rescue it.
+  const stalled=!!item.stalled&&item.status!=='pending_review';
+  const stallMsg=item.status==='needs_reply'
+    ? 'sent back for revision, but the worker never answered.'
+    : 'the worker took this and died mid-run: the lease expired with no result.';
+  const banner=stalled
+    ?`<div class="rc-revising rc-stalled">⚠ Stuck · ${stallMsg} Reclaim it to put it back in the queue.${item.review_note?`<span class="rc-revising-note">you asked: ${esc(item.review_note)}</span>`:''}</div>`
+    :'';
+  const body=`${ctx}${revisionsBlock(item)}${bodyBlock}`;
+  // A stalled item can't take review/revise/cancel (the server rejects those
+  // from reviewed/executing), so it gets exactly the one action that works.
+  const actions=stalled
+    ? `<button class="btn btn-review btn-reclaim" data-action="reclaim">Reclaim for review</button>
+      ${hasNext?'<button class="btn rc-next" data-nav="1">Next ›</button>':''}`
     : `<button class="btn btn-review" data-action="review">Mark as Reviewed</button>
       <button class="btn btn-revise" data-action="revise">Submit for revision</button>
       <button class="btn btn-cancel" data-action="cancel">Cancel</button>
-      <button class="btn rc-next" data-nav="1">Next ›</button>`;
-  return `<div class="review-card rc-${esc(at)}${revising?' is-revising':''}${inFlight?' is-revising':''}" data-appr-id="${esc(item.id)}">
+      ${hasNext?'<button class="btn rc-next" data-nav="1">Next ›</button>':''}`;
+  return `<div class="review-card rc-${esc(at)}${stalled?' is-revising':''}" data-appr-id="${esc(item.id)}">
     <div class="rc-header"><div><div class="rc-title">${esc(item.quest_title||item.quest_id)}</div>${item.risk_reason?`<div class="rc-risk">${esc(item.risk_reason)}</div>`:''}</div>${agoSpan(item.created_at,'rc-age')}</div>
     ${banner}
     ${targetRow}
-    ${ctx}
-    ${revisionsBlock(item)}
-    ${bodyBlock}
-    ${inFlight?'':`<div class="rc-note-row">${noteField}</div>`}
+    ${body}
+    ${stalled?'':`<div class="rc-note-row">${noteField}</div>`}
     <div class="rc-actions">
       ${actions}
     </div>
   </div>`;
 }
 
-const ACTION_LABELS={review:'Mark as Reviewed',revise:'Submit for revision',cancel:'Cancel'};
+const ACTION_LABELS={review:'Mark as Reviewed',revise:'Submit for revision',cancel:'Cancel',reclaim:'Reclaim for review'};
 function showActionError(card,msg){
   const row=card.querySelector('.rc-actions'); if(!row) return;
   let el=card.querySelector('.rc-action-error');
   if(!el){ el=document.createElement('div'); el.className='rc-action-error'; row.parentNode.insertBefore(el,row); }
   el.textContent='⚠ '+msg;
 }
+// Optimistic dismissal. The card used to sit there until the next poll re-drew
+// it in its new state, so acting on something left it on screen: the exact
+// opposite of the feedback the click should give. Now it leaves immediately and
+// the undo toast carries the safety net.
+const UNDO_MS=6000, DISMISS_MS=180;
+let _dismissed=new Set(), _undoTimer=null;
+const UNDO_LABELS={review:'Approved',revise:'Sent back for revision',cancel:'Cancelled'};
+function dismissSlide(id){
+  _dismissed.add(id);
+  const el=document.querySelector(`#review-slides [data-appr-id="${CSS.escape(id)}"]`);
+  if(el) el.classList.add('card-dismissing');
+  const i=reviewOrder.indexOf(id);
+  if(i>=0) reviewOrder.splice(i,1);
+  // Land on the next card, or the last one if we just cleared the tail.
+  const target=Math.min(i<0?reviewIndex:i,reviewOrder.length-1);
+  setTimeout(()=>{ el?.remove(); renderMessages(); showSlide(target); },DISMISS_MS);
+  showSlide(target);
+}
+function hideToast(){
+  const t=document.getElementById('undo-toast');
+  if(t) t.classList.remove('is-up');
+  if(_undoTimer){ clearTimeout(_undoTimer); _undoTimer=null; }
+}
+function showUndoToast(id,action){
+  const t=document.getElementById('undo-toast'); if(!t) return;
+  t.querySelector('.ut-label').textContent=UNDO_LABELS[action]||'Done';
+  const btn=t.querySelector('.ut-undo');
+  btn.disabled=false; btn.textContent='Undo';
+  btn.onclick=async()=>{
+    btn.disabled=true; btn.textContent='Undoing…';
+    try{
+      const r=await fetch(`/api/undo/${encodeURIComponent(id)}`,{method:'POST'});
+      if(!r.ok){
+        let why=''; try{ why=(await r.json()).error||''; }catch{}
+        t.querySelector('.ut-label').textContent=why||`could not undo (${r.status})`;
+        btn.style.display='none';
+        setTimeout(hideToast,3000);
+        return;
+      }
+    }catch(e){
+      t.querySelector('.ut-label').textContent='could not reach the dashboard server';
+      btn.style.display='none'; setTimeout(hideToast,3000); return;
+    }
+    // Let it back into the queue and re-poll so it reappears as pending.
+    _dismissed.delete(id);
+    hideToast();
+    lastMsgEtag=null; poll();
+  };
+  btn.style.display='';
+  t.classList.add('is-up');
+  if(_undoTimer) clearTimeout(_undoTimer);
+  _undoTimer=setTimeout(()=>{ hideToast(); _dismissed.delete(id); },UNDO_MS);
+}
+
 async function submitReview(card,action){
   if(!card) return;
   const btns=[...card.querySelectorAll('.rc-actions .btn')];
   const active=card.querySelector('.btn-'+action);
+  // Reclaim is the odd one out: it puts a stuck item BACK into the queue, so the
+  // card must stay and redraw as a normal pending review, not fly away.
+  const endpoint=action==='reclaim'?'undo':action;
   const msgField=card.querySelector('[data-field="message_text"]');
   const noteField=card.querySelector('[data-field="review_note"]');
   if(action==='revise' && !noteField?.value.trim()){ noteField?.focus(); noteField?.classList.add('field-error'); setTimeout(()=>noteField?.classList.remove('field-error'),1500); return; }
@@ -847,8 +942,12 @@ async function submitReview(card,action){
   const payload={}; if(msgField) payload.message_text=msgField.value; if(noteField?.value.trim()) payload.review_note=noteField.value.trim();
   try{
     const id=card.closest('[data-appr-id]').dataset.apprId;
-    const r=await fetch(`/api/${action}/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    if(r.ok){ const slide=card.closest('.review-slide')||card; slide.classList.add('card-done'); if(action==='review') _nextSlideAfterPoll=reviewIndex; lastMsgEtag=null; setTimeout(()=>poll(),400); }
+    const r=await fetch(`/api/${endpoint}/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(r.ok){
+      if(action!=='reclaim'){ dismissSlide(id); showUndoToast(id,action); }
+      lastMsgEtag=null;
+      setTimeout(()=>poll(),400);
+    }
     // A rejected action used to just re-enable the buttons, so a 409 (item already
     // reviewed/executing) looked exactly like a click that did nothing. Say why, and
     // re-poll so the card redraws in whatever state the server actually holds.
@@ -995,7 +1094,7 @@ function questPendingCards(id){
 function renderQuestPendingCards(){
   const wrap=document.getElementById('qv-pending'); if(!wrap) return;
   const cards=questPendingCards(openQuestId);
-  wrap.innerHTML=cards.map(c=>`<div class="review-slide is-active" data-appr-id="${esc(c.id)}">${buildCard(c)}</div>`).join('');
+  wrap.innerHTML=cards.map(c=>`<div class="review-slide is-active" data-appr-id="${esc(c.id)}">${buildCard(c,{hasNext:false})}</div>`).join('');
 }
 function watchRow(w){
   const mode=w.watch_mode?`<span class="tag tag-mode">${esc(w.watch_mode)}</span>`:'';
@@ -1098,7 +1197,7 @@ document.addEventListener('click',e=>{
   if(!el) return;
   if(el.dataset.action==='close-quest'){ switchTab('quests'); return; }
   if(el.dataset.action==='close-live'){ closeLive(); return; }
-  if(['review','revise','cancel'].includes(el.dataset.action)){ submitReview(el.closest('.review-card'),el.dataset.action); return; }
+  if(['review','revise','cancel','reclaim'].includes(el.dataset.action)){ submitReview(el.closest('.review-card'),el.dataset.action); return; }
   if(el.dataset.nav!==undefined){ showSlide(reviewIndex+(+el.dataset.nav)); return; }
   if(el.dataset.i!==undefined){ showSlide(+el.dataset.i); return; }
   if(el.dataset.action==='run-prompt'){ runQuestPrompt(el,el.dataset.questId); return; }
