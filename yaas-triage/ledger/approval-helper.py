@@ -36,6 +36,15 @@ write <json>
     or sends the item back. This is done as part of `write` on purpose: an
     approval with no watch is invisible to triage and never re-surfaces.
 
+enqueue-instruction <json>
+    Add a dashboard-authorized manual instruction with status reviewed. Every
+    call creates a distinct item; its generated id is the uniqueness boundary.
+    The next locked tick arms its approval watch. Prints a JSON result.
+
+arm-pending-instructions
+    Arm every queued manual instruction. Called by tick.py only after it has
+    acquired the global triage lock.
+
 start <id>
     Transition status pending_review|reviewed → executing.
     Prints "ok" on success.
@@ -53,6 +62,10 @@ done <id> [response_ts | result_url]
     or — for a Jira comment / GitHub PR comment / Gmail reply — pass the URL of
     the posted reply instead and it is stored as result_url so the dashboard can
     link to it. Prints "ok" on success.
+
+abandon <id> <reason>
+    Terminally cancel an executing manual instruction whose outcome cannot be
+    reconciled safely. This prevents an expired lease from dispatching forever.
 """
 
 import fcntl
@@ -60,6 +73,7 @@ import json
 import os
 import random
 import string
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -120,36 +134,23 @@ def _arm_approval_watch(quest_id: str, approval_id: str):
     gets queued off this path, with no watch, strands in needs_reply). Failure
     here must not lose the already-written approval, so any error is reported to
     stderr and swallowed."""
-    watch_path = _find_watch_json(quest_id)
-    if watch_path is None:
-        # The likeliest arming failure of all, and it returns rather than raising, so
-        # it must flag explicitly or it slips past the except below.
-        print(f"warn:no_watch_json_for_quest:{quest_id}", file=sys.stderr)
-        _flag_unarmed(approval_id, f"no watch.json for quest {quest_id}")
-        return
-    try:
-        with open(watch_path, "r+") as wf:
-            fcntl.flock(wf, fcntl.LOCK_EX)
-            try:
-                wf.seek(0)
-                wdata = json.load(wf)
-                watches = wdata.setdefault("watches", [])
-                if any(w.get("type") == "approval"
-                       and w.get("approval_id") == approval_id for w in watches):
-                    return  # already armed
-                watches.append({
-                    "type":            "approval",
-                    "approval_id":     approval_id,
-                    "last_checked_ts": str(int(datetime.now(timezone.utc).timestamp())),
-                })
-                wf.seek(0)
-                wf.truncate()
-                json.dump(wdata, wf, indent=2)
-            finally:
-                fcntl.flock(wf, fcntl.LOCK_UN)
-    except Exception as e:  # never strand the already-written approval
-        print(f"warn:arm_watch_failed:{approval_id}:{e}", file=sys.stderr)
-        _flag_unarmed(approval_id, str(e))
+    entry = {
+        "type": "approval",
+        "approval_id": approval_id,
+        "last_checked_ts": str(int(datetime.now(timezone.utc).timestamp())),
+        "reason": f"execute reviewed approval {approval_id}",
+    }
+    helper = REPO_ROOT / "yaas-triage" / "ledger" / "add-watch.py"
+    cp = subprocess.run(
+        ["python3", str(helper), quest_id, json.dumps(entry)],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    if cp.returncode == 0:
+        return True
+    reason = (cp.stderr or cp.stdout or "approval watch append failed").strip()[:200]
+    print(f"warn:arm_watch_failed:{approval_id}:{reason}", file=sys.stderr)
+    _flag_unarmed(approval_id, reason)
+    return False
 
 
 def _flag_unarmed(approval_id: str, reason: str):
@@ -204,6 +205,16 @@ def _write_queue(data: dict):
 
 def _uid() -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+
+
+def _new_id(data: dict) -> str:
+    """Mint an existing-style id that is unique within the durable ledger."""
+    existing = {i.get("id") for i in data.get("items", []) if isinstance(i, dict)}
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    while True:
+        approval_id = f"appr-{stamp}-{_uid()}"
+        if approval_id not in existing:
+            return approval_id
 
 
 # Reaction-sourced drafts arrive with quest_id "reactions", which is the fast-path target and
@@ -292,9 +303,8 @@ def cmd_write(payload_json: str):
 
             new_id = None
             now = datetime.now(timezone.utc).isoformat()
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             item = {
-                "id":           f"appr-{stamp}-{_uid()}",
+                "id":           _new_id(data),
                 "quest_id":     quest_id,
                 "quest_title":  payload.get("quest_title", quest_id),
                 "created_at":   now,
@@ -318,6 +328,95 @@ def cmd_write(payload_json: str):
     if new_id:
         _arm_approval_watch(quest_id, new_id)
         print(new_id)
+
+
+def cmd_enqueue_instruction(payload_json: str) -> int:
+    """Persist one operator-authorized instruction without target deduplication.
+
+    The approval watch is armed by `arm-pending-instructions` at the start of the
+    next tick, while that tick owns the global triage lock. Writing watch.json
+    here would race the tick whose lock this queue exists to wait behind.
+    """
+    payload = json.loads(payload_json)
+    quest_id = str(payload.get("quest_id") or "").strip()
+    instruction = str(payload.get("instruction") or "").strip()
+    if not quest_id or not instruction:
+        print("error:quest_id and instruction are required", file=sys.stderr)
+        return 2
+
+    now = datetime.now(timezone.utc).isoformat()
+    with open(_LOCK_FILE, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            data = _read_queue()
+            item = {
+                "id":           _new_id(data),
+                "quest_id":     quest_id,
+                "quest_title":  payload.get("quest_title", quest_id),
+                "created_at":   now,
+                "status":       "reviewed",
+                "action_type":  "manual_instruction",
+                "target":       {},
+                "message_text": instruction,
+                "context":      payload.get("context", "Submitted from the quest dashboard."),
+                "risk_reason":  "",
+                "reviewed_at":  now,
+                "watch_armed":  False,
+                "watch_arm_pending": True,
+            }
+            data.setdefault("items", []).append(item)
+            _write_queue(data)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+    print(json.dumps({"approval_id": item["id"], "queued": True}))
+    return 0
+
+
+def cmd_arm_pending_instructions() -> int:
+    """Arm queued manual instructions while the caller owns the triage lock."""
+    with open(_LOCK_FILE, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            data = _read_queue()
+            pending = [
+                (i.get("id"), i.get("quest_id"))
+                for i in data.get("items", [])
+                if i.get("action_type") == "manual_instruction"
+                and i.get("status") == "reviewed"
+                and i.get("watch_armed") is not True
+            ]
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+    armed_count = cancelled_count = 0
+    for approval_id, quest_id in pending:
+        active_watch = QUESTS_DIR / "active" / str(quest_id) / "watch.json"
+        armed = active_watch.exists() and _arm_approval_watch(str(quest_id), str(approval_id))
+        with open(_LOCK_FILE, "a+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                data = _read_queue()
+                queued = next((i for i in data.get("items", [])
+                               if i.get("id") == approval_id), None)
+                if queued is not None:
+                    if armed:
+                        queued["watch_armed"] = True
+                        queued.pop("watch_arm_pending", None)
+                        queued.pop("watch_arm_error", None)
+                        armed_count += 1
+                    else:
+                        queued["status"] = "cancelled"
+                        queued["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+                        queued["cancel_reason"] = "quest is no longer active or dispatch watch could not be armed"
+                        queued.pop("watch_arm_pending", None)
+                        cancelled_count += 1
+                    _write_queue(data)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    print(json.dumps({"pending": len(pending), "armed": armed_count,
+                      "cancelled": cancelled_count}))
+    return 0 if cancelled_count == 0 else 3
 
 
 def cmd_start(approval_id: str):
@@ -406,6 +505,34 @@ def cmd_done(approval_id: str, response_ts: str | None = None):
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
+def cmd_abandon(approval_id: str, reason: str):
+    reason = reason.strip()
+    if not reason:
+        print("error:reason_required", file=sys.stderr)
+        sys.exit(1)
+    with open(_LOCK_FILE, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            data = _read_queue()
+            item = next((i for i in data.get("items", []) if i.get("id") == approval_id), None)
+            if item is None:
+                print(f"error:not_found:{approval_id}", file=sys.stderr)
+                sys.exit(1)
+            if item.get("action_type") != "manual_instruction":
+                print("error:not_manual_instruction", file=sys.stderr)
+                sys.exit(1)
+            if item.get("status") != "executing":
+                print(f"skip:{item.get('status', 'unknown')}")
+                return
+            item["status"] = "cancelled"
+            item["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+            item["cancel_reason"] = reason[:1000]
+            _write_queue(data)
+            print("ok")
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -414,12 +541,18 @@ def main():
     cmd = sys.argv[1]
     if cmd == "write":
         cmd_write(sys.argv[2])
+    elif cmd == "enqueue-instruction":
+        sys.exit(cmd_enqueue_instruction(sys.argv[2]))
+    elif cmd == "arm-pending-instructions":
+        sys.exit(cmd_arm_pending_instructions())
     elif cmd == "start":
         cmd_start(sys.argv[2])
     elif cmd == "answer":
         cmd_answer(sys.argv[2], sys.argv[3])
     elif cmd == "done":
         cmd_done(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
+    elif cmd == "abandon":
+        cmd_abandon(sys.argv[2], sys.argv[3])
     else:
         print(f"unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)

@@ -228,6 +228,14 @@ That's the entire change. The orchestrator requires no modification — it autod
 
 ## Worker utilities
 
+### `yaas-triage/ledger/approval-helper.py`
+
+Besides ordinary review drafts, the approval ledger carries dashboard-submitted manual quest
+instructions. `enqueue-instruction <json>` durably records one distinct reviewed item without
+touching `watch.json`; `tick.py` calls `arm-pending-instructions` under the global triage lock on
+the next cycle. Workers claim with `start`, close successful work with `done`, and use
+`abandon <id> <reason>` only when an expired manual-instruction lease makes the outcome uncertain.
+
 ### `yaas-triage/skills/yaas-gmail-reply/gmail-reply.py`
 
 Builds a threaded Gmail reply (RFC 2822 `In-Reply-To` + `References` headers) and sends via `gws gmail users messages send`. Used by quests that watch email and need to reply in-thread.

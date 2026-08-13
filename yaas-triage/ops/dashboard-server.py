@@ -686,6 +686,8 @@ def build_open_items() -> dict:
             for i in _read_approvals().get("items", []):
                 if i.get("status") in TERMINAL_APPROVAL_STATUSES:
                     continue
+                if i.get("action_type") == "manual_instruction":
+                    continue
                 t = i.get("target") or {}
                 review.append({
                     "id": i.get("id"), "quest_id": i.get("quest_id"),
@@ -1020,7 +1022,8 @@ def build_dashboard() -> dict:
         try:
             data = _read_approvals()
             pending_review = [i for i in data.get("items", [])
-                              if i.get("status") not in TERMINAL_APPROVAL_STATUSES]
+                              if i.get("status") not in TERMINAL_APPROVAL_STATUSES
+                              and i.get("action_type") != "manual_instruction"]
         except Exception:
             pass
 
@@ -1078,6 +1081,10 @@ def build_messages() -> dict:
 
     needs_you, other_actions = [], []
     for i in pending:
+        # Operator-submitted instructions are already authorized. Show them only
+        # in queued_items below, not as review cards with buttons that must 409.
+        if i.get("action_type") == "manual_instruction":
+            continue
         (needs_you if i.get("action_type", "slack_message") in _MSG_ACTION_TYPES
          else other_actions).append(_approval_card(i))
 
@@ -1324,7 +1331,9 @@ def build_quest_detail(quest_id: str) -> dict | None:
          "action_type": i.get("action_type", "slack_message"),
          "message_text": _clip(i.get("message_text", ""), 2000)}
         for i in appr_data.get("items", [])
-        if i.get("quest_id") == quest_id and i.get("status") not in TERMINAL_APPROVAL_STATUSES
+        if i.get("quest_id") == quest_id
+        and i.get("status") not in TERMINAL_APPROVAL_STATUSES
+        and i.get("action_type") != "manual_instruction"
     ]
 
     commitments = []
@@ -1669,8 +1678,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             payload = {}
 
         parts = [p for p in path.strip("/").split("/") if p]
-        # Expected: ["api", "review" | "revise" | "cancel", "<id>"]
-        if len(parts) == 3 and parts[0] == "api" and parts[1] in ("review", "revise", "cancel"):
+        # Expected: ["api", "review" | "revise" | "edit" | "cancel", "<id>"]
+        if len(parts) == 3 and parts[0] == "api" and parts[1] in ("review", "revise", "edit", "cancel"):
             self._handle_review(parts[2], parts[1], payload)
             return
 
@@ -1682,11 +1691,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_error(404)
 
     def _handle_prompt(self, quest_id: str, payload: dict):
-        """Fire a dashboard-initiated worker run against one quest with a
-        free-text instruction. Spawns manual-dispatch.sh detached; it shares
-        triage's lock (busy → exit 75) and streams into worker-latest.log, which
-        the dashboard's live panel already renders. Returns immediately — the
-        run is watched live, not awaited here."""
+        """Durably queue one operator-authorized instruction for a quest."""
         instruction = (payload.get("instruction") or "").strip()
         if not instruction:
             self._send_json({"error": "instruction is required"}, 400)
@@ -1694,8 +1699,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if len(instruction) > 4000:
             self._send_json({"error": "instruction too long (max 4000 chars)"}, 400)
             return
-        # Guard obvious bad ids here too; manual-dispatch.sh re-validates against
-        # the actual folder and exits 2 if the quest is unknown.
+        # Guard obvious bad ids here too; the helper validates the payload while
+        # this endpoint owns the active-quest requirement.
         if "/" in quest_id or quest_id in ("", ".", ".."):
             self._send_json({"error": "invalid quest id"}, 400)
             return
@@ -1703,25 +1708,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json({"error": "quest not found"}, 404)
             return
 
-        # If a worker is already running (triage tick or a prior manual run), the
-        # shared lock would bounce us — report busy instead of silently queueing.
-        if build_live_run().get("running"):
-            self._send_json({"error": "a worker is already running — try again shortly", "busy": True}, 409)
-            return
-
-        script = SCRIPT_DIR.parent / "dispatch" / "manual-dispatch.sh"
+        quest_dir = STATE_DIR / "quests" / "active" / quest_id
+        title = quest_id
         try:
-            # Detached: don't hold the HTTP connection open for a multi-minute
-            # Opus run. Progress is observed via /api/dashboard live_run.
-            subprocess.Popen(
-                ["bash", str(script), quest_id, instruction],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True, cwd=str(REPO_ROOT),
+            title = json.loads((quest_dir / "meta.json").read_text()).get("title", quest_id)
+        except Exception:
+            pass
+
+        helper = SCRIPT_DIR.parent / "ledger" / "approval-helper.py"
+        request = {
+            "quest_id": quest_id,
+            "quest_title": title,
+            "instruction": instruction,
+            "context": "Submitted directly through the quest dashboard.",
+        }
+        try:
+            cp = subprocess.run(
+                ["python3", str(helper), "enqueue-instruction", json.dumps(request)],
+                capture_output=True, text=True, timeout=10, cwd=str(REPO_ROOT),
             )
         except Exception as e:
-            self._send_json({"error": f"failed to launch dispatch: {e}"}, 500)
+            self._send_json({"error": f"failed to queue instruction: {e}"}, 500)
             return
-        self._send_json({"ok": True, "quest_id": quest_id, "launched": True})
+        try:
+            result = json.loads((cp.stdout or "").strip())
+        except Exception:
+            result = {}
+        if cp.returncode != 0 or not result.get("queued"):
+            self._send_json({
+                "error": "instruction could not be queued",
+                "approval_id": result.get("approval_id"),
+                "detail": (cp.stderr or "").strip()[:300],
+            }, 500)
+            return
+        self._send_json({"ok": True, "queued": True, "quest_id": quest_id,
+                         "approval_id": result["approval_id"]}, 202)
 
     def _handle_review(self, approval_id: str, action: str, payload: dict):
         if not APPROVALS_FILE.exists():
@@ -1788,7 +1809,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             updates = {"status": "cancelled", "cancelled_at": now}
 
         try:
-            item = _update_approval(approval_id, updates)
+            allowed = (("pending_review", "needs_reply", "reviewed")
+                       if action == "cancel" else ("pending_review", "needs_reply"))
+            item = _update_approval(approval_id, updates, from_status=allowed)
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
             return

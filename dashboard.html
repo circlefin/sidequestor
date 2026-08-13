@@ -680,6 +680,7 @@ function renderMessages(){
       const rows=queued.map(q=>{
         const executing=q.status==='executing';
         const revising=q.status==='needs_reply';
+        const manual=q.action_type==='manual_instruction';
         // Only an approved-but-unclaimed draft is still editable. A worker is
         // mid-run on `executing`, and is rewriting the text itself on
         // `needs_reply`, so an edit box on either is a lost edit waiting to happen.
@@ -687,7 +688,8 @@ function renderMessages(){
         const state=executing?'executing…':(revising?'revising…':'awaiting worker…');
         const ask=revising&&q.review_note?`<div class="queued-ask">you asked: ${esc(q.review_note)}</div>`:'';
         const head=`<div class="queued-row-head"><span class="rc-atype at-${esc(q.action_type||'slack_message')}">${esc(q.action_type||'slack_message')}</span><span class="queued-title">${esc(q.quest_title||q.quest_id||'')}</span><span class="queued-status">${state}</span><span class="queued-age">${agoSpan(q.executing_at||q.asked_at||q.reviewed_at||'')}</span></div>`;
-        const edit=locked?ask:`<div class="queued-edit"><textarea data-orig="${esc(q.message_text||'')}">${esc(q.message_text||'')}</textarea><div class="queued-edit-foot"><button class="queued-save" data-id="${esc(q.id||'')}">Save changes</button><span class="queued-save-note"></span></div></div>`;
+        const manualBody=manual?`<div class="queued-ask">${esc(q.message_text||'')}${!executing?`<div class="queued-edit-foot"><button class="queued-cancel" data-id="${esc(q.id||'')}">Cancel instruction</button><span class="queued-save-note"></span></div>`:''}</div>`:'';
+        const edit=manual?manualBody:(locked?ask:`<div class="queued-edit"><textarea data-orig="${esc(q.message_text||'')}">${esc(q.message_text||'')}</textarea><div class="queued-edit-foot"><button class="queued-save" data-id="${esc(q.id||'')}">Save changes</button><span class="queued-save-note"></span></div></div>`);
         return `<div class="queued-row${locked?' is-executing':''}${revising?' is-revising-row':''}" data-qid="${esc(q.id||'')}">${head}${edit}</div>`;
       }).join('');
       qd.innerHTML=`<div class="queued-strip"><div class="section-label" style="margin-bottom:8px">in flight · nothing for you to do here <span class="sl-count">${queued.length}</span></div>${rows}</div>`;
@@ -713,6 +715,17 @@ function renderMessages(){
             ta.dataset.orig=txt;
             note.textContent='Saved.';
             btn.closest('.queued-row').classList.remove('expanded');
+          } catch(e){ note.textContent='Network error.'; btn.disabled=false; }
+        });
+      });
+      qd.querySelectorAll('.queued-cancel').forEach(btn=>{
+        btn.addEventListener('click', async()=>{
+          const note=btn.closest('.queued-ask').querySelector('.queued-save-note');
+          btn.disabled=true; note.textContent='Cancelling…';
+          try{
+            const r=await fetch(`/api/cancel/${encodeURIComponent(btn.dataset.id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+            if(!r.ok){ const e=await r.json(); note.textContent='Error: '+(e.error||r.status); btn.disabled=false; return; }
+            note.textContent='Cancelled.'; lastDashEtag=null; setTimeout(()=>poll(),200);
           } catch(e){ note.textContent='Network error.'; btn.disabled=false; }
         });
       });
@@ -1154,7 +1167,7 @@ function histCard(i){
   const msg=i.message_text||''; const long=msg.length>350||msg.split('\n').length>4;
   const msgHtml=!msg?'':long?`<details class="hist-msg"><summary>message</summary><div class="rc-context" style="margin-top:6px">${esc(msg)}</div></details>`:`<div class="rc-context" style="margin-top:8px">${esc(msg)}</div>`;
   const trail=TRAIL.filter(([k])=>i[k]).map(([k,l])=>`${l} ${feedTime(i[k])}`).join('  ·  ');
-  return `<div class="hist-card"><div class="hist-head">${histStatusBadge(i.status)}<span class="hist-title">${esc(i.quest_title||i.quest_id||'')}</span>${i.human_edited?'<span class="tag tag-draft">edited</span>':''}${recLink(i,false)}${agoSpan(i.created_at,'rc-age')}</div>${msgHtml}${i.review_note?`<div class="hist-line"><span class="hist-k">review note</span>${esc(i.review_note)}</div>`:''}<div class="hist-trail">${esc(trail)}</div></div>`;
+  return `<div class="hist-card"><div class="hist-head">${histStatusBadge(i.status)}<span class="hist-title">${esc(i.quest_title||i.quest_id||'')}</span>${i.human_edited?'<span class="tag tag-draft">edited</span>':''}${recLink(i,false)}${agoSpan(i.created_at,'rc-age')}</div>${msgHtml}${i.review_note?`<div class="hist-line"><span class="hist-k">review note</span>${esc(i.review_note)}</div>`:''}${i.cancel_reason?`<div class="hist-line"><span class="hist-k">cancel reason</span>${esc(i.cancel_reason)}</div>`:''}<div class="hist-trail">${esc(trail)}</div></div>`;
 }
 function runRow(r){
   let res,err=false;
@@ -1215,12 +1228,12 @@ async function runQuestPrompt(btn,id){
   const st=document.getElementById('qv-prompt-status');
   const instruction=(ta&&ta.value||'').trim();
   if(!instruction){ ta&&ta.focus(); return; }
-  btn.disabled=true; ta.disabled=true; st.className='qv-prompt-status'; st.textContent='launching…';
+  btn.disabled=true; ta.disabled=true; st.className='qv-prompt-status'; st.textContent='queueing…';
   try{
     const r=await fetch(`/api/prompt/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction})});
     const d=await r.json().catch(()=>({}));
-    if(r.ok){ st.textContent='running — watch the live panel'; ta.value=''; lastDashEtag=null; setTimeout(()=>poll(),600); }
-    else { st.className='qv-prompt-status err'; st.textContent=(d.busy?'busy: ':'')+(d.error||('error '+r.status)); }
+    if(r.ok){ st.textContent='queued — runs when the current worker finishes'; ta.value=''; lastDashEtag=null; setTimeout(()=>poll(),600); }
+    else { st.className='qv-prompt-status err'; st.textContent=d.error||('error '+r.status); }
   }catch{ st.className='qv-prompt-status err'; st.textContent='request failed'; }
   finally{ btn.disabled=false; ta.disabled=false; }
 }

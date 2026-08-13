@@ -489,6 +489,15 @@ def run_tick(t):
     # tick start stamp (health-monitor watches started-vs-completed)
     t._bump_state(tick_started_utc=t.now_utc)
 
+    # Dashboard instructions are written to the approval ledger immediately, even
+    # while a previous tick owns the global lock. Arm their watches only now, under
+    # this tick's lock, so no concurrent watermark/housekeeping write can erase an
+    # append made from the dashboard process.
+    cp = t.run(t.py(t.helper("ledger", "approval-helper.py"),
+                    "arm-pending-instructions"))
+    if cp.returncode != 0:
+        t.log(f"MANUAL QUEUE ARM FAILED — {(cp.stderr or cp.stdout or '').strip()[:300]}")
+
     # Nothing this tick does works without a network, and everything it does when the network
     # is missing is harmful: checkers fail, dispatches burn ~3 minutes each reaching nothing,
     # and every dispatched watch takes a no-progress strike it did not earn. So the offline

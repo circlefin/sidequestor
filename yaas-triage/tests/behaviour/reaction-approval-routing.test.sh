@@ -52,6 +52,7 @@ eq()  { [ "$2" = "$3" ] && ok "$1" || bad "$1 (want $3, got $2)"; }
 # Isolated repo tree with the real ledger + checkers.
 REPO="$TMP/repo"; mkdir -p "$REPO/yaas-triage/ledger" "$REPO/yaas-triage/checkers" "$REPO/state/quests/active"
 cp "$SCRIPT_DIR/ledger/approval-helper.py" "$REPO/yaas-triage/ledger/"
+cp "$SCRIPT_DIR/ledger/add-watch.py" "$REPO/yaas-triage/ledger/"
 [ -f "$SCRIPT_DIR/ledger/approval.py" ] && cp "$SCRIPT_DIR/ledger/approval.py" "$REPO/yaas-triage/ledger/" 2>/dev/null
 cp "$SCRIPT_DIR/checkers/approval.py" "$SCRIPT_DIR/checkers/result.py" "$REPO/yaas-triage/checkers/"
 

@@ -229,7 +229,7 @@ in a file; nothing else changes.
 | `github_pr` | PR activity — a PR review does **not** bump the linked Jira, hence both |
 | `github_issue` | issue activity in a repo (create, comment, label, close); excludes PRs |
 | `schedule` | a cron expression or a one-shot time came due |
-| `approval` | a human reviewed a queued draft |
+| `approval` | a human reviewed a queued draft, or a dashboard instruction is ready |
 
 Every one returns the same contract:
 
@@ -261,6 +261,13 @@ Every one returns the same contract:
                                ▼
                              SEND
 ```
+
+Dashboard instructions use the same durable approval ledger but skip the human-review state:
+the operator already authorized the instruction by submitting it. The dashboard writes a
+`manual_instruction` item as `reviewed`; the next tick, while holding the global triage lock,
+arms its approval watch and dispatches it through the normal ack and lease lifecycle. Each
+submission has its own generated approval id. An expired execution lease is cancelled as
+outcome-uncertain rather than replaying arbitrary work blindly.
 
 The 24h rule matters most. After any pause the checkers hand the worker the **oldest** unread
 slice first (§3), so without it the agent answers a week-old question and then walks forward
@@ -321,7 +328,7 @@ yaas-triage/
 ├── dispatch/       "RUN A WORKER"
 │   ├── run-agent.py              one invocation: watchdog, log tee, kill tree
 │   ├── dispatch-agent.sh         backend-agnostic (claude / codex / cursor)
-│   ├── manual-dispatch.sh        a dashboard-initiated run with an instruction
+│   ├── manual-dispatch.sh        legacy direct-run utility; dashboard instructions use the approval queue
 │   ├── format|translate-stream   event stream → transcript / common facts
 │   ├── extract-tokens.py         cost and token counts
 │   ├── slack-read-health.py      did worker Slack access recover after an outage?

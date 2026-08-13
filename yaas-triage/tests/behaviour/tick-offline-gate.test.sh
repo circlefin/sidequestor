@@ -122,7 +122,7 @@ cp "$SCRIPT_DIR/tick.py" "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR/tick_check.py"
 cp "$SCRIPT_DIR/ledger/ensure-watch-ids.py" "$SCRIPT_DIR/ledger/ack-watch.py" \
    "$SCRIPT_DIR/ledger/checker-health.py" "$SCRIPT_DIR/ledger/watch-guard.py" \
    "$SCRIPT_DIR/ledger/commit.py" "$SCRIPT_DIR/ledger/housekeep.py" \
-   "$SCRIPT_DIR/ledger/approval-helper.py" "$TRIAGE/ledger/"
+   "$SCRIPT_DIR/ledger/approval-helper.py" "$SCRIPT_DIR/ledger/add-watch.py" "$TRIAGE/ledger/"
 cp "$SCRIPT_DIR/dispatch/slack-read-health.py" "$SCRIPT_DIR/dispatch/spend-window.py" \
    "$SCRIPT_DIR/dispatch/run-agent.py" "$SCRIPT_DIR/dispatch/plan.py" "$TRIAGE/dispatch/"
 cp "$SCRIPT_DIR/checkers/result.py" "$SCRIPT_DIR/checkers/approval.py" "$TRIAGE/checkers/"

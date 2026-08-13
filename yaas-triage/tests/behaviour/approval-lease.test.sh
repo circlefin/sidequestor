@@ -47,6 +47,7 @@ eq()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; f
 REPO="$TMP/repo"
 mkdir -p "$REPO/yaas-triage/checkers" "$REPO/yaas-triage/ledger" "$REPO/yaas-triage/ops" "$REPO/state/quests/active/q1"
 cp "$SCRIPT_DIR/ledger/approval-helper.py" "$REPO/yaas-triage/ledger/"
+cp "$SCRIPT_DIR/ledger/add-watch.py" "$REPO/yaas-triage/ledger/"
 cp "$SCRIPT_DIR/checkers/approval.py" "$SCRIPT_DIR/checkers/result.py" "$REPO/yaas-triage/checkers/"
 printf '{"watches":[]}\n' > "$REPO/state/quests/active/q1/watch.json"
 cd "$REPO" || exit 1

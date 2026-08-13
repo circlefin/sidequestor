@@ -55,6 +55,7 @@ REPO="$TMP/repo"; TRI="$REPO/yaas-triage"
 mkdir -p "$TRI/surfaces" "$TRI/ledger" "$REPO/state/quests/active/q-demo"
 cp "$SCRIPT_DIR/surfaces/slack-send.py" "$TRI/surfaces/"
 cp "$SCRIPT_DIR/ledger/approval-helper.py" "$TRI/ledger/"
+cp "$SCRIPT_DIR/ledger/add-watch.py" "$TRI/ledger/"
 [ -f "$SCRIPT_DIR/approval.py" ] && cp "$SCRIPT_DIR/approval.py" "$TRI/"
 for f in meta.json watch.json context.md timeline.ndjson; do : > "$REPO/state/quests/active/q-demo/$f"; done
 printf '{"id":"q-demo","title":"Demo","status":"active","allow_send":true}\n' \

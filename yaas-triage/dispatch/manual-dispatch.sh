@@ -15,9 +15,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# manual-dispatch.sh — run one dashboard-initiated worker dispatch against a
-# single quest with a free-text instruction, WITHOUT waiting for Slack/email
-# activity. Shares the original shell orchestrator's single-instance lock (logs/triage.lock) so a
+# manual-dispatch.sh — legacy utility for running one direct worker dispatch
+# against a single quest with a free-text instruction, WITHOUT waiting for
+# Slack/email activity. Dashboard instructions now use the durable approval
+# queue. This utility shares the original shell orchestrator's single-instance lock (logs/triage.lock) so a
 # manual run and a triage tick can never race on watch.json, and reuses the
 # exact worker-latest.log streaming pipeline so the dashboard's existing live
 # panel shows progress with no extra wiring.
