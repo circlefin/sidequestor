@@ -302,7 +302,8 @@ state/quests/active/<quest_id>/
 ├── context.md        why this exists, and the decision rules   (worker reads FIRST)
 ├── meta.json         status, priority, allow_send
 ├── watch.json        the watermarks       ← tick.py owns; a worker may only APPEND
-└── timeline.ndjson   append-only log of every action taken
+└── timeline.ndjson   append-only log of every action taken (written by the surfaces,
+                       never by hand: the worker has no clock to stamp `ts` with)
 ```
 
 Lifecycle: `active/` → `completed/` or `archived/`. A quest is a folder. No database, no schema
@@ -348,7 +349,8 @@ yaas-triage/
 ├── surfaces/       "TALK TO THE OUTSIDE"
 │   ├── client.py                 the ONE HTTP client: Slack MCP, Slack Web, Jira
 │   ├── mcp|jira|react .sh        named doors the worker knocks on → client.py
-│   └── slack-send.py             send/draft + log the body + the stale-reply guard
+│   ├── slack-send.py             send/draft + log the body + the stale-reply guard
+│   └── log-event.py              append any other timeline entry, stamped by the clock
 │
 ├── ops/            "KEEP IT ALIVE AND VISIBLE"
 │   ├── health-monitor.py         the dead-man switch, runs OUTSIDE triage

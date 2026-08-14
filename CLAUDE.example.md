@@ -42,6 +42,9 @@ you're mid-conversation about it. These rules keep the two coherent and apply in
    - review queue → `yaas-triage/ledger/approval-helper.py`
    - reaction emojis → `yaas-triage/surfaces/react-lifecycle.py advance`
    - Slack sends (auto-logged) → `yaas-triage/surfaces/slack-send.py`
+   - every other timeline entry → `yaas-triage/surfaces/log-event.py` — it stamps `ts` from the
+     clock; never hand-write the line, because a worker has no clock and its guessed stamp lands
+     hours off and sometimes in the future
 3. **Don't act on a quest the loop is mid-handling.** A tick holds a flock and writes a
    `state/triage/dispatch-*.json` manifest while a worker runs. In Mode B, before sending into a
    watched thread or editing a quest's `context.md` / `meta.json`, confirm there's no in-flight

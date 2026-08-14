@@ -20,7 +20,7 @@ Reactions are their own dispatch target, **handled independently from quests**. 
 | `process` | The user's "process this" trigger. Research the thread, reply in-thread with `slack_send_message` + `thread_ts`. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/claude_intensifies_replied.json` |
 | `draft` | Research, create a draft via `slack_send_message_draft` (never send). Drive the reaction lifecycle as you go (see § Reaction lifecycle). If draft fails with `mcp_externally_shared_channel_restricted`, save the draft to the actual target thread (with `channel_id` + `thread_ts`), then DM the user only the permalink to that thread — not the draft text. They'll open the thread, edit the draft in the compose box, and send it themselves. | `state/writing_hand_replied.json` |
 | `save` | Save context silently to `state/context-memory/` (see § Context memory). Do not reply. No lifecycle (one-shot, no emoji swaps). | `state/floppy_disk_saved.json` |
-| `adopt` | Adopt the message into its owning quest: find the active quest watching this channel/thread, append a `slack_thread` watch on it, log to that quest's `timeline.ndjson`. Do not reply. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/incoming_envelope_adopted.json` |
+| `adopt` | Adopt the message into its owning quest: find the active quest watching this channel/thread, append a `slack_thread` watch on it, log to that quest's timeline with `log-event.py` (never hand-write the line: it stamps the real UTC time, which you cannot know). Do not reply. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/incoming_envelope_adopted.json` |
 
 ### Reaction lifecycle (action reactions)
 

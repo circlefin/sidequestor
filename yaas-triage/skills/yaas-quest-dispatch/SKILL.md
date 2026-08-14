@@ -23,7 +23,7 @@ You may:
 - **Read** `watch.json` (to know what to re-query)
 - **Append new entries** to `watch.json` `watches[]` — never modify existing ones
 - **Write** `meta.json` (to change quest status / priority)
-- **Append** to `timeline.ndjson` (to log actions)
+- **Append** to `timeline.ndjson` via `log-event.py` (to log actions)
 - **Write or edit** `context.md` (to update narrative)
 - **Move** the quest folder (`active/` → `completed/` or `archived/`)
 
@@ -39,7 +39,7 @@ state/quests/active/<quest_id>/
 ├── context.md      ← why this quest exists + state      (you may write)
 ├── meta.json       ← status, priority, allow_send       (you may write)
 ├── watch.json      ← watermarks — READ ONLY for you     (the orchestrator owns)
-└── timeline.ndjson ← append-only log of prior actions   (you append)
+└── timeline.ndjson ← append-only log of prior actions   (append via log-event.py)
 ```
 
 **Default: read only `context.md`.** It tells you the objective and the per-quest decision rules. That is usually enough to know what to do with the new activity.
@@ -93,7 +93,7 @@ So a reviewer question, a correction, or a one-line fix is **never** blocked by 
 
 Based on the quest's `context.md`, the watch type that fired, and the new content, decide:
 
-- **Someone replied to a tracked thread** → evaluate whether the quest's objective is met. If yes, update `meta.json` status to `completed`. If not, decide if you need to reply, escalate, or keep waiting. Log to `timeline.ndjson`.
+- **Someone replied to a tracked thread** → evaluate whether the quest's objective is met. If yes, update `meta.json` status to `completed`. If not, decide if you need to reply, escalate, or keep waiting. Log it with `log-event.py`.
 - **A DM arrived from a watched partner** → read the thread context, compose a response (draft first unless quest explicitly authorizes `allow_send`), log action.
 - **A new top-level message in a watched channel** → apply the quest's `context.md` decision rules. If the common fast-path is "log and ignore," just exit without any file edits.
 - **A new email matching a watched query** → read the full message, apply the quest's `context.md` decision rules. **Always acknowledge the email** with a reply (via `yaas-triage/skills/yaas-gmail-reply/gmail-reply.py`) before or immediately after taking action — even if the action is just "request submitted, will follow up." Exception: bulk, automated, or notification emails where a human reply would be inappropriate. Log `info_received` or `message_sent` to `timeline.ndjson`.
@@ -142,7 +142,7 @@ When you post into an internal routing or expert channel to request help on beha
 
 **When triage fires on a `read_only` watch:**
 1. Read the new replies and update `context.md` with the latest state.
-2. Log to `timeline.ndjson`.
+2. Log it with `log-event.py` (§4).
 3. Do NOT post back into the thread. No follow-ups, no re-summaries, no "thanks."
 4. **Exception:** a human in the thread asks you a direct question by name. One reply is appropriate.
 5. **If a resolution arrives:** draft the relay message to the customer, but do NOT post it in the escalation thread. Log `draft_posted` to `timeline.ndjson` and surface under Attention needed in the Output Contract.
@@ -167,7 +167,8 @@ APPR_ID=$(python3 yaas-triage/ledger/approval-helper.py write \
     "message_text":"...","context":"...","risk_reason":"..."}')
 ```
 
-`write` also arms the `approval` watch in the same call, which is why it is the only supported path (Edit/Write on `pending-approvals.json` is blocked by a hook): an approval with no watch is invisible to triage and strands forever. If `APPR_ID` is non-empty, log `draft_posted` with `"approval_id": "$APPR_ID"` to `timeline.ndjson`. Do NOT add a `slack_thread` watch — see §3a exception.
+`write` also arms the `approval` watch in the same call, which is why it is the only supported path (Edit/Write on `pending-approvals.json` is blocked by a hook): an approval with no watch is invisible to triage and strands forever. If `APPR_ID` is non-empty, log it with
+`log-event.py '{"quest_id":"<qid>","event":"draft_posted","approval_id":"'"$APPR_ID"'"}'`. Do NOT add a `slack_thread` watch — see §3a exception.
 
 **Executing a reviewed item — when dispatched for a quest and you find `status: "reviewed"`:**
 
@@ -213,11 +214,20 @@ submit a fresh instruction after checking the outcome.
 
 ### 4. Log everything to timeline.ndjson
 
-Append one line per action:
+Append one line per action **through `log-event.py`**. Never hand-write the JSON
+line, and never write a `ts` yourself: you have no clock. Your context carries a
+local date with no time of day, so a hand-written stamp lands hours off and, when
+the local date is ahead of UTC, in the future — which sorts a finished action above
+everything real on the dashboard. The helper stamps the true UTC time for you.
 
+```bash
+python3 yaas-triage/surfaces/log-event.py '{"quest_id":"<qid>","event":"note","note":"<what happened>"}'
 ```
-{"ts":"<utc_iso>", "event":"<draft_posted|message_sent|executed|info_received|status_change|note|blocked>", "...":"..."}
-```
+
+`event` is one of `message_sent`, `draft_posted`, `executed`, `info_received`,
+`status_change`, `note`, `blocked`. Any other key you pass (`channel_id`,
+`thread_ts`, `message_text`, `link_url`, `reason`, …) is written through unchanged,
+so record whatever the event needs. A `ts` you pass is ignored.
 
 **Send Slack messages through `slack-send.py` so the body is logged automatically.** For any quest send or draft, use the helper instead of calling `slack_send_message` / `slack_send_message_draft` (native or via `mcp-call.sh`) and then logging separately:
 
@@ -228,7 +238,9 @@ python3 yaas-triage/surfaces/slack-send.py '{"quest_id":"<qid>","channel_id":"C.
 
 It sends (or drafts), then appends a timeline entry carrying the exact `message_text`, `response_ts`, `permalink`, and your `note` in one step, and prints `{"response_ts":...,"permalink":...}` for the follow-up `watch.json` entry (§3a). If the send fails nothing is logged. This makes body-capture structural rather than something you have to remember.
 
-**The underlying rule (why the helper matters):** the dashboard surfaces a message only when its timeline event carries a `message_text` field. A `note` summary alone shows in the full timeline but not in the Messages stream or the quest Conversation. If you ever log a send by hand (any `message_sent` / `reply_sent` / `dm_sent` / `executed`(slack or email) / `email_replied` event), you MUST include the exact text as `message_text` alongside `note` + `permalink` + `response_ts`. This applies to Reactions Fast Path replies too. (Drafts routed through the approval queue already carry their body in `pending-approvals.json`, so a `draft_posted` with an `approval_id` needs no `message_text`.)
+**The underlying rule (why the helper matters):** the dashboard surfaces a message only when its timeline event carries a `message_text` field. A `note` summary alone shows in the full timeline but not in the Messages stream or the quest Conversation. So for any reply event (`message_sent` / `reply_sent` / `dm_sent` / `executed` (slack or email) / `email_replied`) the entry MUST carry the exact text as `message_text` alongside `note` + `permalink` + `response_ts`. This applies to Reactions Fast Path replies too. (Drafts routed through the approval queue already carry their body in `pending-approvals.json`, so a `draft_posted` with an `approval_id` needs no `message_text`.)
+
+**Never write the NDJSON line yourself, for any event.** Slack goes through `slack-send.py`, everything else through `log-event.py`; pass `message_text` to the helper rather than hand-rolling an entry around it. A hand-written line carries a `ts` you invented, and you have no clock: your context holds a local date with no time of day, so the stamp lands hours off and, when that date runs ahead of UTC, in the future — which sorts a finished action above everything real on the dashboard and pins it there.
 
 **Non-Slack replies need their own link fields.** The dashboard renders an "open in <surface>" chip next to every logged reply, and it builds that link from what you log. So when a reply lands somewhere other than Slack, log the identifiers:
 
