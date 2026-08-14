@@ -16,7 +16,9 @@ cp "$HERE/ledger/approval-helper.py" "$HERE/ledger/add-watch.py" "$REPO/yaas-tri
 cp "$HERE/skills/yaas-quest-creation/new-quest.py" "$REPO/yaas-triage/skills/yaas-quest-creation/"
 mkdir -p "$REPO/yaas-triage/checkers"
 cp "$HERE"/checkers/*.py "$HERE"/checkers/*.watch.json "$REPO/yaas-triage/checkers/"
+# "/" serves v2 now, so the shell needs both files present to issue a cookie.
 cp "$HERE/../dashboard.html" "$REPO/dashboard.html"
+cp "$HERE/../dashboard-v2.html" "$REPO/dashboard-v2.html"
 printf '%s\n' '{"id":"q-prompt","title":"Prompt quest"}' > "$REPO/state/quests/active/q-prompt/meta.json"
 printf '%s\n' '{"watches":[{"type":"slack_thread","channel_id":"C1","thread_ts":"1.0","last_checked_ts":"1","reason":"route fixture"}]}' > "$REPO/state/quests/active/q-prompt/watch.json"
 cd "$REPO" || exit 1

@@ -10,7 +10,7 @@ REPO="$TMP/repo"
 mkdir -p "$REPO/yaas-triage/ops" "$REPO/yaas-triage/ledger" "$REPO/yaas-triage/checkers" "$REPO/yaas-triage/skills/yaas-quest-creation" "$REPO/state/quests/active/q-control"
 cp "$HERE/ops/dashboard-server.py" "$REPO/yaas-triage/ops/"
 cp "$HERE/tick_state.py" "$HERE/tick_check.py" "$HERE/approval_state.py" "$HERE/approval_store.py" "$REPO/yaas-triage/"
-cp "$HERE/ledger/approval-helper.py" "$REPO/yaas-triage/ledger/"
+cp "$HERE/ledger/approval-helper.py" "$HERE/ledger/add-watch.py" "$REPO/yaas-triage/ledger/"
 cp "$HERE/skills/yaas-quest-creation/new-quest.py" "$REPO/yaas-triage/skills/yaas-quest-creation/"
 cp "$HERE"/checkers/*.py "$HERE"/checkers/*.watch.json "$REPO/yaas-triage/checkers/"
 cp "$HERE/../dashboard.html" "$HERE/../dashboard-v2.html" "$REPO/"
@@ -49,6 +49,7 @@ done
 python3 - "$PORT" <<'PY'
 import http.client
 import json
+import pathlib
 import sys
 
 port = int(sys.argv[1])
@@ -79,7 +80,9 @@ def post(path, payload, cookie):
     conn.close()
     return resp.status, result
 
-for path, marker in (("/", "Sidequestor"), ("/v2", "Quest Control")):
+# v2 is the default surface now; v1 stays reachable at /v1. Keep /v2 last so
+# the v2-only assertions below read the right body.
+for path, marker in (("/v1", "Sidequestor"), ("/", "review-dialog"), ("/v2", "review-dialog")):
     status, body, cookie = request(path)
     assert status == 200, (path, status, body)
     assert marker in body, (path, marker)
@@ -150,6 +153,39 @@ assert reclaimed["stalled"] is False and reclaimed["lease_expires_at"] is None, 
 status, body, _ = request("/api/quest/q-control", cookie)
 assert status == 200, (status, body)
 assert json.loads(body)["context_md"].startswith("# Control fixture"), body
+
+# An approval watch is one-shot: a worker consumes it once the item is acted on.
+# Undo, reclaim, or a second review therefore used to leave the item in play with
+# nothing watching it, so triage never dispatched and it sat at "reviewed" forever
+# while the dashboard reported it queued. Every non-terminal transition must
+# re-arm the watch, and add-watch dedups, so re-arming twice adds only one.
+def approval_watches(quest="q-control"):
+    st, bd, _ = request("/api/quest/" + quest, cookie)
+    assert st == 200, (st, bd)
+    return [w for w in json.loads(bd)["watches"]
+            if w.get("type") == "approval" and w.get("approval_id") == "appr-review"]
+
+# Strip the watch to reproduce what a worker leaves behind once it consumes the
+# one-shot entry.
+watch_path = pathlib.Path("state/quests/active/q-control/watch.json")
+data = json.loads(watch_path.read_text())
+data["watches"] = [w for w in data["watches"] if w.get("approval_id") != "appr-review"]
+watch_path.write_text(json.dumps(data))
+assert approval_watches() == [], approval_watches()
+
+status, body = post("/api/undo/appr-review", {}, cookie)
+assert status == 200 and json.loads(body)["status"] == "pending_review", (status, body)
+assert json.loads(body)["watch_armed"] is True, body
+assert len(approval_watches()) == 1, approval_watches()
+
+status, body = post("/api/review/appr-review", {}, cookie)
+assert status == 200 and json.loads(body)["status"] == "reviewed", (status, body)
+assert len(approval_watches()) == 1, approval_watches()
+
+# A terminal transition arms nothing: there is no further work to dispatch.
+status, body = post("/api/cancel/appr-cancel", {}, cookie)
+assert status == 200 and json.loads(body)["status"] == "cancelled", (status, body)
+assert json.loads(body)["watch_armed"] is False, body
 
 status, body = post("/api/quests", {
     "title": "Review customer feedback",

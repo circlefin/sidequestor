@@ -24,7 +24,7 @@ Usage:
     python3 dashboard-server.py [port]   (default: 8877)
 
 Endpoints:
-    GET  /                    → dashboard.html
+    GET  /                    → dashboard-v2.html (v1 at /v1)
     GET  /api/dashboard       → live JSON snapshot of all quest state
     GET  /state/<path>        → raw state file
     POST /api/review/<id>     → mark item reviewed (optionally with edits)
@@ -1581,6 +1581,50 @@ def build_history() -> dict:
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
+def _ensure_approval_watch(item: dict) -> bool:
+    """Re-arm the `approval` watch for a non-terminal item.
+
+    The watch is one-shot: a worker consumes and acks it once the item is
+    acted on. Any transition that puts the item back in play (undo, reclaim,
+    or a second review after an undo) therefore leaves it with no watch at
+    all, so triage cannot see it and it sits at `reviewed` forever while the
+    dashboard cheerfully reports it queued. add-watch.py dedups on
+    approval_id, so calling this on every transition is free when a watch is
+    already there.
+
+    Never raises: losing the transition because re-arming failed would be
+    worse than an unwatched item, which the stranded-watch sweep still
+    catches. Returns whether a watch is known to be in place.
+    """
+    status = item.get("status")
+    quest_id = item.get("quest_id") or ""
+    approval_id = item.get("id") or ""
+    if status in TERMINAL_APPROVAL_STATUSES or not quest_id or not approval_id:
+        return False
+    if not (STATE_DIR / "quests" / "active" / quest_id).is_dir():
+        return False
+    entry = {
+        "type": "approval",
+        "approval_id": approval_id,
+        "last_checked_ts": str(int(datetime.now(timezone.utc).timestamp())),
+        "reason": f"execute reviewed approval {approval_id}",
+    }
+    try:
+        cp = subprocess.run(
+            ["python3", str(SCRIPT_DIR.parent / "ledger" / "add-watch.py"),
+             quest_id, json.dumps(entry)],
+            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=20,
+        )
+    except Exception as exc:
+        print(f"warn:rearm_watch_failed:{approval_id}:{exc}", file=sys.stderr, flush=True)
+        return False
+    if cp.returncode == 0:
+        return True
+    reason = (cp.stderr or cp.stdout or "add-watch failed").strip()[:200]
+    print(f"warn:rearm_watch_failed:{approval_id}:{reason}", file=sys.stderr, flush=True)
+    return False
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
@@ -1683,12 +1727,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(403, "forbidden host")
             return
 
-        # Bootstrap route: unauthenticated, issues the session cookie.
-        if path in ("/", "/index.html"):
-            self._serve_dashboard()
-            return
-        if path in ("/v2", "/dashboard-v2.html"):
+        # Bootstrap route: unauthenticated, issues the session cookie. v2 is the
+        # default surface; v1 stays reachable at /v1 as a fallback while it is
+        # still the one with a longer track record.
+        if path in ("/", "/index.html", "/v2", "/dashboard-v2.html"):
             self._serve_dashboard(DASHBOARD_V2_HTML)
+            return
+        if path in ("/v1", "/dashboard.html"):
+            self._serve_dashboard(DASHBOARD_HTML)
             return
 
         # Everything else (state + APIs) requires the cookie.
@@ -1919,50 +1965,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "initial_run_at": initial_run_ts,
         }, 201)
 
-    @staticmethod
-    def _ensure_approval_watch(item: dict) -> bool:
-        """Re-arm the `approval` watch for a non-terminal item.
-
-        The watch is one-shot: a worker consumes and acks it once the item is
-        acted on. Any transition that puts the item back in play (undo, reclaim,
-        or a second review after an undo) therefore leaves it with no watch at
-        all, so triage cannot see it and it sits at `reviewed` forever while the
-        dashboard cheerfully reports it queued. add-watch.py dedups on
-        approval_id, so calling this on every transition is free when a watch is
-        already there.
-
-        Never raises: losing the transition because re-arming failed would be
-        worse than an unwatched item, which the stranded-watch sweep still
-        catches. Returns whether a watch is known to be in place.
-        """
-        status = item.get("status")
-        quest_id = item.get("quest_id") or ""
-        approval_id = item.get("id") or ""
-        if status in TERMINAL_APPROVAL_STATUSES or not quest_id or not approval_id:
-            return False
-        if not (STATE_DIR / "quests" / "active" / quest_id).is_dir():
-            return False
-        entry = {
-            "type": "approval",
-            "approval_id": approval_id,
-            "last_checked_ts": str(int(datetime.now(timezone.utc).timestamp())),
-            "reason": f"execute reviewed approval {approval_id}",
-        }
-        try:
-            cp = subprocess.run(
-                ["python3", str(SCRIPT_DIR.parent / "ledger" / "add-watch.py"),
-                 quest_id, json.dumps(entry)],
-                capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=20,
-            )
-        except Exception as exc:
-            print(f"warn:rearm_watch_failed:{approval_id}:{exc}", file=sys.stderr, flush=True)
-            return False
-        if cp.returncode == 0:
-            return True
-        reason = (cp.stderr or cp.stdout or "add-watch failed").strip()[:200]
-        print(f"warn:rearm_watch_failed:{approval_id}:{reason}", file=sys.stderr, flush=True)
-        return False
-
     def _handle_review(self, approval_id: str, action: str, payload: dict):
         if not APPROVALS_FILE.exists():
             self._send_json({"error": "pending-approvals.json not found"}, 404)
@@ -1993,7 +1995,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json({"error": self._approval_conflict_message(action)}, 409)
             return
 
-        rearmed = self._ensure_approval_watch(item)
+        rearmed = _ensure_approval_watch(item)
         self._send_json({"ok": True, "status": item["status"], "watch_armed": rearmed})
 
 

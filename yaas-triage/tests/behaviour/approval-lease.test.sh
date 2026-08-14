@@ -149,7 +149,7 @@ else
   ok "no allowlist filters remain — anything non-terminal renders"
 fi
 eq "every filter site uses the shared constant" \
-   "$(grep -c 'TERMINAL_APPROVAL_STATUSES' "$SCRIPT_DIR/ops/dashboard-server.py")" "5"
+   "$(grep -c 'TERMINAL_APPROVAL_STATUSES' "$SCRIPT_DIR/ops/dashboard-server.py")" "6"
 
 echo
 echo "── an approval whose watch could not be armed is not silent ───────────────"
