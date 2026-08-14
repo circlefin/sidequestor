@@ -63,6 +63,8 @@ def needs_slack(target, dirty_watches):
     if target == REACTIONS:
         return True
     mine = [w for w in dirty_watches if w.get("quest_id") == target]
+    # Grouping by slack_ prefix is intentional here: upstream is declared in the manifest, and
+    # checker-contract.test.sh asserts the manifest and the name-based Slack gate agree.
     return any(str(w.get("type", "")).startswith("slack_") for w in mine)
 
 

@@ -37,6 +37,9 @@ import json
 import os
 from pathlib import Path
 
+WATCH_MANIFEST_SCHEMA_VERSION = 1
+NON_WATCH_EXECUTABLES = {"cron-due", "reactions"}
+
 
 def _repo_root(start):
     """The repo root is the nearest ancestor directory that contains yaas-triage/.
@@ -64,7 +67,7 @@ def _repo_root(start):
 # must FAIL the tick loudly, never silently read as "no cap" — the same rule the original shell orchestrator enforces,
 # because a ceiling that quietly disables itself is worse than no ceiling.
 NUMERIC_KNOBS = {
-    "YAAS_TICK_DISPATCH_BUDGET": 1800,
+    "YAAS_TICK_DISPATCH_BUDGET": 3600,
     "YAAS_MAX_DISPATCH_FANOUT": 4,
     "YAAS_MAX_TARGET_DISPATCH_PER_HOUR": 25,
     "YAAS_UNACKED_PROMOTE": 3,
@@ -73,8 +76,8 @@ NUMERIC_KNOBS = {
     "YAAS_LOG_RETAIN_DAYS": 14,
     "YAAS_MANIFEST_RETAIN_DAYS": 7,
     "YAAS_CHECKER_HEALTH_RETAIN_DAYS": 30,
-    "YAAS_TRIAGE_MAX_PARALLEL": 8,
-    "YAAS_MIN_DISPATCH_SLICE": 60,
+    "YAAS_TRIAGE_MAX_PARALLEL": 3,
+    "YAAS_MIN_DISPATCH_SLICE": 300,
     "YAAS_STALE_REPLY_HOURS": 24,
 }
 
@@ -149,6 +152,101 @@ def load_lag_map(triage_dir):
         if raw.isdigit():
             lags[f.stem] = int(raw)
     return lags
+
+
+def _watch_type_from_manifest_path(path):
+    suffix = ".watch.json"
+    if not path.name.endswith(suffix):
+        raise ValueError(f"{path}: expected a {suffix} file")
+    return path.name[:-len(suffix)]
+
+
+def _die_manifest(path, msg):
+    raise ValueError(f"{path}: {msg}")
+
+
+def _validate_required(path, required):
+    if not isinstance(required, list) or not required:
+        _die_manifest(path, "field 'required' must be a non-empty list of non-empty lists of strings")
+    for alt in required:
+        if not isinstance(alt, list) or not alt:
+            _die_manifest(path, "field 'required' must be a non-empty list of non-empty lists of strings")
+        for field in alt:
+            if not isinstance(field, str) or not field:
+                _die_manifest(path, "field 'required' must be a non-empty list of non-empty lists of strings")
+
+
+def _validate_string_list(path, field_name, value):
+    if not isinstance(value, list) or any(not isinstance(v, str) or not v for v in value):
+        _die_manifest(path, f"field '{field_name}' must be a list of strings")
+
+
+def _entry_satisfies_required(entry, required):
+    return any(all(entry.get(field) for field in alt) for alt in required)
+
+
+def _validate_checker_example(path, watch_type, checker_example, required):
+    if not isinstance(checker_example, dict):
+        _die_manifest(path, "field 'checker_example' must be an object")
+    if checker_example.get("type") != watch_type:
+        _die_manifest(path, "field 'checker_example' must have a matching 'type'")
+    if not checker_example.get("last_checked_ts"):
+        _die_manifest(path, "field 'checker_example' must include 'last_checked_ts'")
+    if not _entry_satisfies_required(checker_example, required):
+        _die_manifest(path, "field 'checker_example' does not satisfy this type's required fields")
+
+
+def load_watch_manifests(triage_dir):
+    """Load and validate per-watch manifests from checkers/*.watch.json.
+
+    Pure and explicitly called. Consumers decide when to pay the validation cost.
+    """
+    checkers_dir = Path(triage_dir) / "checkers"
+    manifests = {}
+    manifest_files = {}
+    for path in sorted(checkers_dir.glob("*.watch.json")):
+        try:
+            raw = json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            _die_manifest(path, f"invalid JSON: {exc}")
+        if not isinstance(raw, dict):
+            _die_manifest(path, "manifest root must be an object")
+        version = raw.get("schema_version")
+        if version != WATCH_MANIFEST_SCHEMA_VERSION:
+            _die_manifest(path, f"unsupported schema_version {version!r}")
+        required = raw.get("required")
+        _validate_required(path, required)
+        identity = raw.get("identity")
+        _validate_string_list(path, "identity", identity)
+        checker_example = raw.get("checker_example")
+        watch_type = _watch_type_from_manifest_path(path)
+        _validate_checker_example(path, watch_type, checker_example, required)
+        for field_name in ("open_loop", "user_creatable"):
+            if not isinstance(raw.get(field_name), bool):
+                _die_manifest(path, f"field '{field_name}' must be a bool")
+        upstream = raw.get("upstream")
+        if upstream is not None and (not isinstance(upstream, str) or not upstream):
+            _die_manifest(path, "field 'upstream' must be a non-empty string or null")
+        manifests[watch_type] = raw
+        manifest_files[watch_type] = path
+
+    executable_checkers = {}
+    for path in sorted(checkers_dir.glob("*.py")):
+        if os.access(path, os.X_OK):
+            executable_checkers[path.stem] = path
+
+    for watch_type, checker_path in executable_checkers.items():
+        if watch_type in NON_WATCH_EXECUTABLES:
+            continue
+        if watch_type not in manifests:
+            raise ValueError(f"{checker_path}: executable checker has no manifest")
+
+    for watch_type, manifest in manifests.items():
+        checker_path = checkers_dir / f"{watch_type}.py"
+        if not checker_path.exists() or not os.access(checker_path, os.X_OK):
+            raise ValueError(f"{manifest_files[watch_type]}: no matching executable checker at {checker_path}")
+
+    return manifests
 
 
 def gather_quests(quests_dir):

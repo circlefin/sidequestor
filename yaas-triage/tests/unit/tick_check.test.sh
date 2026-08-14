@@ -94,6 +94,29 @@ eq "no executable checker → misconfig" \
    "$(c '{"outcome":"clean","count":0}' "$W" --no-checker)" "misconfig"
 
 echo
+echo "── the shared structural_verdict() preserves the same precedence ──────────"
+sv() {
+  python3 - "$CHK" "$1" "$2" "$3" "$4" "$5" "$6" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("tc", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+watch = json.loads(sys.argv[2]); health = json.loads(sys.argv[3])
+v = m.structural_verdict(watch, health, int(sys.argv[4]), sys.argv[5] == "true",
+                         int(sys.argv[6]), sys.argv[7] == "true")
+print("" if v is None else v["verdict"])
+PY
+}
+eq "no structural gate returns None" \
+   "$(sv "$W" 'null' 0 true 3 true)" ""
+eq "invalid watch_id still wins first" \
+   "$(sv '{"watch_id":"bad","type":"slack_thread"}' '{"in_backoff":true,"next_retry_ts":"9"}' 9 false 3 false)" \
+   "misconfig"
+eq "unacked open window still beats checker existence later" \
+   "$(sv "$W" 'null' 3 false 3 false)" "backoff"
+eq "checker-health backoff still beats missing checker after it" \
+   "$(sv "$W" '{"in_backoff":true,"next_retry_ts":"9"}' 0 true 3 false)" "backoff"
+
+echo
 echo "── the checker's own misconfig verdict is honoured ────────────────────────"
 eq "outcome=misconfig → misconfig" \
    "$(c '{"outcome":"misconfig","preview":"no such checker type"}' "$W")" "misconfig"
@@ -121,6 +144,23 @@ echo "── priority: structural checks beat the checker result ─────
 # because dispatching it again just burns another invocation.
 eq "an open unacked-backoff window beats a dirty result" \
    "$(c '{"outcome":"dirty","count":5}' "$W" --unacked 3 --unacked-backoff)" "backoff"
+
+echo
+echo "── is_due(): parse tolerance shared across all retry readers ──────────────"
+due() {
+  python3 - "$CHK" "$1" "$2" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("tc", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.is_due(json.loads(sys.argv[2]), float(sys.argv[3])))
+PY
+}
+eq "0 means due" "$(due '{"next_retry_ts":"0"}' 100)" "True"
+eq "empty means due" "$(due '{"next_retry_ts":""}' 100)" "True"
+eq "null means due" "$(due '{"next_retry_ts":null}' 100)" "True"
+eq "garbage means due" "$(due '{"next_retry_ts":"wat"}' 100)" "True"
+eq "future timestamp means not due" "$(due '{"next_retry_ts":"101"}' 100)" "False"
+eq "past timestamp means due" "$(due '{"next_retry_ts":"99"}' 100)" "True"
 
 echo
 echo "── check-phase fairness rotation ──────────────────────────────────────────"

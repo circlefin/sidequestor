@@ -171,6 +171,16 @@ APPR_ID=$(python3 yaas-triage/ledger/approval-helper.py write \
 
 **Executing a reviewed item — when dispatched for a quest and you find `status: "reviewed"`:**
 
+**Reclaimed item (`needs_reconcile: true`).** A previous worker claimed this action and its
+lease expired, so the external action may already have happened. Reconcile before calling
+`start`: check the target for the exact message, comment, reply, or requested change. If it is
+present, close the item with `approval-helper.py done <id> <response_ts_or_url>` and log
+`executed`; do not send or apply it again. If it is absent, claim and execute it normally. If the
+outcome cannot be determined, log `blocked` and do not execute. For a `manual_instruction`, whose
+arbitrary effects cannot be proven from one target, use `approval-helper.py abandon <id>
+"<reason>"` rather than running it again. `done` clears `needs_reconcile` only after the outcome
+has been resolved.
+
 **Manual instructions.** An item with `action_type: "manual_instruction"` came directly from
 the operator through the quest dashboard. Its `message_text` is the instruction to carry out,
 not text to send. If several dispatched approval watches point to manual instructions, process

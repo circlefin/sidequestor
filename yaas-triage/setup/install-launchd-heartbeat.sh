@@ -15,80 +15,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# install-launchd-heartbeat.sh — install the yaas triage launchd agent
+# install-launchd-heartbeat.sh — install the independent yaas heartbeat monitor
 #
 # Installs ~/Library/LaunchAgents/com.yaas.heartbeat.plist pointing at the checked-out
-# repo's triage loop (tick.py). After install, it runs every ~60 seconds until uninstalled.
+# repo's health monitor. After install, it runs every 300 seconds until uninstalled.
 #
 # Usage:
-#   ./install-launchd.sh            # install
-#   ./install-launchd.sh uninstall  # remove
-#   ./install-launchd.sh status     # show current status
+#   ./install-launchd-heartbeat.sh            # install
+#   ./install-launchd-heartbeat.sh uninstall  # remove
+#   ./install-launchd-heartbeat.sh status     # show current status
 
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TRIAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$TRIAGE_DIR/.." && pwd)"
-TEMPLATE="$SCRIPT_DIR/com.yaas.heartbeat.plist.template"
-LABEL="com.yaas.heartbeat"
-PLIST_DEST="$HOME/Library/LaunchAgents/$LABEL.plist"
+YAAS_LAUNCHD_TEMPLATE="$SCRIPT_DIR/com.yaas.heartbeat.plist.template"
+YAAS_LAUNCHD_LABEL="com.yaas.heartbeat"
+YAAS_LAUNCHD_LOADED="fires every 300s"
 
-ACTION="${1:-install}"
+yaas_launchd_install_guidance() {
+  echo
+  echo "Logs: $REPO_ROOT/logs/heartbeat.{out,err}.log"
+  echo "Tail live: tail -f $REPO_ROOT/logs/heartbeat.out.log"
+  echo
+  echo "First check fires immediately, then every 300s. To run now:"
+  echo "  python3 $TRIAGE_DIR/ops/health-monitor.py"
+}
 
-case "$ACTION" in
-  install)
-    if [ ! -f "$TEMPLATE" ]; then
-      echo "ERROR: template not found at $TEMPLATE" >&2
-      exit 1
-    fi
-
-    # Unload any existing version first (idempotent)
-    if [ -f "$PLIST_DEST" ]; then
-      launchctl unload "$PLIST_DEST" 2>/dev/null || true
-    fi
-
-    mkdir -p "$HOME/Library/LaunchAgents"
-    mkdir -p "$REPO_ROOT/logs"
-
-    # Render template
-    sed -e "s|{{REPO_ROOT}}|$REPO_ROOT|g" -e "s|{{HOME}}|$HOME|g" "$TEMPLATE" > "$PLIST_DEST"
-
-    launchctl load "$PLIST_DEST"
-    echo "✓ Installed: $PLIST_DEST"
-    echo "✓ Loaded: $LABEL (fires every 60s)"
-    echo
-    echo "Logs: $REPO_ROOT/logs/heartbeat.{out,err}.log"
-    echo "Tail live: tail -f $REPO_ROOT/logs/heartbeat.out.log"
-    echo
-    echo "First check fires immediately, then every 300s. To run now:"
-    echo "  python3 $TRIAGE_DIR/tick.py"
-    ;;
-
-  uninstall)
-    if [ -f "$PLIST_DEST" ]; then
-      launchctl unload "$PLIST_DEST" 2>/dev/null || true
-      rm -f "$PLIST_DEST"
-      echo "✓ Uninstalled $LABEL"
-    else
-      echo "Not installed."
-    fi
-    ;;
-
-  status)
-    echo "=== launchctl list ==="
-    launchctl list | grep -E "PID|$LABEL" || echo "Not loaded."
-    echo
-    if [ -f "$PLIST_DEST" ]; then
-      echo "=== plist at $PLIST_DEST ==="
-      cat "$PLIST_DEST"
-    else
-      echo "Plist not installed."
-    fi
-    ;;
-
-  *)
-    echo "Usage: $0 [install|uninstall|status]" >&2
-    exit 1
-    ;;
-esac
+. "$SCRIPT_DIR/install-launchd-common.sh"
+yaas_install_launchd_job "${1:-install}"

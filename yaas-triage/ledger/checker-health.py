@@ -98,6 +98,8 @@ REPO_ROOT   = _repo_root(__file__)
 STATE_DIR   = REPO_ROOT / "state" / "triage"
 HEALTH_FILE = STATE_DIR / "checker-health.json"
 LOCK_FILE   = STATE_DIR / "checker-health.lock"
+sys.path.insert(0, str(REPO_ROOT / "yaas-triage"))
+import tick_check
 
 BASE_BACKOFF = 60
 MAX_BACKOFF  = 3600
@@ -171,10 +173,9 @@ def cmd_due(watch_id: str):
     rec = _read().get(watch_id)
     if not rec:
         return
-    try:
-        retry_at = float(rec.get("next_retry_ts") or 0)
-    except (TypeError, ValueError):
+    if tick_check.is_due(rec, time.time()):
         return
+    retry_at = float(rec.get("next_retry_ts") or 0)
     remaining = retry_at - time.time()
     if remaining > 0:
         print(f"{int(remaining)}s remaining (failure {rec.get('consecutive_errors', '?')})")

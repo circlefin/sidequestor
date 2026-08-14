@@ -95,33 +95,43 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+def _repo_root(start):
+    """The repo root is the nearest ancestor directory that contains yaas-triage/.
+
+    NOT counted as `parent.parent`: that is correct only while every script sits directly
+    in yaas-triage/, and silently resolves to yaas-triage/ itself once a script moves into
+    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on CLAUDE.md
+    (a fresh clone has only CLAUDE.example.md) and NOT on .git (two git dirs here, none in
+    fixtures). Ambient $REPO_ROOT is deliberately ignored: a stale value pointing at another
+    checkout would pass any marker check and silently redirect writes. Test fixtures copy
+    the whole tree, so the walk-up finds the fixture on its own.
+
+    Kept byte-identical across every file that needs it; tests/behaviour/repo-root.test.sh
+    asserts that, because a shared module would need sys.path handling whose own path is
+    depth-dependent, which is the bug being fixed.
+    """
+    p = Path(start).resolve()
+    for d in (p, *p.parents):
+        if (d / "yaas-triage").is_dir():
+            return d
+    raise SystemExit(f"cannot locate repo root above {start} (no ancestor has yaas-triage/)")
+
+
+REPO_ROOT = _repo_root(__file__)
+sys.path.insert(0, str(REPO_ROOT / "yaas-triage"))
+from tick_state import load_watch_manifests
+
 QUESTS_ACTIVE    = REPO_ROOT / "state" / "quests" / "active"
 QUESTS_COMPLETED = REPO_ROOT / "state" / "quests" / "completed"
 QUESTS_ARCHIVED  = REPO_ROOT / "state" / "quests" / "archived"
 
-REQUIRED_FIELDS = {
-    "slack_thread":  ["channel_id", "thread_ts"],
-    "slack_channel": ["channel_id"],
-    # Both, matching ledger/add-watch.py. user_id alone scaffolds a watch the ledger will
-    # later refuse, so the mismatch surfaces long after the quest looks healthy.
-    "slack_dm":      ["channel_id", "user_id"],
-    "slack_mention": ["user_id"],
-    "schedule":      [],           # cron+tz OR next_fire_ts — see validate_watches
-    "email":         ["query"],
-    "jira":          ["jql"],
-    "github_pr":     ["repo"],
-    "github_issue":  ["repo"],
-    # Runtime-only: the worker appends these itself when it queues a manual-review
-    # item (§3d). Registered so the type system matches checkers/, not because a
-    # new quest should normally scaffold one (no approval exists at creation time).
-    "approval":      ["approval_id"],
-}
-
-# Every type here must have an executable checkers/<type>.py, or triage silently
-# skips the watch forever ("no checker for type X" is only a vlog line). Keep this
-# set in sync with the checkers directory; validate_watches rejects anything else.
-KNOWN_TYPES = set(REQUIRED_FIELDS)
+def _watch_manifest_shapes():
+    manifests = load_watch_manifests(REPO_ROOT / "yaas-triage")
+    required_fields = {wtype: manifest["required"] for wtype, manifest in manifests.items()}
+    known_types = set(manifests)
+    user_creatable_types = {wtype for wtype, manifest in manifests.items()
+                            if manifest["user_creatable"]}
+    return required_fields, known_types, user_creatable_types
 
 # Canonical field order for each type (for readable output)
 FIELD_ORDER = ["type", "channel_id", "thread_ts", "user_id", "cron", "tz", "next_fire_ts",
@@ -177,35 +187,33 @@ def ordered_entry(raw_entry, now_ts):
 
 
 def validate_watches(watches):
+    required_fields, known_types, user_creatable_types = _watch_manifest_shapes()
     if not watches:
         die("watches must have at least one entry")
     for i, w in enumerate(watches):
         t = w.get("type")
         if not t:
             die(f"watches[{i}] missing 'type'")
-        if t not in KNOWN_TYPES:
+        if t not in known_types:
             # Without this guard an unknown/typo'd type scaffolds fine, then triage
             # finds no checkers/<type>.py and skips it silently on every tick, so the
             # quest looks healthy while that watch never fires once.
             die(f"watches[{i}] has unknown type {t!r}. "
-                f"Known types: {', '.join(sorted(KNOWN_TYPES))}. "
+                f"Known types: {', '.join(sorted(known_types))}. "
                 f"If this is a new type, add checkers/{t}.py first, then register it "
-                f"in REQUIRED_FIELDS here.")
+                f"in checkers/{t}.watch.json.")
+        if t not in user_creatable_types:
+            die(f"watches[{i}] has runtime-only type {t!r}; it cannot be created in a new quest")
         if not w.get("reason"):
             die(f"watches[{i}] (type={t!r}) missing 'reason'")
-        for field in REQUIRED_FIELDS.get(t, []):
-            if not w.get(field):
-                die(f"watches[{i}] (type={t!r}) missing required field '{field}'")
-        # A schedule fires either on a repeating cron (with a timezone, since a bare cron is
-        # ambiguous) or once at a fixed epoch. checkers/schedule.py and ledger/add-watch.py
-        # both accept either shape; this used to demand cron+tz and so made the one-shot form
-        # unreachable through the documented path.
-        if t == "schedule":
-            if not (w.get("cron") or w.get("next_fire_ts")):
+        if not any(all(w.get(field) for field in alt) for alt in required_fields[t]):
+            if t == "schedule":
                 die(f"watches[{i}] (type='schedule') needs either 'cron' + 'tz' "
                     f"(repeating) or 'next_fire_ts' (one-shot)")
-            if w.get("cron") and not w.get("tz"):
-                die(f"watches[{i}] (type='schedule') has 'cron' but no 'tz'")
+            for field in required_fields[t][0]:
+                if not w.get(field):
+                    die(f"watches[{i}] (type={t!r}) missing required field '{field}'")
+            die(f"watches[{i}] (type={t!r}) is missing required fields")
         if "watch_mode" in w and w["watch_mode"] not in ("read_only",):
             die(f"watches[{i}] watch_mode must be 'read_only' if set, got: {w['watch_mode']!r}")
         if "last_checked_ts" in w:
@@ -289,7 +297,11 @@ def main():
         elif t == "slack_dm":
             watch_lines.append(f"- `slack_dm` from `{w['user_id']}`  \n  _{w['reason']}_")
         elif t == "schedule":
-            watch_lines.append(f"- `schedule` `{w['cron']}` ({w['tz']})  \n  _{w['reason']}_")
+            if w.get("cron"):
+                schedule = f"`{w['cron']}` ({w['tz']})"
+            else:
+                schedule = f"once at `{w['next_fire_ts']}`"
+            watch_lines.append(f"- `schedule` {schedule}  \n  _{w['reason']}_")
         elif t == "email":
             watch_lines.append(f"- `email` query: `{w['query']}`  \n  _{w['reason']}_")
         else:

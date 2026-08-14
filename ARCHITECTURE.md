@@ -215,8 +215,10 @@ order is nondeterministic — rotating a random list shuffles rather than distri
 
 ## 6. Watch types
 
-One plugin per type, resolved at runtime as `checkers/$type.py`. Adding a type means dropping
-in a file; nothing else changes.
+One plugin per type, discovered from an executable `checkers/<type>.py` paired with a required
+`checkers/<type>.watch.json` manifest. The manifest declares validation, identity, creation, and
+upstream metadata. Add `<type>.lag` only when the source needs a watermark delay, then update the
+checker behavior fixture and documented watch surfaces described by the checker-authoring skill.
 
 | Type | Fires when |
 |---|---|
@@ -323,7 +325,8 @@ yaas-triage/
 ├── checkers/       "IS THERE ANYTHING NEW?"    one plugin per watch type
 │   ├── result.py                 the contract every checker returns
 │   ├── slack_utils.py            drain(): bound both ends of the gap
-│   └── <type>.py, <type>.lag     per-type checker + its watermark lag
+│   └── <type>.py, <type>.watch.json, [<type>.lag]
+│                                executable checker + manifest + optional watermark lag
 │
 ├── dispatch/       "RUN A WORKER"
 │   ├── run-agent.py              one invocation: watchdog, log tee, kill tree
@@ -405,8 +408,8 @@ answer. Notifications de-duplicate, so a persistent fault does not shout every f
 ## 12. How this is tested
 
 ```
-   29 suites ─┬─ tests/unit/        mirrors the source tree 1:1
-              └─ tests/behaviour/   named by FAILURE CLASS, may span files
+   test suites ─┬─ tests/unit/        mirrors the source tree 1:1
+                └─ tests/behaviour/   named by FAILURE CLASS, may span files
 
    29 goldens ── tests/differential/   a REAL tick against a throwaway repo,
                      │                  run against tick.py

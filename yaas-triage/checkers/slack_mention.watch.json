@@ -1,0 +1,14 @@
+{
+  "_comment": "checker_example is a minimal checker input, not an add-watch or new-quest creation template; it intentionally includes last_checked_ts.",
+  "schema_version": 1,
+  "required": [["user_id"]],
+  "identity": ["user_id"],
+  "checker_example": {
+    "type": "slack_mention",
+    "user_id": "U0AAAA0",
+    "last_checked_ts": "1"
+  },
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "slack"
+}

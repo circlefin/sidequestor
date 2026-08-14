@@ -60,6 +60,7 @@ mkdir -p "$TRIAGE/checkers" "$TRIAGE/ledger" "$TRIAGE/dispatch" "$TRIAGE/ops" \
 
 cp "$SCRIPT_DIR/tick.py" "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR/tick_check.py" \
    "$SCRIPT_DIR/tick_dispatch.py" "$SCRIPT_DIR/reaction_config.py" "$TRIAGE/"
+cp "$SCRIPT_DIR/approval_state.py" "$SCRIPT_DIR/approval_store.py" "$TRIAGE/"
 cp "$SCRIPT_DIR/ledger/ensure-watch-ids.py" "$SCRIPT_DIR/ledger/ack-watch.py" \
    "$SCRIPT_DIR/ledger/checker-health.py" "$SCRIPT_DIR/ledger/watch-guard.py" \
    "$SCRIPT_DIR/ledger/commit.py" "$SCRIPT_DIR/ledger/housekeep.py" \

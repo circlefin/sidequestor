@@ -48,7 +48,9 @@ REPO="$TMP/repo"
 mkdir -p "$REPO/yaas-triage/checkers" "$REPO/yaas-triage/ledger" "$REPO/yaas-triage/ops" "$REPO/state/quests/active/q1"
 cp "$SCRIPT_DIR/ledger/approval-helper.py" "$REPO/yaas-triage/ledger/"
 cp "$SCRIPT_DIR/ledger/add-watch.py" "$REPO/yaas-triage/ledger/"
-cp "$SCRIPT_DIR/checkers/approval.py" "$SCRIPT_DIR/checkers/result.py" "$REPO/yaas-triage/checkers/"
+cp "$SCRIPT_DIR/tick_state.py" "$REPO/yaas-triage/"
+cp "$SCRIPT_DIR"/checkers/*.py "$SCRIPT_DIR"/checkers/*.watch.json "$REPO/yaas-triage/checkers/"
+cp "$SCRIPT_DIR/approval_state.py" "$SCRIPT_DIR/approval_store.py" "$REPO/yaas-triage/"
 printf '{"watches":[]}\n' > "$REPO/state/quests/active/q1/watch.json"
 cd "$REPO" || exit 1
 
@@ -90,9 +92,40 @@ python3 yaas-triage/checkers/approval.py "$(jq -nc --arg id "$ID" '{type:"approv
   | jq -r '.preview' | grep -q "outcome unknown" \
   && ok "the re-dispatch says the outcome is UNKNOWN, so the worker reconciles rather than resending" \
   || bad "the expired-lease preview does not flag the outcome as unknown"
+python3 -c "
+import json
+p='$APPROVALS'; d=json.load(open(p)); d['items'][0]['needs_reconcile']=True; json.dump(d,open(p,'w'))"
 A done "$ID" 1234.5678 >/dev/null
 eq "done closes it for good"              "$(outcome "$ID")" "clean"
+eq "done clears the reconciliation flag"  "$(jq -r '.items[0] | has("needs_reconcile")' "$APPROVALS")" "false"
 eq "and it stays closed even though the lease is long past" "$(outcome "$ID")" "clean"
+
+grep -q 'Reclaimed item (`needs_reconcile: true`)' "$SCRIPT_DIR/skills/yaas-quest-dispatch/SKILL.md" \
+  && ok "the worker contract requires reclaimed items to reconcile before execution" \
+  || bad "the worker contract does not consume needs_reconcile"
+
+echo
+echo "-- reclaimed items close directly from reviewed ----------------------------"
+IDR=$(A write '{"quest_id":"q1","quest_title":"Q","action_type":"slack_message","target":{"channel_id":"C4","thread_ts":null},"message_text":"reconcile","context":"c","risk_reason":"r"}')
+jq --arg id "$IDR" '(.items[] | select(.id==$id)) += {status:"reviewed",needs_reconcile:true}' \
+  "$APPROVALS" > "$APPROVALS.tmp" && mv "$APPROVALS.tmp" "$APPROVALS"
+eq "reconciled external outcome closes without another claim" "$(A done "$IDR" 9999.1)" "ok"
+eq "direct reconciliation records execution" \
+   "$(jq -r --arg id "$IDR" '.items[] | select(.id==$id) | .status' "$APPROVALS")" "executed"
+
+IDM=$(A enqueue-instruction '{"quest_id":"q1","quest_title":"Q","instruction":"uncertain work"}' | jq -r '.approval_id')
+jq --arg id "$IDM" '(.items[] | select(.id==$id)) += {needs_reconcile:true}' \
+  "$APPROVALS" > "$APPROVALS.tmp" && mv "$APPROVALS.tmp" "$APPROVALS"
+eq "uncertain reclaimed manual work can be abandoned before another claim" \
+   "$(A abandon "$IDM" "outcome cannot be proven")" "ok"
+eq "direct abandon is terminal" \
+   "$(jq -r --arg id "$IDM" '.items[] | select(.id==$id) | .status' "$APPROVALS")" "cancelled"
+
+IDP=$(A write '{"quest_id":"q1","quest_title":"Q","action_type":"slack_message","target":{"channel_id":"C5","thread_ts":null},"message_text":"pending","context":"c","risk_reason":"r"}')
+eq "done on an ordinary pending item reports a skip, never false success" \
+   "$(A done "$IDP")" "skip:pending_review"
+eq "illegal done leaves the item pending" \
+   "$(jq -r --arg id "$IDP" '.items[] | select(.id==$id) | .status' "$APPROVALS")" "pending_review"
 
 echo
 echo "── a malformed lease must not resurrect a live claim ─────────────────────"

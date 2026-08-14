@@ -678,19 +678,24 @@ function renderMessages(){
   if(qd && changed('queued',queued)){
     if(queued.length){
       const rows=queued.map(q=>{
-        const executing=q.status==='executing';
+        const actions=q.available_actions||[];
+        const canEdit=actions.includes('edit');
+        const canCancel=actions.includes('cancel');
+        const canUndo=actions.includes('undo');
+        const interactive=canEdit||canCancel||canUndo;
         const revising=q.status==='needs_reply';
-        const manual=q.action_type==='manual_instruction';
-        // Only an approved-but-unclaimed draft is still editable. A worker is
-        // mid-run on `executing`, and is rewriting the text itself on
-        // `needs_reply`, so an edit box on either is a lost edit waiting to happen.
-        const locked=executing||revising;
-        const state=executing?'executing…':(revising?'revising…':'awaiting worker…');
+        const state=q.status==='executing'?'executing…':(q.status==='needs_reply'?'revising…':'awaiting worker…');
         const ask=revising&&q.review_note?`<div class="queued-ask">you asked: ${esc(q.review_note)}</div>`:'';
         const head=`<div class="queued-row-head"><span class="rc-atype at-${esc(q.action_type||'slack_message')}">${esc(q.action_type||'slack_message')}</span><span class="queued-title">${esc(q.quest_title||q.quest_id||'')}</span><span class="queued-status">${state}</span><span class="queued-age">${agoSpan(q.executing_at||q.asked_at||q.reviewed_at||'')}</span></div>`;
-        const manualBody=manual?`<div class="queued-ask">${esc(q.message_text||'')}${!executing?`<div class="queued-edit-foot"><button class="queued-cancel" data-id="${esc(q.id||'')}">Cancel instruction</button><span class="queued-save-note"></span></div>`:''}</div>`:'';
-        const edit=manual?manualBody:(locked?ask:`<div class="queued-edit"><textarea data-orig="${esc(q.message_text||'')}">${esc(q.message_text||'')}</textarea><div class="queued-edit-foot"><button class="queued-save" data-id="${esc(q.id||'')}">Save changes</button><span class="queued-save-note"></span></div></div>`);
-        return `<div class="queued-row${locked?' is-executing':''}${revising?' is-revising-row':''}" data-qid="${esc(q.id||'')}">${head}${edit}</div>`;
+        const buttons=[
+          canEdit?`<button class="queued-save" data-id="${esc(q.id||'')}">Save changes</button>`:'',
+          canCancel?`<button class="queued-cancel" data-id="${esc(q.id||'')}">Cancel</button>`:'',
+          canUndo?`<button class="queued-undo" data-id="${esc(q.id||'')}">Undo</button>`:'',
+        ].join('');
+        const body=canEdit
+          ? `<div class="queued-edit"><textarea data-orig="${esc(q.message_text||'')}">${esc(q.message_text||'')}</textarea><div class="queued-edit-foot">${buttons}<span class="queued-save-note"></span></div></div>`
+          : `<div class="queued-ask">${esc(q.message_text||'')}${buttons?`<div class="queued-edit-foot">${buttons}<span class="queued-save-note"></span></div>`:''}</div>`;
+        return `<div class="queued-row${interactive?'':' is-executing'}${q.status==='needs_reply'?' is-revising-row':''}" data-qid="${esc(q.id||'')}">${head}${ask}${body}</div>`;
       }).join('');
       qd.innerHTML=`<div class="queued-strip"><div class="section-label" style="margin-bottom:8px">in flight · nothing for you to do here <span class="sl-count">${queued.length}</span></div>${rows}</div>`;
       // Toggle expand on head click; save edits
@@ -720,12 +725,23 @@ function renderMessages(){
       });
       qd.querySelectorAll('.queued-cancel').forEach(btn=>{
         btn.addEventListener('click', async()=>{
-          const note=btn.closest('.queued-ask').querySelector('.queued-save-note');
+          const note=btn.closest('.queued-row').querySelector('.queued-save-note');
           btn.disabled=true; note.textContent='Cancelling…';
           try{
             const r=await fetch(`/api/cancel/${encodeURIComponent(btn.dataset.id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
             if(!r.ok){ const e=await r.json(); note.textContent='Error: '+(e.error||r.status); btn.disabled=false; return; }
             note.textContent='Cancelled.'; lastDashEtag=null; setTimeout(()=>poll(),200);
+          } catch(e){ note.textContent='Network error.'; btn.disabled=false; }
+        });
+      });
+      qd.querySelectorAll('.queued-undo').forEach(btn=>{
+        btn.addEventListener('click', async()=>{
+          const note=btn.closest('.queued-row').querySelector('.queued-save-note');
+          btn.disabled=true; note.textContent='Undoing…';
+          try{
+            const r=await fetch(`/api/undo/${encodeURIComponent(btn.dataset.id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+            if(!r.ok){ const e=await r.json(); note.textContent='Error: '+(e.error||r.status); btn.disabled=false; return; }
+            note.textContent='Undone.'; lastDashEtag=null; setTimeout(()=>poll(),200);
           } catch(e){ note.textContent='Network error.'; btn.disabled=false; }
         });
       });
@@ -745,6 +761,24 @@ function renderMessages(){
     }
   }
   if(openQuestId) renderQuestPendingCards();
+  reconcileQuestPromptStatus();
+}
+
+// The quest drawer deliberately does not re-render while open (see the
+// openQuestId guard in renderDashboard), so the "queued" line written by
+// runQuestPrompt would otherwise keep promising a pending run forever, long
+// after the worker had finished it. Reconcile it against server truth instead:
+// a manual_instruction sits in queued_items while it is reviewed or executing,
+// and drops out once it reaches a terminal status. Gone means it ran.
+function reconcileQuestPromptStatus(){
+  const st=document.getElementById('qv-prompt-status');
+  if(!st||!st.dataset.awaiting) return;
+  const qid=st.dataset.awaiting;
+  const pending=(msgData&&msgData.queued_items||[])
+    .some(i=>i.quest_id===qid&&i.action_type==='manual_instruction');
+  if(pending) return;
+  st.textContent='instruction has run; see the timeline below';
+  delete st.dataset.awaiting;
 }
 
 // carousel: preserve in-progress edits by patching slides by id + reordering
@@ -828,6 +862,15 @@ function revisionsBlock(item){
   const lines=h.map(x=>x.from==='reviewer'?`<div class="rc-rev-line"><span class="rc-rev-k">you asked</span>${esc(x.note||'')}</div>`:`<div class="rc-rev-line"><span class="rc-rev-k">yaas</span>${esc(x.reply||'')}</div>`).join('');
   return `<div class="rc-label" style="margin-bottom:8px">revision history</div><div class="rc-revisions">${lines}</div>`;
 }
+function actionBtn(action){
+  const cls={
+    review:'btn btn-review',
+    revise:'btn btn-revise',
+    cancel:'btn btn-cancel',
+    reclaim:'btn btn-review btn-reclaim',
+  }[action]||'btn';
+  return `<button class="${cls}" data-action="${esc(action)}">${esc(ACTION_LABELS[action]||action)}</button>`;
+}
 function buildCard(item,opts={}){
   const hasNext=opts.hasNext!==false;
   const at=item.action_type||'slack_message';
@@ -847,10 +890,6 @@ function buildCard(item,opts={}){
   const noteField=isMsg
     ? `<div class="rc-label" style="margin-bottom:6px">review note · instruction for the worker (required to submit for revision)</div><input type="text" data-field="review_note" placeholder='e.g. "make it more polite"  ·  "loop in a teammate too"'>`
     : `<div class="rc-label" style="margin-bottom:6px">revision prompt · tell the worker what to change (required to submit for revision)</div><textarea class="note-field" data-field="review_note" placeholder="what should the worker change?"></textarea>`;
-  // In-flight items (reviewed / executing / needs_reply) no longer reach the
-  // carousel at all; they live in the in-flight strip below it. The one
-  // exception is a stalled item, promoted back here precisely because nobody is
-  // coming for it, so it gets the single control that can rescue it.
   const stalled=!!item.stalled&&item.status!=='pending_review';
   const stallMsg=item.status==='needs_reply'
     ? 'sent back for revision, but the worker never answered.'
@@ -859,15 +898,11 @@ function buildCard(item,opts={}){
     ?`<div class="rc-revising rc-stalled">⚠ Stuck · ${stallMsg} Reclaim it to put it back in the queue.${item.review_note?`<span class="rc-revising-note">you asked: ${esc(item.review_note)}</span>`:''}</div>`
     :'';
   const body=`${ctx}${revisionsBlock(item)}${bodyBlock}`;
-  // A stalled item can't take review/revise/cancel (the server rejects those
-  // from reviewed/executing), so it gets exactly the one action that works.
-  const actions=stalled
-    ? `<button class="btn btn-review btn-reclaim" data-action="reclaim">Reclaim for review</button>
-      ${hasNext?'<button class="btn rc-next" data-nav="1">Next ›</button>':''}`
-    : `<button class="btn btn-review" data-action="review">Mark as Reviewed</button>
-      <button class="btn btn-revise" data-action="revise">Submit for revision</button>
-      <button class="btn btn-cancel" data-action="cancel">Cancel</button>
-      ${hasNext?'<button class="btn rc-next" data-nav="1">Next ›</button>':''}`;
+  const actionButtons=(item.available_actions||[])
+    .filter(a=>['review','revise','cancel','reclaim'].includes(a))
+    .map(actionBtn)
+    .join('');
+  const actions=`${actionButtons}${hasNext?'<button class="btn rc-next" data-nav="1">Next ›</button>':''}`;
   return `<div class="review-card rc-${esc(at)}${stalled?' is-revising':''}" data-appr-id="${esc(item.id)}">
     <div class="rc-header"><div><div class="rc-title">${esc(item.quest_title||item.quest_id)}</div>${item.risk_reason?`<div class="rc-risk">${esc(item.risk_reason)}</div>`:''}</div>${agoSpan(item.created_at,'rc-age')}</div>
     ${banner}
@@ -947,7 +982,6 @@ async function submitReview(card,action){
   const active=card.querySelector('.btn-'+action);
   // Reclaim is the odd one out: it puts a stuck item BACK into the queue, so the
   // card must stay and redraw as a normal pending review, not fly away.
-  const endpoint=action==='reclaim'?'undo':action;
   const msgField=card.querySelector('[data-field="message_text"]');
   const noteField=card.querySelector('[data-field="review_note"]');
   if(action==='revise' && !noteField?.value.trim()){ noteField?.focus(); noteField?.classList.add('field-error'); setTimeout(()=>noteField?.classList.remove('field-error'),1500); return; }
@@ -955,9 +989,15 @@ async function submitReview(card,action){
   const payload={}; if(msgField) payload.message_text=msgField.value; if(noteField?.value.trim()) payload.review_note=noteField.value.trim();
   try{
     const id=card.closest('[data-appr-id]').dataset.apprId;
-    const r=await fetch(`/api/${endpoint}/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const r=await fetch(`/api/${action}/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const result=await r.json().catch(()=>({}));
     if(r.ok){
-      if(action!=='reclaim'){ dismissSlide(id); showUndoToast(id,action); }
+      if(action!=='reclaim'){
+        dismissSlide(id);
+        // Revise and question-style reviews end in needs_reply, which is not
+        // undoable. Only advertise Undo when the server confirms a legal state.
+        if(result.status==='reviewed'||result.status==='cancelled') showUndoToast(id,action);
+      }
       lastMsgEtag=null;
       setTimeout(()=>poll(),400);
     }
@@ -965,7 +1005,7 @@ async function submitReview(card,action){
     // reviewed/executing) looked exactly like a click that did nothing. Say why, and
     // re-poll so the card redraws in whatever state the server actually holds.
     else{
-      let why=''; try{ why=(await r.json()).error||''; }catch{}
+      const why=result.error||'';
       showActionError(card,why||`request failed (${r.status})`);
       btns.forEach(b=>b.disabled=false); if(active) active.textContent=ACTION_LABELS[action];
       lastMsgEtag=null; setTimeout(()=>poll(),400);
@@ -1053,8 +1093,9 @@ function renderQuestOpenItems(oi){
   if(!oi) return '';
   const threads=oi.threads||[], sched=oi.scheduled||[], review=oi.review||[], commits=oi.commitments||[], blocked=oi.blocked, backoff=oi.backoff_watches||[], ratelimited=oi.ratelimited_watches||[];
   const total=oi.threads_total||threads.length;
-  const n=(blocked?1:0)+backoff.length+ratelimited.length+total+sched.length+review.length+commits.length;
+  const n=(oi.registry_error?1:0)+(blocked?1:0)+backoff.length+ratelimited.length+total+sched.length+review.length+commits.length;
   let body='';
+  if(oi.registry_error) body+=oiRow(`<span class="oi-badge oi-blocked">config error</span><span class="oi-reason">Watch registry could not load: ${esc(oi.registry_error)}</span>`,'r-blocked');
   backoff.forEach(w=>{
     const why=w.last_error?` · ${esc(w.last_error)}`:` · last: ${esc(w.last_status||'?')}`;
     const every=w.backoff_sec?` · next try in ${fmtWait(w.backoff_sec)}`:'';
@@ -1232,7 +1273,7 @@ async function runQuestPrompt(btn,id){
   try{
     const r=await fetch(`/api/prompt/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction})});
     const d=await r.json().catch(()=>({}));
-    if(r.ok){ st.textContent='queued — runs when the current worker finishes'; ta.value=''; lastDashEtag=null; setTimeout(()=>poll(),600); }
+    if(r.ok){ st.textContent='queued — runs when the current worker finishes'; st.dataset.awaiting=id; ta.value=''; lastDashEtag=null; setTimeout(()=>poll(),600); }
     else { st.className='qv-prompt-status err'; st.textContent=d.error||('error '+r.status); }
   }catch{ st.className='qv-prompt-status err'; st.textContent='request failed'; }
   finally{ btn.disabled=false; ta.disabled=false; }

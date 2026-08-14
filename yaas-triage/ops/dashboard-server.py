@@ -28,10 +28,13 @@ Endpoints:
     GET  /api/dashboard       → live JSON snapshot of all quest state
     GET  /state/<path>        → raw state file
     POST /api/review/<id>     → mark item reviewed (optionally with edits)
+    POST /api/edit/<id>       → update a reviewed draft in place
     POST /api/cancel/<id>     → cancel item
+    POST /api/undo/<id>       → undo reviewed/cancelled back to pending_review
+    POST /api/reclaim/<id>    → recover an expired executing lease
+    POST /api/quests          → create a draft-only quest from an operator prompt
 """
 
-import fcntl
 import hashlib
 import hmac
 import http.server
@@ -74,12 +77,11 @@ REPO_ROOT      = _repo_root(__file__)
 STATE_DIR      = REPO_ROOT / "state"
 LOG_DIR        = REPO_ROOT / "logs"
 APPROVALS_FILE = STATE_DIR / "pending-approvals.json"
-# The lock is a SIDECAR, matching ledger/approval-helper.py. That helper writes the queue
-# atomically (temp + os.replace), which swaps the inode — so a lock taken on the data file is
-# a lock on a soon-to-be-deleted inode and does NOT exclude the helper. Two writers would then
-# both believe they held the queue, and a new approval or a reviewer transition could be lost.
-# Every writer of this file must lock the same sidecar.
-_APPROVALS_LOCK = STATE_DIR / "pending-approvals.json.lock"
+sys.path.insert(0, str(REPO_ROOT / "yaas-triage"))
+import approval_state
+import approval_store
+import tick_check
+from tick_state import NUMERIC_KNOBS, load_watch_manifests
 
 # Statuses that are genuinely finished. Everything else is shown, deliberately: the
 # queue used to ALLOWLIST pending_review/needs_reply, so `executing` and `reviewed`
@@ -88,6 +90,7 @@ _APPROVALS_LOCK = STATE_DIR / "pending-approvals.json.lock"
 # vanishing.
 TERMINAL_APPROVAL_STATUSES = ("executed", "cancelled")
 DASHBOARD_HTML = REPO_ROOT / "dashboard.html"
+DASHBOARD_V2_HTML = REPO_ROOT / "dashboard-v2.html"
 PORT           = int(sys.argv[1]) if len(sys.argv) > 1 else 8877
 
 # Workspace-specific hosts. No hardcoded defaults: they belong to whoever runs
@@ -114,6 +117,8 @@ JIRA_HOST  = (_dotenv("JIRA_BASE_URL").replace("https://", "")
 WORKER_TIMEOUT_S = 1800  # mirrors YAAS_WORKER_TIMEOUT in tick.py — a log older than
                          # this with no footer means the worker was killed, not running
 LIVE_TAIL_LINES  = 60   # panel wants the fuller transcript; pill only shows the target name
+MAX_REQUEST_BODY_BYTES = 64 * 1024
+QUEST_CREATE_TIMEOUT_S = 10
 
 
 # ── Auth / hardening ──────────────────────────────────────────────────────────
@@ -172,51 +177,7 @@ def _csp_html(nonce: str) -> str:
 # ── Approvals file helpers (all writes use exclusive flock) ───────────────────
 
 def _read_approvals() -> dict:
-    if not APPROVALS_FILE.exists():
-        return {"version": 1, "items": []}
-    with open(APPROVALS_FILE) as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        try:
-            return json.load(f)
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
-
-
-_CONFLICT = object()  # sentinel: item exists but wrong status for this transition
-
-def _update_approval(approval_id: str, updates: dict, from_status=("pending_review", "needs_reply")) -> dict | None | object:
-    """Read-modify-write with exclusive lock.
-    Returns the updated item, None if not found, or _CONFLICT if status mismatch.
-    `from_status` is a str or a collection of allowed current statuses — the
-    review queue surfaces both `pending_review` and `needs_reply` items, so the
-    reviewer must be able to act on either (a needs_reply item is one the worker
-    hasn't revised yet; the reviewer's explicit action still wins)."""
-    allowed = {from_status} if isinstance(from_status, str) else set(from_status)
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(_APPROVALS_LOCK, "a+") as lockf:
-        fcntl.flock(lockf, fcntl.LOCK_EX)
-        try:
-            try:
-                data = json.loads(APPROVALS_FILE.read_text())
-            except Exception:
-                return None
-            item = next((i for i in data.get("items", []) if i.get("id") == approval_id), None)
-            if item is None:
-                return None
-            if item.get("status") not in allowed:
-                return _CONFLICT
-            item.update(updates)
-            # Atomic, matching the helper: seek+truncate+dump left an empty file if the
-            # process died between the truncate and the write, losing the whole queue.
-            tmp = APPROVALS_FILE.with_name(APPROVALS_FILE.name + ".tmp")
-            with open(tmp, "w") as out:
-                json.dump(data, out, indent=2)
-                out.flush()
-                os.fsync(out.fileno())
-            os.replace(tmp, APPROVALS_FILE)
-            return item
-        finally:
-            fcntl.flock(lockf, fcntl.LOCK_UN)
+    return approval_store.read_queue()
 
 
 # ── Slack deeplink + outbound-message normalization ───────────────────────────
@@ -504,6 +465,8 @@ def _approval_target_link(i: dict) -> dict:
 def _approval_card(i: dict) -> dict:
     """Project a pending-approval item into the shape the review card needs."""
     t = i.get("target") or {}
+    now = datetime.now(timezone.utc)
+    stalled = approval_state.is_stalled(i, now)
     return {
         "id":             i.get("id"),
         "quest_id":       i.get("quest_id"),
@@ -511,6 +474,13 @@ def _approval_card(i: dict) -> dict:
         "action_type":    i.get("action_type", "slack_message"),
         "status":         i.get("status"),
         "created_at":     i.get("created_at"),
+        "asked_at":       i.get("asked_at"),
+        "reviewed_at":    i.get("reviewed_at"),
+        "executing_at":   i.get("executing_at"),
+        "lease_expires_at": i.get("lease_expires_at"),
+        "cancelled_at":   i.get("cancelled_at"),
+        "sent_at":        i.get("sent_at"),
+        "human_edited":   bool(i.get("human_edited")),
         "target":         t,
         "message_text":   i.get("message_text", ""),
         "context":        i.get("context", ""),
@@ -518,6 +488,8 @@ def _approval_card(i: dict) -> dict:
         "review_note":    i.get("review_note", ""),
         "review_history": i.get("review_history", []),
         "worker_reply":   i.get("worker_reply", ""),
+        "stalled":        stalled,
+        "available_actions": approval_state.available_actions(i, now),
         **_approval_target_link(i),
     }
 
@@ -600,7 +572,19 @@ def build_live_run() -> dict:
 # timeline.ndjson + pending-approvals.json + commitments file — no tokens.
 # Deterministic between state changes so the ETag/304 poll path holds.
 
-_OPEN_WATCH_TYPES = {"slack_thread", "slack_channel", "slack_dm", "slack_mention", "email"}
+def _open_watch_types():
+    """Return open-loop types and a displayable registry error.
+
+    Triage owns fail-closed checker behavior. The dashboard is a read-only projection, so a
+    broken manifest must not take unrelated quest data or controls offline.
+    """
+    try:
+        manifests = load_watch_manifests(REPO_ROOT / "yaas-triage")
+    except (OSError, ValueError) as exc:
+        return set(), str(exc)
+    return {
+        wtype for wtype, manifest in manifests.items() if manifest["open_loop"]
+    }, None
 _OUT_EVENTS = {"message_sent", "reply_sent", "dm_sent", "executed"}
 _IN_EVENTS  = {"info_received"}
 # Routine/no-loop events that never represent an open item on their own.
@@ -614,6 +598,7 @@ def _event_link(e: dict):
     return url, kind, _norm_channel(e)
 
 def build_open_items() -> dict:
+    open_watch_types, registry_error = _open_watch_types()
     active_dir = STATE_DIR / "quests" / "active"
     blocked, awaiting_reply, drafts = [], [], []
 
@@ -715,6 +700,7 @@ def build_open_items() -> dict:
         "drafts":         drafts,
         "review":         review,
         "commitments":    commitments,
+        "registry_error": registry_error,
         "total":          len(blocked) + len(awaiting_reply) + len(drafts)
                           + len(review) + len(commitments),
     }
@@ -794,14 +780,14 @@ def build_config() -> dict:
 
     groups = [
         {"title": "Concurrency", "items": [
-            knob("YAAS_TRIAGE_MAX_PARALLEL", 3,
+            knob("YAAS_TRIAGE_MAX_PARALLEL", NUMERIC_KNOBS["YAAS_TRIAGE_MAX_PARALLEL"],
                  "Quests checked at once = peak simultaneous Slack calls. Low on purpose: "
                  "burst concurrency is what trips Slack's rate limiter."),
         ]},
         {"title": "Dispatch limits", "items": [
             knob("YAAS_MAX_DISPATCH_FANOUT", 4, "Max paid worker dispatches per tick."),
-            knob("YAAS_TICK_DISPATCH_BUDGET", 3600, "Wall-seconds the dispatch phase may spend per tick."),
-            knob("YAAS_MIN_DISPATCH_SLICE", 300, "A target needs at least this many seconds of budget or it's deferred."),
+            knob("YAAS_TICK_DISPATCH_BUDGET", NUMERIC_KNOBS["YAAS_TICK_DISPATCH_BUDGET"], "Wall-seconds the dispatch phase may spend per tick."),
+            knob("YAAS_MIN_DISPATCH_SLICE", NUMERIC_KNOBS["YAAS_MIN_DISPATCH_SLICE"], "A target needs at least this many seconds of budget or it's deferred."),
             knob("YAAS_MAX_TARGET_DISPATCH_PER_HOUR", 25, "Per-target hourly breaker: skip a target dispatched more than this in the last hour."),
         ]},
         {"title": "Spend caps", "items": [
@@ -971,10 +957,10 @@ def build_dashboard() -> dict:
                 qid = owner.get(wid)
                 if not qid:
                     continue  # orphan: the watch or its quest is gone
-                try:
-                    remaining = float(rec.get("next_retry_ts") or 0) - now
-                except (TypeError, ValueError):
+                if tick_check.is_due(rec, now):
                     remaining = 0
+                else:
+                    remaining = float(rec.get("next_retry_ts") or 0) - now
                 if remaining <= 0:
                     continue  # not currently waiting
                 extra.setdefault(qid, []).append({
@@ -1076,17 +1062,24 @@ def build_messages() -> dict:
 
     appr_data  = _read_approvals() if APPROVALS_FILE.exists() else {"items": []}
     appr_by_id = _approvals_index(appr_data)
-    pending    = [i for i in appr_data.get("items", [])
-                  if i.get("status") not in TERMINAL_APPROVAL_STATUSES]
-
+    pending = [i for i in appr_data.get("items", [])
+               if i.get("status") not in TERMINAL_APPROVAL_STATUSES]
     needs_you, other_actions = [], []
+    queued_items = []
     for i in pending:
-        # Operator-submitted instructions are already authorized. Show them only
-        # in queued_items below, not as review cards with buttons that must 409.
-        if i.get("action_type") == "manual_instruction":
+        status = i.get("status")
+        card = _approval_card(i)
+        stalled = card.get("stalled", False)
+        if status in ("pending_review", "needs_reply") or stalled:
+            (needs_you if i.get("action_type", "slack_message") in _MSG_ACTION_TYPES
+             else other_actions).append(card)
             continue
-        (needs_you if i.get("action_type", "slack_message") in _MSG_ACTION_TYPES
-         else other_actions).append(_approval_card(i))
+        if status in ("reviewed", "executing"):
+            # Keep the same rich card shape as pending review. The control UI
+            # must show destination, risk, revision context and legal actions
+            # after an operator approves an item, not make it disappear into a
+            # thinner "queued" representation until the worker picks it up.
+            queued_items.append(card)
 
     # Recent activity: all timeline events (not just outbound) across active quests.
     # Skips "created" (no display value) and empty note/info events.
@@ -1149,27 +1142,103 @@ def build_messages() -> dict:
     recent.sort(key=lambda r: r.get("ts") or "", reverse=True)
     recent = recent[:40]
 
-    # Queued items: approved but not yet sent by the worker.
-    queued_items = [
-        {
-            "id":           i.get("id"),
-            "quest_id":     i.get("quest_id"),
-            "quest_title":  i.get("quest_title", i.get("quest_id")),
-            "action_type":  i.get("action_type", "slack_message"),
-            "reviewed_at":  i.get("reviewed_at"),
-            "executing_at": i.get("executing_at"),
-            "status":       i.get("status"),
-            "message_text": i.get("message_text", ""),
-        }
-        for i in appr_data.get("items", [])
-        if i.get("status") in ("reviewed", "executing")
-    ]
-
     return {
         "needs_you":       needs_you,
         "other_actions":   other_actions,
         "recent_activity": recent,
         "queued_items":    queued_items,
+    }
+
+
+# ── Quest control snapshot ───────────────────────────────────────────────────
+# This is intentionally additive. V1 continues to consume its focused payloads,
+# while v2 receives a stable view model that can gain richer worker-provided
+# provenance later without teaching the browser about raw timeline variants.
+
+_EVENT_ACTIONS = {
+    "message_sent": "sent message",
+    "reply_sent": "sent reply",
+    "dm_sent": "sent direct message",
+    "email_replied": "replied to email",
+    "draft_posted": "created draft",
+    "executed": "executed approved action",
+    "info_received": "received update",
+    "blocked": "hit blocker",
+    "status_change": "changed quest status",
+}
+
+def _control_activity(rec: dict) -> dict:
+    event = rec.get("event") or "note"
+    kind = rec.get("kind")
+    if kind in ("sent", "draft", "email") or event in _OUTBOUND_EVENTS:
+        actor = "agent"
+    elif event == "info_received":
+        actor = "external"
+    else:
+        actor = "system"
+    risk = "external_send" if event in _SENT_EVENTS or kind in ("sent", "email") else "normal"
+    target = rec.get("channel_id") or rec.get("quest_title") or rec.get("quest_id") or ""
+    return {
+        "id": f"{rec.get('quest_id', '')}:{rec.get('ts', '')}:{event}",
+        "timestamp": rec.get("ts"),
+        "actor": actor,
+        "event": event,
+        "action": _EVENT_ACTIONS.get(event, event.replace("_", " ")),
+        "outcome": "awaiting review" if rec.get("awaiting_send") else "recorded",
+        "risk": risk,
+        "target": target,
+        "detail": rec.get("message_text") or rec.get("note") or "",
+        "quest_id": rec.get("quest_id"),
+        "quest_title": rec.get("quest_title"),
+        "link_url": rec.get("link_url") or rec.get("slack_url"),
+        "link_kind": rec.get("link_kind"),
+    }
+
+def build_control() -> dict:
+    dashboard = build_dashboard()
+    messages = build_messages()
+    attention = []
+
+    for card in messages["needs_you"]:
+        attention.append({
+            "id": f"approval:{card.get('id')}", "kind": "review",
+            "priority": "high", "label": "Review agent action",
+            "detail": card.get("risk_reason") or card.get("message_text", ""),
+            "quest_id": card.get("quest_id"), "quest_title": card.get("quest_title"),
+            "approval": card,
+        })
+    for card in messages["other_actions"]:
+        attention.append({
+            "id": f"approval:{card.get('id')}", "kind": "review",
+            "priority": "high", "label": "Review agent action",
+            "detail": card.get("risk_reason") or card.get("message_text", ""),
+            "quest_id": card.get("quest_id"), "quest_title": card.get("quest_title"),
+            "approval": card,
+        })
+    for quest in dashboard["quests"]:
+        if quest.get("status") == "blocked" or quest.get("backoff_count") or quest.get("ratelimited"):
+            attention.append({
+                "id": f"quest:{quest['id']}:health", "kind": "quest_health",
+                "priority": "high", "label": "Quest needs attention",
+                "detail": (quest.get("last_blocked") or {}).get("reason") or "Watch needs recovery",
+                "quest_id": quest["id"], "quest_title": quest["title"],
+            })
+
+    return {
+        "api_version": 1,
+        "capabilities": {
+            "control_snapshot": True,
+            "normalized_activity": True,
+            "structured_live_progress": False,
+            "activity_pagination": False,
+        },
+        "triage": dashboard["triage"],
+        "live": dashboard["live_run"],
+        "quests": dashboard["quests"],
+        "attention": attention,
+        "queued": messages["queued_items"],
+        "activity": [_control_activity(rec) for rec in messages["recent_activity"]],
+        "history": build_history(),
     }
 
 
@@ -1182,6 +1251,7 @@ _TIMELINE_KEYS = ("ts", "event", "note", "reason", "permalink", "by", "channel",
 _TIMELINE_CAP  = 500
 
 def build_quest_detail(quest_id: str) -> dict | None:
+    open_watch_types, registry_error = _open_watch_types()
     active_dir = STATE_DIR / "quests" / "active"
     quest_dir  = active_dir / quest_id
     # Prevent path traversal outside the active quests dir
@@ -1271,7 +1341,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
     open_threads, scheduled = [], []
     for e in watches:
         wtype = e.get("type")
-        if wtype in _OPEN_WATCH_TYPES:
+        if wtype in open_watch_types:
             ch, tts = e.get("channel_id"), e.get("thread_ts")
             url, kind = _watch_link(e, wtype, ch, tts)
             open_threads.append({
@@ -1383,10 +1453,10 @@ def build_quest_detail(quest_id: str) -> dict | None:
         for wid, rec in (health or {}).items():
             if wid not in mine or not isinstance(rec, dict):
                 continue
-            try:
-                remaining = float(rec.get("next_retry_ts") or 0) - now
-            except (TypeError, ValueError):
+            if tick_check.is_due(rec, now):
                 remaining = 0
+            else:
+                remaining = float(rec.get("next_retry_ts") or 0) - now
             if remaining <= 0:
                 continue
             backoff_watches.append({
@@ -1425,6 +1495,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
         "scheduled":         scheduled,
         "review":            review,
         "commitments":       commitments,
+        "registry_error":    registry_error,
     }
 
     return {
@@ -1449,7 +1520,7 @@ def build_history() -> dict:
         try:
             data = _read_approvals()
             approvals = [
-                {**i, **_approval_target_link(i)}
+                {**i, **_approval_card(i)}
                 for i in data.get("items", [])
                 if isinstance(i, dict) and i.get("status") != "pending_review"
             ]
@@ -1569,13 +1640,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _serve_dashboard(self):
+    def _serve_dashboard(self, dashboard_path: Path = DASHBOARD_HTML):
         """Serve the HTML shell: inject a per-response CSP nonce into the single
         inline <script>, and (re)issue the session cookie. This is the only
         unauthenticated route — it hands the browser the cookie that every other
         route then requires."""
         try:
-            html = DASHBOARD_HTML.read_text()
+            html = dashboard_path.read_text()
         except FileNotFoundError:
             self.send_error(404)
             return
@@ -1616,6 +1687,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._serve_dashboard()
             return
+        if path in ("/v2", "/dashboard-v2.html"):
+            self._serve_dashboard(DASHBOARD_V2_HTML)
+            return
 
         # Everything else (state + APIs) requires the cookie.
         if not self._authed():
@@ -1624,6 +1698,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/dashboard":
             self._send_json_etag(build_dashboard)
+            return
+
+        if path == "/api/control":
+            self._send_json_etag(build_control)
             return
 
         if path == "/api/messages":
@@ -1669,17 +1747,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(403, "forbidden")
             return
 
-        path   = urllib.parse.urlparse(self.path).path
-        length = int(self.headers.get("Content-Length", 0))
+        path = urllib.parse.urlparse(self.path).path
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self._send_json({"error": "invalid Content-Length"}, 400)
+            return
+        if length < 0:
+            self._send_json({"error": "invalid Content-Length"}, 400)
+            return
+        if length > MAX_REQUEST_BODY_BYTES:
+            self._send_json({"error": "request body too large"}, 413)
+            return
         raw    = self.rfile.read(length) if length else b"{}"
         try:
             payload = json.loads(raw) if raw else {}
-        except Exception:
-            payload = {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json({"error": "request body must be valid JSON"}, 400)
+            return
+        if not isinstance(payload, dict):
+            self._send_json({"error": "request body must be a JSON object"}, 400)
+            return
 
         parts = [p for p in path.strip("/").split("/") if p]
-        # Expected: ["api", "review" | "revise" | "edit" | "cancel", "<id>"]
-        if len(parts) == 3 and parts[0] == "api" and parts[1] in ("review", "revise", "edit", "cancel"):
+        # Expected: ["api", "<action>", "<id>"]
+        if len(parts) == 3 and parts[0] == "api" and parts[1] in approval_state.HTTP_ACTIONS:
             self._handle_review(parts[2], parts[1], payload)
             return
 
@@ -1688,7 +1780,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._handle_prompt(urllib.parse.unquote(parts[2]), payload)
             return
 
+        if path == "/api/quests":
+            self._handle_create_quest(payload)
+            return
+
         self.send_error(404)
+
+    @staticmethod
+    def _approval_conflict_message(action: str) -> str:
+        return {
+            "undo": "only reviewed or cancelled items can be undone",
+            "reclaim": "only executing items with an expired lease can be reclaimed",
+            "edit": "item is no longer in reviewed state",
+        }.get(action, "already reviewed, executing, executed, or cancelled")
 
     def _handle_prompt(self, quest_id: str, payload: dict):
         """Durably queue one operator-authorized instruction for a quest."""
@@ -1744,83 +1848,105 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._send_json({"ok": True, "queued": True, "quest_id": quest_id,
                          "approval_id": result["approval_id"]}, 202)
 
+    def _handle_create_quest(self, payload: dict):
+        """Create a real quest through the canonical scaffolder, never by hand."""
+        fields = {name: payload.get(name) for name in ("prompt", "title", "priority")}
+        for name, value in fields.items():
+            if value is not None and not isinstance(value, str):
+                self._send_json({"error": f"{name} must be a string"}, 400)
+                return
+        prompt = (fields["prompt"] or "").strip()
+        title = (fields["title"] or "").strip()
+        priority = (fields["priority"] or "normal").strip()
+        if not prompt:
+            self._send_json({"error": "prompt is required"}, 400)
+            return
+        if len(prompt) > 4000:
+            self._send_json({"error": "prompt too long (max 4000 chars)"}, 400)
+            return
+        if len(title) > 120:
+            self._send_json({"error": "title too long (max 120 chars)"}, 400)
+            return
+        if priority not in ("high", "normal", "low"):
+            self._send_json({"error": "priority must be high, normal, or low"}, 400)
+            return
+
+        # The watch is intentionally slightly after the helper's watermark. A
+        # one-shot due timestamp of "now" would be written before last_checked_ts
+        # and therefore be considered already spent by the schedule checker.
+        initial_run_ts = str(time.time() + QUEST_CREATE_TIMEOUT_S + 5)
+        if not title:
+            first_line = next((line.strip() for line in prompt.splitlines() if line.strip()), "")
+            title = first_line[:80] or "Operator request"
+        spec = {
+            "title": title,
+            "priority": priority,
+            "allow_send": False,
+            "context": (
+                "## Operator request\n\n"
+                f"{prompt}\n\n"
+                "## Operating mode\n\n"
+                "Work on this request after the initial schedule fires. Draft first; "
+                "do not send anything externally without approval."
+            ),
+            "note": "Created from Quest Control",
+            "watches": [{
+                "type": "schedule",
+                "next_fire_ts": initial_run_ts,
+                "reason": "Run the operator's initial request once, then wait for follow-up instructions.",
+            }],
+        }
+        helper = SCRIPT_DIR.parent / "skills" / "yaas-quest-creation" / "new-quest.py"
+        try:
+            cp = subprocess.run(
+                [sys.executable, str(helper), json.dumps(spec)],
+                capture_output=True, text=True, timeout=QUEST_CREATE_TIMEOUT_S, cwd=str(REPO_ROOT),
+            )
+        except Exception as e:
+            self._send_json({"error": f"failed to create quest: {e}"}, 500)
+            return
+        match = re.search(r"^✓ Created ([a-z0-9-]+)$", cp.stdout or "", re.MULTILINE)
+        if cp.returncode != 0 or not match:
+            self._send_json({
+                "error": "quest could not be created",
+                "detail": ((cp.stderr or cp.stdout) or "").strip()[:500],
+            }, 500)
+            return
+        self._send_json({
+            "ok": True,
+            "quest_id": match.group(1),
+            "allow_send": False,
+            "initial_run_at": initial_run_ts,
+        }, 201)
+
     def _handle_review(self, approval_id: str, action: str, payload: dict):
         if not APPROVALS_FILE.exists():
             self._send_json({"error": "pending-approvals.json not found"}, 404)
             return
 
-        now = datetime.now(timezone.utc).isoformat()
-
-        if action == "edit":
-            # In-place text edit on an already-reviewed item — stays reviewed,
-            # just updates the message_text the worker will send.
-            new_text = payload.get("message_text", "").strip()
-            if not new_text:
-                self._send_json({"error": "message_text required"}, 400)
-                return
-            updates = {"message_text": new_text, "human_edited": True}
-            try:
-                item = _update_approval(approval_id, updates, from_status=("reviewed",))
-            except Exception as e:
-                self._send_json({"error": str(e)}, 500)
-                return
-            if item is None:
-                self._send_json({"error": "approval not found"}, 404)
-                return
-            if item is _CONFLICT:
-                self._send_json({"error": "item is no longer in reviewed state"}, 409)
-                return
-            self._send_json({"ok": True, "status": item["status"]})
-            return
-        elif action == "revise":
-            # Explicit "Submit for revision": send the draft back to the worker
-            # for another pass, no matter what. Reuses the needs_reply loop the
-            # '?' heuristic below relies on, so the worker revises + re-surfaces
-            # it for another review round (repeatable across turns). Requires a
-            # note so the worker has something to act on.
-            note = payload.get("review_note", "").strip()
-            if not note:
-                self._send_json({"error": "revision requires an instruction note"}, 400)
-                return
-            updates: dict = {"status": "needs_reply", "review_note": note,
-                             "asked_at": now}
-            if "message_text" in payload:
-                updates["message_text"] = payload["message_text"]
-                updates["human_edited"] = True
-        elif action == "review":
-            note = payload.get("review_note", "").strip()
-            edited = "message_text" in payload
-            # A note that is a question ('?') with no accompanying message edit
-            # is a query to the bot, NOT an approval. Do not mark it reviewed
-            # (which would send it and hide it) — set needs_reply so it stays in
-            # the queue and the worker answers + re-surfaces it next triage.
-            # (The "Submit for revision" button above is the explicit form of this.)
-            if note and "?" in note and not edited:
-                updates = {"status": "needs_reply", "review_note": note,
-                           "asked_at": now}
-            else:
-                updates = {"status": "reviewed", "reviewed_at": now}
-                if edited:
-                    updates["message_text"] = payload["message_text"]
-                    updates["human_edited"] = True
-                if note:
-                    updates["review_note"] = note
-        else:
-            updates = {"status": "cancelled", "cancelled_at": now}
-
         try:
-            allowed = (("pending_review", "needs_reply", "reviewed")
-                       if action == "cancel" else ("pending_review", "needs_reply"))
-            item = _update_approval(approval_id, updates, from_status=allowed)
+            item = approval_store.mutate_item(
+                approval_id,
+                lambda current: approval_state.apply_transition(
+                    current, action, payload, datetime.now(timezone.utc)
+                ),
+            )
+        except approval_state.InvalidPayload as e:
+            msg = str(e)
+            code = 400
+            if msg.startswith("error:"):
+                code = 500
+            self._send_json({"error": msg}, code)
+            return
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
             return
 
-        if item is None:
+        if item is approval_store.NOT_FOUND:
             self._send_json({"error": "approval not found"}, 404)
             return
-        if item is _CONFLICT:
-            self._send_json({"error": "already reviewed, executing, executed, or cancelled"}, 409)
+        if item is approval_state.ILLEGAL:
+            self._send_json({"error": self._approval_conflict_message(action)}, 409)
             return
 
         self._send_json({"ok": True, "status": item["status"]})

@@ -48,7 +48,8 @@ cd "$REPO"
 
 # Files that may contain path references. Deliberately includes the LLM-facing ones.
 SEARCH=(--include='*.md' --include='*.json' --include='*.sh' --include='*.py'
-        --include='*.html' --include='*.plist' --include='*.template' --include='*.toml')
+        --include='*.html' --include='*.plist' --include='*.template' --include='*.toml'
+        --include='*.example')
 
 # Directories that legitimately contain stale or historical references and must not fail
 # the build: the plan document records what things were called before, and git internals
@@ -57,7 +58,9 @@ SEARCH=(--include='*.md' --include='*.json' --include='*.sh' --include='*.py'
 # inside a temp fixture: those strings are inputs to a function, not references to files
 # that should exist. (Careful writing prose here: naming such a path in a comment makes
 # THIS file fail its own check, which is exactly what happened the first time.)
-EXCLUDE_RE='^(\.git/|node_modules/|\.local/|logs/|state/|yaas-robustness-plan\.md|documentation-complaints\.md|docs/|yaas-triage/tests/behaviour/repo-root\.test\.sh)'
+# code-reviews/ holds architecture reviews and their remediation plans. A plan's whole job is
+# to name files that do NOT exist yet (that is the proposal), so it belongs with docs/ here.
+EXCLUDE_RE='^(\.git/|node_modules/|\.local/|logs/|state/|yaas-robustness-plan\.md|documentation-complaints\.md|docs/|code-reviews/|yaas-triage/tests/behaviour/repo-root\.test\.sh)'
 
 # Paths that are documentation EXAMPLES rather than real files. Each needs a reason:
 # a bare allowlist becomes a place to hide broken references.

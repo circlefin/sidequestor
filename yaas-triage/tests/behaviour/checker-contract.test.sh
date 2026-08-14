@@ -50,6 +50,8 @@ _find_triage() {
 }
 SCRIPT_DIR="$(_find_triage "$0")" || exit 1
 CHECKERS="$SCRIPT_DIR/checkers"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
 
 PASS=0
 FAIL=0
@@ -66,19 +68,32 @@ CODE_BUGS='AttributeError|NameError|UnboundLocalError|ImportError|IndentationErr
 # their source in a test environment, which is fine and expected — the point is that
 # they fail as a well-formed `error`/`ratelimited`, not as a code bug.
 entry_for() {
-  case "$1" in
-    slack_thread)   echo '{"type":"slack_thread","channel_id":"C0","thread_ts":"1.000001","last_checked_ts":"1"}' ;;
-    slack_channel)  echo '{"type":"slack_channel","channel_id":"C0","last_checked_ts":"1"}' ;;
-    slack_dm)       echo '{"type":"slack_dm","channel_id":"D0","user_id":"U0","last_checked_ts":"1"}' ;;
-    slack_mention)  echo '{"type":"slack_mention","user_id":"U0","last_checked_ts":"1"}' ;;
-    email)          echo '{"type":"email","query":"from:nobody@example.invalid","last_checked_ts":"1"}' ;;
-    jira)           echo '{"type":"jira","jql":"project = NOPE","last_checked_ts":"1"}' ;;
-    github_pr)      echo '{"type":"github_pr","repo":"nope/nope","last_checked_ts":"1"}' ;;
-    github_issue)   echo '{"type":"github_issue","repo":"nope/nope","last_checked_ts":"1"}' ;;
-    schedule)       echo '{"type":"schedule","cron":"* * * * *","tz":"UTC","last_checked_ts":"1"}' ;;
-    approval)       echo '{"type":"approval","approval_id":"appr-does-not-exist","last_checked_ts":"1"}' ;;
-    *)              echo '{"type":"'"$1"'","last_checked_ts":"1"}' ;;
-  esac
+  jq -c '.checker_example' "$CHECKERS/$1.watch.json"
+}
+
+watch_types() {
+  python3 - "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ts", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print("\n".join(m.load_watch_manifests(sys.argv[2]).keys()))
+PY
+}
+
+loader_err() {
+  python3 - "$SCRIPT_DIR/tick_state.py" "$1" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ts", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+try:
+    m.load_watch_manifests(sys.argv[2])
+except Exception as exc:
+    print(exc)
+    sys.exit(1)
+sys.exit(0)
+PY
 }
 
 check_output() {
@@ -114,11 +129,8 @@ check_output() {
 }
 
 echo "── every checker honours the result contract ──────────────────────────────"
-for path in "$CHECKERS"/*.py; do
-  name=$(basename "$path" .py)
-  case "$name" in
-    result|slack_utils|cron-due|reactions) continue ;;   # not per-entry checkers
-  esac
+for name in $(watch_types); do
+  path="$CHECKERS/$name.py"
   [ -x "$path" ] || bad "$name — not executable, so triage reports 'no executable checker'"
   check_output "$name (plausible entry)" "$(python3 "$path" "$(entry_for "$name")" 2>/dev/null)"
   check_output "$name (nonsense entry)"  "$(python3 "$path" '{"nope":true}' 2>/dev/null)"
@@ -136,6 +148,23 @@ for name in schedule approval; do
     clean|dirty) ok "$name — $outcome (reads local state, so it must not error)" ;;
     *) bad "$name — returned '$outcome' on a valid entry with no network needed: $out" ;;
   esac
+done
+
+echo
+echo "── slack prefix rule matches manifest upstream declarations ───────────────"
+for manifest in "$CHECKERS"/*.watch.json; do
+  type_name=$(basename "$manifest" .watch.json)
+  upstream=$(jq -r '.upstream // ""' "$manifest")
+  if [ "$upstream" = "slack" ] && [[ "$type_name" != slack_* ]]; then
+    bad "$type_name broke the upstream=slack -> slack_* rule; fix by renaming the type or correcting upstream"
+  else
+    ok "$type_name satisfies the upstream=slack -> slack_* rule"
+  fi
+  if [[ "$type_name" = slack_* ]] && [ "$upstream" != "slack" ]; then
+    bad "$type_name broke the slack_* -> upstream=slack rule; fix by renaming the type or correcting upstream"
+  else
+    ok "$type_name satisfies the slack_* -> upstream=slack rule"
+  fi
 done
 
 echo
@@ -158,7 +187,7 @@ echo "── helpers are NOT executable; plugins are ─────────
 # slack_utils.py` would silently make a helper dispatchable, and a watch typed to match it
 # would execute a module that never emits a checker result. Pin it here so the mode bit
 # cannot drift unnoticed.
-HELPERS="result.py slack_utils.py"
+HELPERS="result.py slack_utils.py github.py"
 for h in $HELPERS; do
   f="$SCRIPT_DIR/checkers/$h"
   [ -f "$f" ] || { bad "helper missing: $h"; continue; }
@@ -167,11 +196,45 @@ for h in $HELPERS; do
 done
 # ...and the converse: every real watch type must have an EXECUTABLE plugin, or tick.py
 # silently classifies that watch as misconfig and holds its watermark forever.
-for t in slack_thread slack_channel slack_dm slack_mention email jira github_pr github_issue schedule approval; do
+for t in $(watch_types); do
   f="$SCRIPT_DIR/checkers/$t.py"
   [ -x "$f" ] && ok "plugin $t.py is executable" \
                || bad "plugin $t.py is missing or not executable — that watch type is dead"
 done
+
+echo
+echo "── manifest inventory stays bijective with executable checkers ────────────"
+eq_count() { [ "$2" = "$3" ] && ok "$1" || bad "$1 (want $3, got $2)"; }
+DECLARED_COUNT=$(watch_types | wc -l | tr -d ' ')
+MANIFEST_COUNT=$(find "$CHECKERS" -name '*.watch.json' | wc -l | tr -d ' ')
+EXECUTABLE_TYPE_COUNT=$(find "$CHECKERS" -name '*.py' -perm -111 | while read -r f; do basename "$f" .py; done | grep -Ev '^(cron-due|reactions)$' | wc -l | tr -d ' ')
+eq_count "every manifest is loaded as one declared watch type" "$DECLARED_COUNT" "$MANIFEST_COUNT"
+eq_count "declared watch types match executable per-entry checkers" "$DECLARED_COUNT" "$EXECUTABLE_TYPE_COUNT"
+for utility in cron-due reactions; do
+  [ ! -e "$CHECKERS/$utility.watch.json" ] \
+    && ok "$utility remains an executable non-watch utility" \
+    || bad "$utility incorrectly has a watch manifest"
+done
+
+BROKEN="$TMP/repo"
+mkdir -p "$BROKEN/yaas-triage"
+cp -R "$CHECKERS" "$BROKEN/yaas-triage/"
+rm "$BROKEN/yaas-triage/checkers/slack_thread.watch.json"
+if loader_err "$BROKEN/yaas-triage" 2>&1 | grep -q 'slack_thread.py'; then
+  ok "executable checker with no manifest is rejected by checker path"
+else
+  bad "missing-manifest checker path was not reported"
+fi
+
+BROKEN2="$TMP/repo2"
+mkdir -p "$BROKEN2/yaas-triage"
+cp -R "$CHECKERS" "$BROKEN2/yaas-triage/"
+chmod -x "$BROKEN2/yaas-triage/checkers/slack_thread.py"
+if loader_err "$BROKEN2/yaas-triage" 2>&1 | grep -q 'slack_thread.watch.json'; then
+  ok "manifest with no executable checker is rejected by manifest path"
+else
+  bad "orphan-manifest path was not reported"
+fi
 
 echo
 echo "────────────────────────────────────────────────────────────────────────────"

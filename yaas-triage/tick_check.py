@@ -64,6 +64,32 @@ def valid_watch_id(wid):
     return bool(wid) and bool(_WATCH_ID.match(wid))
 
 
+def is_due(rec, now_ts):
+    """Whether a record's next_retry_ts has passed. Malformed or empty means due."""
+    try:
+        retry_at = float((rec or {}).get("next_retry_ts", 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        return True
+    return not (retry_at > now_ts and retry_at != 0)
+
+
+def structural_verdict(watch, health, unacked, unacked_due, unacked_promote, checker_exists):
+    """Return the structural verdict, or None if no structural gate fired."""
+    wid = watch.get("watch_id")
+    wtype = watch.get("type", "")
+    if not valid_watch_id(wid):
+        return _v(MISCONFIG, wtype, wid, reason=f"[{wtype}] invalid or missing watch_id; watermark held")
+    if unacked >= unacked_promote and not unacked_due:
+        return _v(BACKOFF, wtype, wid, unacked=unacked,
+                  reason=f"[{wtype}] {unacked} dispatch(es) with no progress; backing off, watermark held")
+    if health and health.get("in_backoff"):
+        return _v(BACKOFF, wtype, wid,
+                  reason=f"[{wtype}] in checker backoff until {health.get('next_retry_ts', '?')}")
+    if not checker_exists:
+        return _v(MISCONFIG, wtype, wid, reason=f"[{wtype}] no executable checker; watermark held")
+    return None
+
+
 def classify(result, watch, health=None, unacked=0, unacked_due=True,
              unacked_promote=3, error_promote=6, checker_exists=True):
     """Return a verdict dict for one watch. PURE.
@@ -85,35 +111,10 @@ def classify(result, watch, health=None, unacked=0, unacked_due=True,
     wtype = watch.get("type", "")
 
     # ── Structural checks first: these hold regardless of what the checker said ─────────
-    if not valid_watch_id(wid):
-        return _v(MISCONFIG, wtype, wid, reason=f"[{wtype}] invalid or missing watch_id; watermark held")
-
-    # Repeated no-progress dispatches BACK OFF; they never promote to misconfig and never park.
-    #
-    # This used to return MISCONFIG "pending review", which froze the watch until a human
-    # cleared an approval card. Two problems, both observed live. (1) It cannot tell a real
-    # misconfiguration from a blip: on 2026-08-11 a 40-minute DNS outage on the host produced
-    # three cards across three quests, because a worker that never reached the API cannot ack,
-    # and "did not ack" was scored identically to "ran fine and refused to ack". (2) A frozen
-    # watch is worse than a slow one — the work behind it (a partner waiting on a file) sits
-    # untouched until someone notices the card.
-    #
-    # Backing off instead keeps the retry alive forever at a decaying rate, so a transient
-    # failure self-heals with no human in the loop and a permanent one costs ~1 dispatch/day
-    # while staying visible on the dashboard. The watermark is held throughout either way, so
-    # nothing is buried; the only question was ever how often to retry.
-    if unacked >= unacked_promote and not unacked_due:
-        return _v(BACKOFF, wtype, wid, unacked=unacked,
-                  reason=f"[{wtype}] {unacked} dispatch(es) with no progress; backing off, watermark held")
-
-    # In an active backoff window? Hold without running the checker. (The caller decides the
-    # window has not yet expired; classify only needs to know it is currently backed off.)
-    if health and health.get("in_backoff"):
-        return _v(BACKOFF, wtype, wid,
-                  reason=f"[{wtype}] in checker backoff until {health.get('next_retry_ts', '?')}")
-
-    if not checker_exists:
-        return _v(MISCONFIG, wtype, wid, reason=f"[{wtype}] no executable checker; watermark held")
+    verdict = structural_verdict(watch, health, unacked, unacked_due, unacked_promote,
+                                 checker_exists)
+    if verdict is not None:
+        return verdict
 
     # ── Now the checker's own result ────────────────────────────────────────────────────
     if not isinstance(result, dict):

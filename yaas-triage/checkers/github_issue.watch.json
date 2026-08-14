@@ -1,0 +1,14 @@
+{
+  "_comment": "checker_example is a minimal checker input, not an add-watch or new-quest creation template; it intentionally includes last_checked_ts.",
+  "schema_version": 1,
+  "required": [["repo"]],
+  "identity": ["repo", "search"],
+  "checker_example": {
+    "type": "github_issue",
+    "repo": "nope/nope",
+    "last_checked_ts": "1"
+  },
+  "open_loop": false,
+  "user_creatable": true,
+  "upstream": "github"
+}

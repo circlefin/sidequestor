@@ -47,6 +47,7 @@ REPO="$TMP/repo"
 mkdir -p "$REPO/state/triage"
 MON() { python3 "$SCRIPT_DIR/ops/health-monitor.py" --repo "$REPO" --json "$@" 2>/dev/null; }
 ago() { date -u -v-"$1"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "$1 minutes ago" +%Y-%m-%dT%H:%M:%SZ; }
+ahead() { date -u -v+"$1"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "$1 minutes" +%Y-%m-%dT%H:%M:%SZ; }
 
 reset_state() {
   printf '{"tick_started_utc":"%s","last_triage_completed_utc":"%s"}\n' "$(ago 1)" "$(ago 1)" \
@@ -138,6 +139,36 @@ printf '{"version":1,"items":[{"id":"appr-y","status":"executing","executing_at"
   "$(ago 5)" "$(ago 1)" > "$REPO/state/pending-approvals.json"
 has "$(MON)" "approval_stuck" && ok "an expired lease is flagged even when young" \
   || bad "lease_expires_at ignored"
+
+echo
+echo "── lease parity with approval_state, without importing it in production ──"
+parity_case() { # $1 = item json
+  reset_state
+  printf '{"version":1,"items":[%s]}\n' "$1" > "$REPO/state/pending-approvals.json"
+  got=$(MON | jq -r '[.problems[].key] | index("approval_stuck") != null')
+  want=$(python3 - "$SCRIPT_DIR" "$1" <<'PY'
+import importlib.util
+import json
+import sys
+from datetime import datetime, timezone
+
+spec = importlib.util.spec_from_file_location("approval_state", f"{sys.argv[1]}/approval_state.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+item = json.loads(sys.argv[2])
+print("true" if mod.is_stalled(item, datetime.now(timezone.utc)) else "false")
+PY
+)
+  [ "$got" = "$want" ]
+}
+parity_case '{"id":"lease-live","status":"executing","executing_at":"'"$(ago 5)"'","lease_expires_at":"'"$(ahead 5)"'"}'
+if [ "$?" -eq 0 ]; then ok "live lease matches approval_state.is_stalled"; else bad "live lease diverged from approval_state.is_stalled"; fi
+parity_case '{"id":"lease-expired","status":"executing","executing_at":"'"$(ago 5)"'","lease_expires_at":"'"$(ago 1)"'"}'
+if [ "$?" -eq 0 ]; then ok "expired lease matches approval_state.is_stalled"; else bad "expired lease diverged from approval_state.is_stalled"; fi
+parity_case '{"id":"lease-missing","status":"executing","executing_at":"'"$(ago 2)"'"}'
+if [ "$?" -eq 0 ]; then ok "missing lease matches approval_state.is_stalled"; else bad "missing lease diverged from approval_state.is_stalled"; fi
+parity_case '{"id":"lease-bad","status":"executing","executing_at":"'"$(ago 2)"'","lease_expires_at":"not-a-timestamp"}'
+if [ "$?" -eq 0 ]; then ok "malformed lease matches approval_state.is_stalled"; else bad "malformed lease diverged from approval_state.is_stalled"; fi
 
 echo
 echo "── health events from the run log ────────────────────────────────────────"

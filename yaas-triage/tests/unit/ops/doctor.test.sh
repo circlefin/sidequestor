@@ -99,7 +99,7 @@ ENV
 # $BIN plus the system dirs only. With the inherited PATH appended, deleting a fake
 # binary was a no-op because the real homebrew one answered instead, so the
 # missing-prerequisite cases passed vacuously.
-D() { ( cd "$REPO" && PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+D() { ( cd "$REPO" && unset YAAS_AGENT && PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
           HOME="$TMP/home" bash yaas-triage/ops/doctor.sh "$@" 2>&1 ); }
 
 echo "── it reports the three questions it is NOT answering ─────────────────────"

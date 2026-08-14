@@ -1,6 +1,6 @@
 ---
 name: yaas-checker-authoring
-description: Add a new watch type to the yaas triage loop — writing checkers/<type>.py, the registration points that must all be updated together, the tests a checker has to pass, and the docs that go stale if you skip them. Load when asked to watch a source triage cannot watch yet (a new API, a queue, a feed), or when reviewing a checker someone else added.
+description: Add a new watch type to the yaas triage loop by pairing an executable checkers/<type>.py with checkers/<type>.watch.json, then covering its behavior and affected docs. Load when asked to watch a source triage cannot watch yet (a new API, a queue, a feed), or when reviewing a checker someone else added.
 ---
 
 # yaas-checker-authoring
@@ -110,22 +110,43 @@ is reported twice.
 
 ## 3. Registration — all of it, or the type is broken in a way nothing catches
 
-A checker file alone does nothing. These are separate lists, none of which is derived from the
-others, and missing one produces a quiet partial failure rather than an error:
+A checker file alone does nothing, but the registration is now **two files**, not a dozen. The
+manifest is the single declaration; everything else derives from it by glob.
 
 | File | What to add | If you skip it |
 |---|---|---|
 | `checkers/<type>.py` | the checker, **executable** | every watch of the type is misconfig |
+| `checkers/<type>.watch.json` | the manifest, see below | the bijection test fails; nothing can use the type |
 | `checkers/<type>.lag` | integer seconds, if the source lags | duplicate reports, or missed items |
-| `ledger/add-watch.py` → `REQUIRED` | required fields | `add-watch.py` refuses the type outright |
-| `ledger/add-watch.py` → `IDENTITY` | the fields that make two watches "the same" | dedup collapses distinct watches, or never dedups |
-| `skills/yaas-quest-creation/new-quest.py` → `REQUIRED_FIELDS` + header docstring | same fields | new quests cannot use the type |
-| `tests/lib/scenario.py` → stub type list | the type name | differential/behaviour scenarios cannot exercise it |
-| `tests/behaviour/checker-contract.test.sh` → `entry_for()` + the executable loop | a minimal plausible entry | the type is not contract-checked |
 
-**On `IDENTITY`:** think about it rather than copying the sibling. `github_issue` uses
-`("repo", "search")` while `github_pr` uses `("repo",)`, because two issue watches on one repo
+The manifest carries `schema_version`, `required` (an AND-of-OR list), `identity`,
+`checker_example`, `open_loop`, `user_creatable` and `upstream`.
+
+**Derived automatically. Do not hand-edit these; they used to be separate lists and are not
+any more:**
+
+| Consumer | Reads |
+|---|---|
+| `ledger/add-watch.py` | `required` + `identity` via `load_watch_manifests` |
+| `skills/yaas-quest-creation/new-quest.py` | `required` + `user_creatable` |
+| `ops/dashboard-server.py` | `open_loop`, for the open-items display |
+| `tests/lib/scenario.py` | the type set |
+| `tests/behaviour/checker-contract.test.sh` | `checker_example`, via `entry_for()` |
+
+**Still hand-maintained, but under contract:** the watch-type tables in `README.md` and
+`ARCHITECTURE.md`, the `.lag` values in `yaas-ops/SKILL.md`, and the creation guidance in
+`yaas-quest-creation/SKILL.md`. `tests/behaviour/doc-contracts.test.sh` fails with the exact file
+and expectation if you add a type or change a `.lag` value without updating them.
+
+**On `identity`:** think about it rather than copying the sibling. `github_issue` uses
+`["repo", "search"]` while `github_pr` uses `["repo"]`, because two issue watches on one repo
 with different qualifiers are genuinely different watches and collapsing them would drop one.
+
+**Rule: Slack-backed types MUST be named `slack_*`.** `tick.py` and `tick_dispatch.py` still group
+Slack types by the `startswith("slack_")` prefix rather than by the manifest's `upstream` field,
+and `tests/behaviour/checker-contract.test.sh` enforces that the two agree in both directions. This
+is deliberate because loading manifests in the tick hot path would give every 60s liveness pass a
+hard dependency on those files, but it means the name is still part of the contract for Slack.
 
 ---
 
@@ -162,7 +183,7 @@ Every checker suite should cover, at minimum:
 - **Injection, if any field reaches a command line** — refused as `misconfig`, *before* the
   tool is invoked (assert the fake binary was never called).
 
-Then run the wider suites, because they have their own hardcoded lists:
+Then run the wider suites, because they exercise the manifest registry and dispatch behavior:
 `tests/behaviour/checker-contract.test.sh` (every checker honours the contract on both a
 plausible and a nonsense entry, and reports no `AttributeError`/`NameError`-class bug),
 `tests/behaviour/dirty-watch-dispatch.test.sh`, and `tests/run-all.sh`.
@@ -183,17 +204,17 @@ session) deciding whether the type exists. Update them in the same commit as the
 | `README.md` | the short "things you can watch" table |
 | `yaas-triage/skills/yaas-ops/SKILL.md` | the `checkers/` tree diagram, the `.lag` list, the example watch entry, and the per-type option notes |
 | `yaas-triage/skills/yaas-quest-creation/SKILL.md` | the watch-type list the creation flow offers, with its traps |
-| `yaas-triage/skills/yaas-quest-creation/new-quest.py` | the header docstring listing fields per type |
+| `checkers/<type>.watch.json` | the manifest fields and whether quest creation offers the type |
 | `yaas-triage/skills/yaas-quest-dispatch/SKILL.md` | **what a worker should DO when this type fires** — the commands to read the item, and the out-of-scope rule |
 | the checker's own module docstring | the real reference: every option, every trap, and the incident that motivated each rule |
 
 The dispatch skill is the one people forget. A watch type with no entry there fires correctly
 and then the worker has to improvise what to do about it, at Opus prices, every time.
 
-Sanity check before committing: `grep -rn "<nearest_sibling_type>" --include='*.md'
---include='*.py' --include='*.sh' .` from the repo root, excluding `state/`, `.local/` and
-`__pycache__`. Every hit is a place your type probably belongs too. That grep is how this list
-was built; it will stay more current than this table.
+Sanity check before committing: run `yaas-triage/tests/behaviour/doc-contracts.test.sh`. It fails
+with the exact stale doc file and expected contract when a new type or lag value is missing from
+the maintained tables in `README.md`, `ARCHITECTURE.md`, `yaas-ops/SKILL.md`, or
+`yaas-quest-creation/SKILL.md`.
 
 ---
 

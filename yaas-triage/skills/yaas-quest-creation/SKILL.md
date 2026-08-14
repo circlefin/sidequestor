@@ -45,8 +45,9 @@ Ask the user for, in order:
    - **`approval`** — effectively runtime-only: the worker appends one itself when it queues a manual-review item (§3d of CLAUDE.md). Do not put one in a creation spec — there is no approval to track before the quest exists. `new-quest.py` does accept the type (with a required `approval_id`) so its type list matches `checkers/`, so this is a rule you follow, not one the script enforces.
    - **Anything else** — there is no other type. `new-quest.py` rejects a type with no
      `checkers/<type>.py`, because an unknown type would otherwise scaffold cleanly and then be
-     skipped silently on every tick. To add one, write the checker first, then register it in
-     `REQUIRED_FIELDS`. `yaas-triage/skills/yaas-ops/SKILL.md` has the state-file reference.
+     skipped silently on every tick. To add one, write the checker first, then add
+     `checkers/<type>.watch.json` beside it so the manifest defines the required fields.
+     `yaas-triage/skills/yaas-ops/SKILL.md` has the state-file reference.
 
    **Prefer a pre-dispatch filter over waking Opus to decide relevance.** `slack_channel`
    and `slack_thread` watches accept two optional filter fields, evaluated inside the

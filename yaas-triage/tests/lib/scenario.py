@@ -74,6 +74,8 @@ TESTS_DIR = Path(__file__).resolve().parent.parent
 # broken code (which happened once), and a hard kill leaves the repo mutated.
 TRIAGE_DIR = Path(os.environ.get("YAAS_TRIAGE_SRC") or TESTS_DIR.parent).resolve()
 REPO_ROOT = TRIAGE_DIR.parent
+sys.path.insert(0, str(TRIAGE_DIR))
+from tick_state import load_watch_manifests
 
 
 def watch_id_for(alias):
@@ -291,8 +293,7 @@ def build(scenario_path, dest):
         (shutil.copytree if item.is_dir() else shutil.copy2)(item, tri / item.name)
 
     # ── Stubs over every external seam ──────────────────────────────────────────
-    for watch_type in ("slack_thread", "slack_channel", "slack_dm", "slack_mention",
-                       "email", "jira", "github_pr", "github_issue", "schedule", "approval"):
+    for watch_type in load_watch_manifests(TRIAGE_DIR):
         _write(tri / "checkers" / f"{watch_type}.py", CHECKER_STUB, executable=True)
     _write(tri / "checkers" / "reactions.py", REACTIONS_STUB, executable=True)
     _write(tri / "dispatch" / "run-agent.py", RUN_AGENT_STUB, executable=True)

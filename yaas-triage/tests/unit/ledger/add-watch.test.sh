@@ -44,8 +44,10 @@ bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 eq()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 
 REPO="$TMP/repo"; Q="$REPO/state/quests/active/q1"
-mkdir -p "$REPO/yaas-triage/ledger" "$Q"
+mkdir -p "$REPO/yaas-triage/ledger" "$REPO/yaas-triage/checkers" "$Q"
 cp "$SCRIPT_DIR/ledger/add-watch.py" "$REPO/yaas-triage/ledger/"
+cp "$SCRIPT_DIR/tick_state.py" "$REPO/yaas-triage/"
+cp "$SCRIPT_DIR"/checkers/*.py "$SCRIPT_DIR"/checkers/*.watch.json "$REPO/yaas-triage/checkers/"
 printf '%s\n' '{"watches":[{"type":"slack_channel","channel_id":"C0","last_checked_ts":"100","watch_id":"watch-0000000000000000","reason":"pre-existing"}]}' > "$Q/watch.json"
 cd "$REPO" || exit 1
 W() { python3 yaas-triage/ledger/add-watch.py "$@" 2>&1 | tail -1; }
@@ -77,7 +79,8 @@ for spec in \
   'no reason|{"type":"slack_thread","channel_id":"C1","thread_ts":"3.3"}' \
   'missing thread_ts|{"type":"slack_thread","channel_id":"C1","reason":"r"}' \
   'unknown type|{"type":"nope","reason":"r"}' \
-  'schedule with neither cron nor next_fire_ts|{"type":"schedule","reason":"r"}' \
+  'schedule with neither cron+tz nor next_fire_ts|{"type":"schedule","reason":"r"}' \
+  'schedule with bare cron|{"type":"schedule","cron":"* * * * *","reason":"r"}' \
   'bad watch_mode|{"type":"slack_thread","channel_id":"C9","thread_ts":"9.9","reason":"r","watch_mode":"write"}' \
   'malformed json|{not json' \
   ; do

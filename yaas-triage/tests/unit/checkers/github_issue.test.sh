@@ -17,12 +17,11 @@
 
 # github_issue.test.sh — the issues half of the GitHub pair.
 #
-# github_issue.py was copied from github_pr.py, which means it inherited the fix for the
-# 2026-08-05 stall (unbounded DESCENDING query -> the page is a suffix of the gap -> the
-# watermark can never cross it -> 424 misconfigured events over 14 hours). A copy is exactly
-# where that fix silently rots: someone "simplifies" the query back to descending and every
-# assertion about counts still passes. So the query shape is asserted here too, in its own
-# suite, rather than trusted because the sibling is tested.
+# github_issue.py now adapts through shared github.py doctrine, but this suite still asserts
+# the 2026-08-05 stall fix on the issues surface directly. The dangerous regression is the
+# same as before (unbounded DESCENDING query -> suffix of the gap -> the watermark can never
+# cross it -> 424 misconfigured events over 14 hours), and count assertions alone still do
+# not catch it. So the query shape is asserted here too, in its own suite.
 #
 # Two things are genuinely new versus github_pr and get the bulk of this file:
 #

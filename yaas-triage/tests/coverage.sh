@@ -37,6 +37,9 @@ exempt_reason() {
   case "$1" in
     dispatch/worker.mcp.json)   echo "config, not code" ;;
     checkers/*.lag)             echo "config: one integer" ;;
+    checkers/*.watch.json)      echo "validated collectively by behaviour/checker-contract + doc-contracts" ;;
+    approval_state.py)          echo "covered via behaviour/approval-transitions + approval-lease" ;;
+    checkers/github.py)         echo "shared adapter covered via unit/checkers/github_issue + github_pr" ;;
     ops/dashboard-start.sh)     echo "fifteen lines that open a browser" ;;
     triage-loop.sh)             echo "a sleep loop around tick.py; launchd owns it" ;;
     ops/heartbeat-loop.sh)      echo "a sleep loop around health-monitor.py; launchd owns it" ;;

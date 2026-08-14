@@ -52,10 +52,13 @@ ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 
 REPO="$TMP/repo"; TRI="$REPO/yaas-triage"
-mkdir -p "$TRI/surfaces" "$TRI/ledger" "$REPO/state/quests/active/q-demo"
+mkdir -p "$TRI/surfaces" "$TRI/ledger" "$TRI/checkers" "$REPO/state/quests/active/q-demo"
 cp "$SCRIPT_DIR/surfaces/slack-send.py" "$TRI/surfaces/"
 cp "$SCRIPT_DIR/ledger/approval-helper.py" "$TRI/ledger/"
 cp "$SCRIPT_DIR/ledger/add-watch.py" "$TRI/ledger/"
+cp "$SCRIPT_DIR/tick_state.py" "$TRI/"
+cp "$SCRIPT_DIR"/checkers/*.py "$SCRIPT_DIR"/checkers/*.watch.json "$TRI/checkers/"
+cp "$SCRIPT_DIR/approval_state.py" "$SCRIPT_DIR/approval_store.py" "$TRI/"
 [ -f "$SCRIPT_DIR/approval.py" ] && cp "$SCRIPT_DIR/approval.py" "$TRI/"
 for f in meta.json watch.json context.md timeline.ndjson; do : > "$REPO/state/quests/active/q-demo/$f"; done
 printf '{"id":"q-demo","title":"Demo","status":"active","allow_send":true}\n' \

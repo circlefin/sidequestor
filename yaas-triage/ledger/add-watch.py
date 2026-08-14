@@ -76,36 +76,20 @@ def _repo_root(start):
 REPO_ROOT  = _repo_root(__file__)
 QUESTS_DIR = REPO_ROOT / "state" / "quests"
 
-# Required fields per type. Kept in one place so a new watch type cannot be added by
-# hand-writing JSON that no checker can read.
-REQUIRED = {
-    "slack_thread":  ("channel_id", "thread_ts"),
-    "slack_channel": ("channel_id",),
-    "slack_dm":      ("channel_id", "user_id"),
-    "slack_mention": ("user_id",),
-    "email":         ("query",),
-    "jira":          ("jql",),
-    "github_pr":     ("repo",),
-    "github_issue":  ("repo",),
-    "schedule":      (),           # needs cron+tz OR next_fire_ts; checked below
-    "approval":      ("approval_id",),
-}
-# Identity fields per type: two watches matching on all of these are the same watch.
-IDENTITY = {
-    "slack_thread":  ("channel_id", "thread_ts"),
-    "slack_channel": ("channel_id",),
-    "slack_dm":      ("channel_id", "user_id"),
-    "slack_mention": ("user_id",),
-    "email":         ("query",),
-    "jira":          ("jql",),
-    "github_pr":     ("repo",),
-    # `search` is part of the identity here, unlike github_pr: two github_issue watches on
-    # one repo with different qualifiers (say `label:bug` and `label:docs`) are genuinely
-    # different watches, and collapsing them onto `repo` alone would silently drop one.
-    "github_issue":  ("repo", "search"),
-    "schedule":      ("id", "cron", "next_fire_ts"),
-    "approval":      ("approval_id",),
-}
+
+def _load_watch_manifests():
+    sys.path.insert(0, str(REPO_ROOT / "yaas-triage"))
+    from tick_state import load_watch_manifests
+    return load_watch_manifests(REPO_ROOT / "yaas-triage")
+
+
+def _watch_shapes():
+    manifests = _load_watch_manifests()
+    required = {wtype: tuple(tuple(alt) for alt in manifest["required"])
+                for wtype, manifest in manifests.items()}
+    identity = {wtype: tuple(manifest["identity"])
+                for wtype, manifest in manifests.items()}
+    return required, identity
 
 
 def die(msg):
@@ -133,14 +117,14 @@ def make_watch_id(quest_id, index, watch):
 
 
 def validate(entry):
+    required, _ = _watch_shapes()
     wtype = entry.get("type")
-    if wtype not in REQUIRED:
-        die(f"unknown_type:{wtype}:known are {', '.join(sorted(REQUIRED))}")
-    missing = [f for f in REQUIRED[wtype] if not entry.get(f)]
-    if missing:
-        die(f"missing_fields_for_{wtype}:{','.join(missing)}")
-    if wtype == "schedule" and not (entry.get("cron") or entry.get("next_fire_ts")):
-        die("schedule_needs_cron_or_next_fire_ts")
+    if wtype not in required:
+        die(f"unknown_type:{wtype}:known are {', '.join(sorted(required))}")
+    if not any(all(entry.get(field) for field in alt) for alt in required[wtype]):
+        if wtype == "schedule":
+            die("schedule_needs_cron_and_tz_or_next_fire_ts")
+        die(f"missing_fields_for_{wtype}:{','.join(required[wtype][0])}")
     if not entry.get("reason"):
         # A watch with no reason is unmaintainable: nobody can tell later whether it
         # is still wanted.
@@ -170,6 +154,7 @@ def main():
 
     validate(entry)
     path = find_watch(quest_id)
+    _, identity = _watch_shapes()
 
     # Default the watermark. Explicit is better: CLAUDE.md § 3a is specific that this
     # should be the response_ts of your own reply, not "now", or a reply arriving
@@ -209,7 +194,7 @@ def main():
             if not isinstance(watches, list):
                 die("watches_is_not_a_list")
 
-            ident = IDENTITY[entry["type"]]
+            ident = identity[entry["type"]]
             for w in watches:
                 if not isinstance(w, dict) or w.get("type") != entry["type"]:
                     continue

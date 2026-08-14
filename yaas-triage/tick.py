@@ -96,10 +96,10 @@ class Tick:
         self.agent = self.env.get("YAAS_AGENT", "claude")
         self.unacked_promote = self.cfg.knob("YAAS_UNACKED_PROMOTE")
         self.error_promote = self.cfg.knob("YAAS_CHECKER_ERROR_PROMOTE")
-        self.max_parallel = int(self.env.get("YAAS_TRIAGE_MAX_PARALLEL", "3") or "3")
+        self.max_parallel = self.cfg.knob("YAAS_TRIAGE_MAX_PARALLEL")
         self.max_fanout = self.cfg.knob("YAAS_MAX_DISPATCH_FANOUT")
-        self.tick_budget = int(self.env.get("YAAS_TICK_DISPATCH_BUDGET", "3600") or "3600")
-        self.min_slice = int(self.env.get("YAAS_MIN_DISPATCH_SLICE", "300") or "300")
+        self.tick_budget = self.cfg.knob("YAAS_TICK_DISPATCH_BUDGET")
+        self.min_slice = self.cfg.knob("YAAS_MIN_DISPATCH_SLICE")
         self.worker_timeout = int(self.env.get("YAAS_WORKER_TIMEOUT", "1800") or "1800")
         self.now_utc = _now_utc()
         self.now_ts = time.time()
@@ -251,6 +251,8 @@ def check_quest(t, qid):
         rows.append({"qid": qid, "status": "skip", "reason": "unreadable watch.json"})
         return rows
     watches = data.get("watches", []) or []
+    # Grouping by slack_ prefix is intentional here: the manifest's upstream field is the
+    # declaration, and checker-contract.test.sh asserts the prefix and upstream stay aligned.
     # local (non-slack) first, then slack_ — the ordering that stops a rate-limit skip from
     # short-circuiting a local dirty/approval watch at the array tail.
     order = ([w for w in watches if not str(w.get("type", "")).startswith("slack_")]
@@ -271,11 +273,7 @@ def check_quest(t, qid):
         health = None
         if isinstance(hrec, dict):
             health = dict(hrec)
-            retry = hrec.get("next_retry_ts", 0)
-            try:
-                health["in_backoff"] = float(retry) > t.now_ts and float(retry) != 0
-            except (TypeError, ValueError):
-                health["in_backoff"] = False
+            health["in_backoff"] = not tick_check.is_due(hrec, t.now_ts)
         unacked = 0
         # Due unless a no-progress backoff window is still open. Mirrors the checker-health
         # in_backoff computation directly above, on purpose: same shape, same failure mode,
@@ -289,11 +287,7 @@ def check_quest(t, qid):
                     unacked = int(urec.get("count", 0))
                 except (TypeError, ValueError):
                     unacked = 0
-                try:
-                    nrt = float(urec.get("next_retry_ts", 0) or 0)
-                    unacked_due = not (nrt > t.now_ts)
-                except (TypeError, ValueError):
-                    unacked_due = True
+                unacked_due = tick_check.is_due(urec, t.now_ts)
         checker = t.script_dir / "checkers" / f"{wtype}.py"
         checker_exists = os.access(checker, os.X_OK)
 
@@ -301,17 +295,12 @@ def check_quest(t, qid):
         # they pass (so a held watch costs nothing and side-effects nothing). Each maps to a
         # classify() verdict, but we decide them inline because whether to EXEC the checker
         # depends on them; classify then owns the result→verdict routing.
-        structurally_held = (not tick_check.valid_watch_id(wid)
-                             or (unacked >= t.unacked_promote and not unacked_due)
-                             or bool(health and health.get("in_backoff")) or not checker_exists)
-        if structurally_held:
+        structural = tick_check.structural_verdict(entry, health, unacked, unacked_due,
+                                                   t.unacked_promote, checker_exists)
+        if structural is not None:
             # A structural gate fired; all of them precede classify's None→error branch, so
             # classify(None) returns exactly that structural verdict (misconfig or in-backoff).
-            verdict = tick_check.classify(None, entry, health=health, unacked=unacked,
-                                          unacked_due=unacked_due,
-                                          unacked_promote=t.unacked_promote,
-                                          error_promote=t.error_promote,
-                                          checker_exists=checker_exists)
+            verdict = structural
         else:
             cp = t.run(t.py(checker, json.dumps(entry)))
             result = _parse_checker((cp.stdout or "").strip())
@@ -750,9 +739,7 @@ def _bump_unacked(t, key, wtype, status):
     rec["last_utc"] = t.now_utc
     rec["type"] = wtype
     rec["last_status"] = status
-    wait = unacked_backoff_for(rec["count"], t.unacked_promote)
-    rec["next_retry_ts"] = f"{t.now_ts + wait:.6f}" if wait else "0"
-    rec["backoff_sec"] = wait
+    _apply_unacked_backoff(t, rec)
     counts[key] = rec
     try:
         tmp = str(t.unacked_file) + ".tmp"
@@ -1152,6 +1139,12 @@ def unacked_backoff_for(n, promote):
     return min(UNACKED_BASE_BACKOFF * (2 ** (n - promote)), UNACKED_MAX_BACKOFF)
 
 
+def _apply_unacked_backoff(t, rec):
+    wait = unacked_backoff_for(rec["count"], t.unacked_promote)
+    rec["next_retry_ts"] = f"{t.now_ts + wait:.6f}" if wait else "0"
+    rec["backoff_sec"] = wait
+
+
 def _record_progress(t, scope, committed_ids):
     """Bump the no-progress counter for every manifest item NOT in committed_ids; clear it for
     those that were. Mirrors the original shell orchestrator _record_progress."""
@@ -1170,9 +1163,7 @@ def _record_progress(t, scope, committed_ids):
             rec["type"] = itype
         if status:
             rec["last_status"] = status
-        wait = unacked_backoff_for(rec["count"], t.unacked_promote)
-        rec["next_retry_ts"] = f"{t.now_ts + wait:.6f}" if wait else "0"
-        rec["backoff_sec"] = wait
+        _apply_unacked_backoff(t, rec)
         # Why the dispatch made no progress, in the worker's own words where we have them.
         # Without this the dashboard can say a watch is backing off but not what is wrong,
         # which is the whole reason someone opens the dashboard.

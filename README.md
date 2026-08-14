@@ -101,6 +101,57 @@ everything it has done — with `cat`.
 
 ## Install
 
+### Let your agent install it
+
+These prompts are for Claude Code, Codex, or another coding agent with terminal access. The agent
+can prepare and verify the installation, but Slack authorization still needs you at the browser
+prompt.
+
+**Fresh folder:** paste this from the directory that should contain the new `sidequestor/` folder.
+
+```text
+Install Sidequestor from https://github.com/circlefin/sidequestor.git into a new folder named
+sidequestor under my current working directory.
+
+Keep the installation contained to that new folder. Inspect the prerequisites first, clone the
+repository, create .env from .env.example, and create the appropriate agent rules file from
+CLAUDE.example.md without replacing any file that appeared after you started. Leave secrets and
+workspace-specific values for me to enter. Run yaas-triage/tests/run-all.sh and
+yaas-triage/ops/doctor.sh, explain any failures, then show me the exact remaining OAuth and
+launchd steps. Do not authorize Slack, enable sending, install background jobs, or delete or
+rewrite anything outside the new folder without my explicit approval.
+```
+
+**Existing busy repository:** paste this from the root of the repository you want Sidequestor to
+wrap. This route deliberately favors preservation over automatic installation.
+
+```text
+Install Sidequestor from https://github.com/circlefin/sidequestor.git as a non-destructive
+automation sleeve over the repository in my current working directory.
+
+Treat every existing file, local modification, untracked file, Git history, and agent instruction
+as authoritative. Start by recording the repository root and git status. Clone Sidequestor into a
+temporary directory outside this repository and inventory every incoming path before writing
+anything. Never stash, reset, clean, checkout over, delete, rename, or silently replace existing
+work.
+
+Copy missing Sidequestor runtime files while preserving executable modes. For every collision,
+compare both versions and merge only the minimum Sidequestor requirement into the existing file.
+Keep the existing CLAUDE.md, AGENTS.md, GEMINI.md, or .cursorrules content and append or update one
+clearly bounded Sidequestor protocol block. Merge missing .gitignore and .env.example entries
+without replacing existing entries. If .env already exists, add only missing Sidequestor keys and
+leave every existing value unchanged. Preserve the repository's README and other project docs;
+place Sidequestor-specific reference docs under docs/sidequestor when their root paths collide.
+Stop and ask me before proceeding if a required runtime path has incompatible existing content.
+
+Keep this repository's existing .git directory as the only writable project history. Leave
+Sidequestor automatic template sync disabled because this is a customized overlay. Before setup,
+show me the complete diff and prove no pre-existing content was lost. Run the Sidequestor test
+suite and doctor, adapting only Sidequestor documentation-contract paths when project docs were
+relocated. Explain any failure. Do not authorize Slack, install launchd jobs, enable auto-send, or
+commit until I explicitly approve those steps.
+```
+
 ### 1. What you need
 
 | Tool | Why | Get it |
@@ -166,7 +217,7 @@ yaas-triage/tests/run-all.sh                   # is the CODE correct?
 Three different questions, three different tools. The tests use throwaway fixtures and touch
 none of your real state, so they're safe to run whenever.
 
-Expect: `All checks passed`, `healthy`, and `29 suite(s) passed`.
+Expect: `All checks passed`, `healthy`, and every test suite and differential scenario passing.
 
 ---
 
@@ -240,14 +291,17 @@ DRY_RUN=1 VERBOSE=1 python3 yaas-triage/tick.py   # look, don't touch
 | `gate_watch_ratelimited` | Slack throttled a watch this tick; held, retries next tick (shows on the dashboard as "rate limited") |
 | `gate_bad_env_knob` | a value in `.env` isn't a number, so a ceiling would silently be no ceiling |
 
-**One gotcha:** editing `triage-loop.sh` or `dashboard-server.py` does nothing until that job
-restarts, because launchd holds one long-lived process and neither bash nor Python re-reads a
-running file. Edits to `tick.py` (and its `tick_*.py` imports) and the checkers apply on the very
-next tick, because the loop re-invokes `tick.py` fresh each time.
+**One gotcha:** editing `triage-loop.sh` or `dashboard-server.py` does nothing until its own job
+restarts, because launchd holds long-lived processes and neither bash nor Python re-reads a
+running file. Restart the job for the file you changed:
 
 ```bash
-launchctl kickstart -k "gui/$(id -u)/com.yaas.triage"
+launchctl kickstart -k "gui/$(id -u)/com.yaas.triage"     # triage-loop.sh
+launchctl kickstart -k "gui/$(id -u)/com.yaas.dashboard" # dashboard-server.py
 ```
+
+Edits to `tick.py` (and its `tick_*.py` imports) and the checkers apply on the next tick because
+the loop invokes `tick.py` fresh each time.
 
 ---
 
@@ -326,10 +380,15 @@ yaas-triage/
 ├── ledger/            "owns a state file, atomically"
 ├── surfaces/          "talk to the outside"
 ├── ops/               "keep it alive and visible"
-└── tests/             29 suites + 29 goldens + 12 mutations
+└── tests/             unit + behaviour suites, 29 goldens, 12 mutations
 ```
 
-Adding a watch type means dropping one file in `checkers/`, named for the type and **marked executable** (`chmod +x`) — triage resolves `checkers/<type>.py` and gates on the executable bit, so a non-executable checker is treated as missing and its watches are held as `misconfig` rather than silently skipped. Runtime requires neither `advance_to` nor `complete` — `complete` defaults to true and a missing `advance_to` falls back to a time-based guess — but emitting both is the safe contract, and the only way your checker can hold its own watermark when it could not drain the window. Omit them and you inherit a guess that is only correct for a source that cannot lag. Nothing else changes.
+Adding a watch type requires two files: an executable `checkers/<type>.py` and a
+`checkers/<type>.watch.json` manifest. Triage discovers only valid checker-manifest pairs; a
+missing or non-executable checker is held as `misconfig` rather than silently skipped. Add an
+optional `checkers/<type>.lag` only when the source needs a watermark delay. Follow
+`yaas-triage/skills/yaas-checker-authoring/SKILL.md` for the result contract, behavior fixture,
+and documentation checks.
 
 Before you send a patch: `yaas-triage/tests/run-all.sh` (which already includes the
 differential goldens), then `yaas-triage/tests/differential/mutations.sh`. The goldens run a

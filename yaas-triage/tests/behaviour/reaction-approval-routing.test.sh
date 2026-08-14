@@ -54,7 +54,9 @@ REPO="$TMP/repo"; mkdir -p "$REPO/yaas-triage/ledger" "$REPO/yaas-triage/checker
 cp "$SCRIPT_DIR/ledger/approval-helper.py" "$REPO/yaas-triage/ledger/"
 cp "$SCRIPT_DIR/ledger/add-watch.py" "$REPO/yaas-triage/ledger/"
 [ -f "$SCRIPT_DIR/ledger/approval.py" ] && cp "$SCRIPT_DIR/ledger/approval.py" "$REPO/yaas-triage/ledger/" 2>/dev/null
-cp "$SCRIPT_DIR/checkers/approval.py" "$SCRIPT_DIR/checkers/result.py" "$REPO/yaas-triage/checkers/"
+cp "$SCRIPT_DIR/tick_state.py" "$REPO/yaas-triage/"
+cp "$SCRIPT_DIR"/checkers/*.py "$SCRIPT_DIR"/checkers/*.watch.json "$REPO/yaas-triage/checkers/"
+cp "$SCRIPT_DIR/approval_state.py" "$SCRIPT_DIR/approval_store.py" "$REPO/yaas-triage/"
 
 AH() { ( cd "$REPO" && python3 yaas-triage/ledger/approval-helper.py "$@" ); }
 HOST="$REPO/state/quests/active/quest-reactions-approvals"

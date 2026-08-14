@@ -65,6 +65,8 @@ if cmd == "quests":  print(json.dumps(m.gather_quests(c.quests_dir)))
 elif cmd == "lags":  print(json.dumps(c.lag_map, sort_keys=True))
 elif cmd == "root":  print(str(c.repo_root))
 elif cmd == "knob":  print(c.knob(knob_name))
+elif cmd == "manifests":
+    print(json.dumps(m.load_watch_manifests(FIX + "/yaas-triage"), sort_keys=True))
 PY
 }
 
@@ -74,6 +76,32 @@ mkdir -p "$FIX/yaas-triage/checkers" "$FIX/state/quests/active"
 printf '30\n'  > "$FIX/yaas-triage/checkers/slack_thread.lag"
 printf ' 90 \n' > "$FIX/yaas-triage/checkers/email.lag"
 printf 'notanumber\n' > "$FIX/yaas-triage/checkers/github_pr.lag"   # must be skipped
+cat > "$FIX/yaas-triage/checkers/slack_thread.py" <<'PY'
+#!/usr/bin/env python3
+print("ok")
+PY
+chmod +x "$FIX/yaas-triage/checkers/slack_thread.py"
+cat > "$FIX/yaas-triage/checkers/cron-due.py" <<'PY'
+#!/usr/bin/env python3
+print("ok")
+PY
+chmod +x "$FIX/yaas-triage/checkers/cron-due.py"
+cat > "$FIX/yaas-triage/checkers/slack_thread.watch.json" <<'JSON'
+{
+  "schema_version": 1,
+  "required": [["channel_id", "thread_ts"]],
+  "identity": ["channel_id", "thread_ts"],
+  "checker_example": {
+    "type": "slack_thread",
+    "channel_id": "C1",
+    "thread_ts": "1.0",
+    "last_checked_ts": "1"
+  },
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "slack"
+}
+JSON
 mk_quest() { mkdir -p "$FIX/state/quests/active/$1"; echo '{"watches":[]}' > "$FIX/state/quests/active/$1/watch.json"; }
 mk_quest q-charlie; mk_quest q-alpha; mk_quest q-bravo
 mkdir -p "$FIX/state/quests/active/q-nowatch"   # no watch.json → not a quest yet
@@ -88,6 +116,112 @@ eq "integer lags parsed (whitespace trimmed), garbage dropped" \
    "$(py "$FIX" lags)" '{"email": 90, "slack_thread": 30}'
 
 echo
+echo "── manifests load only when asked, and fail closed with the path ──────────"
+printf '%s' "$(py "$FIX" manifests)" | grep -q '"slack_thread"' \
+  && ok "load_watch_manifests is explicit and succeeds on a valid fixture" \
+  || bad "valid manifest fixture was not loaded"
+rm "$FIX/yaas-triage/checkers/slack_thread.watch.json"
+printf '%s' "$(py "$FIX" manifests 2>&1 || true)" | grep -q 'slack_thread.py' \
+  && ok "missing manifest names the executable checker path" \
+  || bad "missing-manifest failure did not name the checker path"
+cat > "$FIX/yaas-triage/checkers/slack_thread.watch.json" <<'JSON'
+{
+  "schema_version": 1,
+  "required": [["channel_id", "thread_ts"]],
+  "identity": ["channel_id", "thread_ts"],
+  "checker_example": {
+    "type": "slack_thread",
+    "channel_id": "C1",
+    "thread_ts": "1.0",
+    "last_checked_ts": "1"
+  },
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "slack"
+}
+JSON
+printf '{bad json\n' > "$FIX/yaas-triage/checkers/slack_thread.watch.json"
+printf '%s' "$(py "$FIX" manifests 2>&1 || true)" | grep -q 'slack_thread.watch.json' \
+  && ok "invalid JSON names the manifest path" || bad "invalid JSON path not reported"
+cat > "$FIX/yaas-triage/checkers/slack_thread.watch.json" <<'JSON'
+{
+  "schema_version": 99,
+  "required": [["channel_id", "thread_ts"]],
+  "identity": ["channel_id", "thread_ts"],
+  "checker_example": {
+    "type": "slack_thread",
+    "channel_id": "C1",
+    "thread_ts": "1.0",
+    "last_checked_ts": "1"
+  },
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "slack"
+}
+JSON
+printf '%s' "$(py "$FIX" manifests 2>&1 || true)" | grep -q 'schema_version 99' \
+  && ok "unsupported schema_version is rejected with the version" \
+  || bad "bad schema_version was accepted or unnamed"
+cat > "$FIX/yaas-triage/checkers/slack_thread.watch.json" <<'JSON'
+{
+  "schema_version": 1,
+  "required": "channel_id",
+  "identity": ["channel_id", "thread_ts"],
+  "checker_example": {
+    "type": "slack_thread",
+    "channel_id": "C1",
+    "thread_ts": "1.0",
+    "last_checked_ts": "1"
+  },
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "slack"
+}
+JSON
+printf '%s' "$(py "$FIX" manifests 2>&1 || true)" | grep -q "field 'required'" \
+  && ok "wrong field type is rejected by field name" \
+  || bad "wrong field type was accepted or unnamed"
+cat > "$FIX/yaas-triage/checkers/slack_thread.watch.json" <<'JSON'
+{
+  "schema_version": 1,
+  "required": [["channel_id", "thread_ts"]],
+  "identity": ["channel_id", "thread_ts"],
+  "checker_example": {
+    "type": "slack_thread",
+    "channel_id": "C1",
+    "last_checked_ts": "1"
+  },
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "slack"
+}
+JSON
+printf '%s' "$(py "$FIX" manifests 2>&1 || true)" | grep -q 'checker_example' \
+  && ok "checker_example must satisfy required fields" \
+  || bad "bad checker_example was accepted"
+cat > "$FIX/yaas-triage/checkers/slack_thread.watch.json" <<'JSON'
+{
+  "schema_version": 1,
+  "required": [["channel_id", "thread_ts"]],
+  "identity": ["channel_id", "thread_ts"],
+  "checker_example": {
+    "type": "slack_thread",
+    "channel_id": "C1",
+    "thread_ts": "1.0",
+    "last_checked_ts": "1"
+  },
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "slack"
+}
+JSON
+chmod -x "$FIX/yaas-triage/checkers/slack_thread.py"
+printf '%s' "$(py "$FIX" manifests 2>&1 || true)" | grep -q 'slack_thread.watch.json' \
+  && ok "manifest with no executable checker names the manifest path" \
+  || bad "missing executable checker path not reported"
+chmod +x "$FIX/yaas-triage/checkers/slack_thread.py"
+
+echo
 echo "── repo root is the fixture, found by marker not by counting ──────────────"
 FIXP=$(cd "$FIX" && pwd -P)
 eq "root resolves to the fixture" "$(py "$FIX" root)" "$FIXP"
@@ -96,6 +230,9 @@ echo
 echo "── numeric knobs: default when unset, honoured when set ───────────────────"
 eq "default fanout" "$(py "$FIX" knob YAAS_MAX_DISPATCH_FANOUT)" "4"
 eq "overridden fanout" "$(py "$FIX" knob YAAS_MAX_DISPATCH_FANOUT YAAS_MAX_DISPATCH_FANOUT=9)" "9"
+eq "default checker concurrency" "$(py "$FIX" knob YAAS_TRIAGE_MAX_PARALLEL)" "3"
+eq "default tick dispatch budget" "$(py "$FIX" knob YAAS_TICK_DISPATCH_BUDGET)" "3600"
+eq "default minimum dispatch slice" "$(py "$FIX" knob YAAS_MIN_DISPATCH_SLICE)" "300"
 
 echo
 echo "── a garbage gate knob REFUSES (never silently reads as no-cap) ───────────"
