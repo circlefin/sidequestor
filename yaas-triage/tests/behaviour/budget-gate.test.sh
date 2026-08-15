@@ -17,8 +17,8 @@
 
 # test-budget-gate.sh — the spend/dispatch ceilings actually withhold dispatch.
 #
-# The gate is the one thing standing between a runaway loop and the >$1k/13.5h
-# incident repeating, and until now nothing tested it. Two layers here:
+# The gate is the one thing standing between a runaway loop and an unbounded bill,
+# and until now nothing tested it. Two layers here:
 #
 #   1. spend-window.py's window arithmetic and cap precedence, against a seeded log.
 #   2. the original shell orchestrator end-to-end: a breach must withhold the dispatch, log the event, and
@@ -81,6 +81,11 @@ case "$(b --cap-dispatch-6h 1)" in "6h dispatch count "*) ok "count cap breaches
 eq "within every cap there is no breach" "$(b --cap-1h 100 --cap-24h 100 --cap-dispatch-6h 100)" ""
 eq "an unreadable log yields no output, so triage fails OPEN" \
    "$(python3 "$SCRIPT_DIR/dispatch/spend-window.py" "$TMP_DIR/nope" 2>/dev/null || true)" ""
+if grep -q -- '--cap-6h.*accepted but unused' "$SCRIPT_DIR/dispatch/spend-window.py"; then
+  bad "the spend-window docstring still claims --cap-6h is unused"
+else
+  ok "the spend-window docstring matches the live --cap-6h enforcement"
+fi
 
 echo
 echo "── the original shell orchestrator end-to-end: a breach withholds dispatch and holds watermarks ─"

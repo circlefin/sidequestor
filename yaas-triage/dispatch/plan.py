@@ -33,7 +33,7 @@ Two pieces can, and they are the two that were inline in the original shell orch
                   (quests are checked in parallel). The caller must pass a stable order; this
                   function assumes it and rotates it.
 
-  breaker_open()  the per-target hourly circuit breaker. The rolling spend cap stops a storm
+  breaker_open()  the per-target hourly circuit breaker. The rolling spend cap stops a runaway
                   but does not say which target caused it; this bounds any single target that
                   is looping, whatever the reason.
 

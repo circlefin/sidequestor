@@ -26,7 +26,7 @@ no progress? is its watch_id even valid?), which of the six verdicts does this w
                 error/no-progress promoted past its threshold)
     backoff     a transient checker error inside its exponential-backoff window; hold
     skip        a transient/ratelimited upstream; hold and retry next tick, do NOT read as
-                dirty (the 2026-07-24 storm came from ratelimited reading as dirty)
+                dirty (ratelimited reading as dirty is what makes a retry loop compound)
     hold        clean, but the checker could not prove it drained its window; cursor must not
                 move or unseen older items are skipped
     dirty       genuinely new activity → dispatch
@@ -133,7 +133,7 @@ def classify(result, watch, health=None, unacked=0, unacked_due=True,
 
     if outcome == "ratelimited":
         # Transient. Skip — NOT dirty. A ratelimited read reading as dirty is what fed the
-        # 2026-07-24 dispatch storm.
+        # compounding dispatch loop.
         return _v(SKIP, wtype, wid, reason=f"[{wtype}] {preview}")
 
     if outcome == HOLD:

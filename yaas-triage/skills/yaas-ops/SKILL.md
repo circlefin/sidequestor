@@ -301,7 +301,7 @@ come up while debugging:
 | `YAAS_MAX_DISPATCH_FANOUT` | 4 | Max agent invocations per tick. Extra targets are deferred (`gate_dispatch_deferred`) with watermarks untouched. |
 | `YAAS_UNACKED_PROMOTE` | 3 | Dispatches a watch may go unacked in the ledger before it starts backing off (5m doubling to a 24h cap). It keeps retrying forever and is never parked; the dashboard shows it as `backing off` with the worker's last error. |
 | `YAAS_CHECKER_ERROR_PROMOTE` | 6 | Consecutive checker errors before backoff becomes `misconfig`. |
-| `YAAS_TRIAGE_MAX_PARALLEL` | 3 | Peak concurrent Slack calls. Raising this contributed to a runaway incident. |
+| `YAAS_TRIAGE_MAX_PARALLEL` | 3 | Peak concurrent Slack calls. Raising this makes rate-limit trips much more likely. |
 | `YAAS_LOG_RETAIN_DAYS` | 14 | Per-dispatch worker logs older than N days are deleted each tick. `0` disables. |
 | `YAAS_RETIRE_DEFAULT_DAYS` | 14 | Default age threshold for retiring stale `slack_thread` watches. Per-quest override via `retire_slack_threads_after_days` in meta.json (`false` or `0` = never). |
 

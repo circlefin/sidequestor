@@ -57,8 +57,9 @@ class InvalidPayload(ValueError):
 
 def _as_dt(now):
     if isinstance(now, datetime):
-        return now
-    return datetime.fromisoformat(str(now).replace("Z", "+00:00"))
+        return now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    parsed = datetime.fromisoformat(str(now).replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def _iso(now):
@@ -70,7 +71,7 @@ def _lease_expired(item, now) -> bool:
     if not lease:
         return False
     try:
-        return datetime.fromisoformat(str(lease)) < _as_dt(now)
+        return _as_dt(lease) < _as_dt(now)
     except (TypeError, ValueError):
         return False
 

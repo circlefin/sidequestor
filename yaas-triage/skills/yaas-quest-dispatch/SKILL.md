@@ -96,7 +96,7 @@ Based on the quest's `context.md`, the watch type that fired, and the new conten
 - **Someone replied to a tracked thread** → evaluate whether the quest's objective is met. If yes, update `meta.json` status to `completed`. If not, decide if you need to reply, escalate, or keep waiting. Log it with `log-event.py`.
 - **A DM arrived from a watched partner** → read the thread context, compose a response (draft first unless quest explicitly authorizes `allow_send`), log action.
 - **A new top-level message in a watched channel** → apply the quest's `context.md` decision rules. If the common fast-path is "log and ignore," just exit without any file edits.
-- **A new email matching a watched query** → read the full message, apply the quest's `context.md` decision rules. **Always acknowledge the email** with a reply (via `yaas-triage/skills/yaas-gmail-reply/gmail-reply.py`) before or immediately after taking action — even if the action is just "request submitted, will follow up." Exception: bulk, automated, or notification emails where a human reply would be inappropriate. Log `info_received` or `message_sent` to `timeline.ndjson`.
+- **A new email matching a watched query** → read the full message, apply the quest's `context.md` decision rules. **Always acknowledge the email** with a reply (via `yaas-triage/skills/yaas-gmail-reply/gmail-reply.py`) before or immediately after taking action — even if the action is just "request submitted, will follow up." Exception: bulk, automated, or notification emails where a human reply would be inappropriate. Log `info_received` or `message_sent` with `log-event.py`.
 
 Reactions are never handled here — they are their own dispatch target, see § Reactions Fast Path.
 
@@ -118,7 +118,7 @@ python3 yaas-triage/ledger/add-watch.py <quest_id> '{"type":"slack_thread","chan
 
 The `ephemeral` flag is not optional and is not decoration: it is what lets `housekeep.py` retire the watch after `YAAS_RETIRE_EPHEMERAL_HOURS` (default 168, one week). You are opening an *unbounded* watch to catch a *bounded* reply, and without the flag nothing ever closes it. On 2026-08-08 two such watches were still firing 3 and 12 days after their question was answered, one of them acted on a completely unrelated message, and the same content was posted to Slack twice. Mark it, or you are creating that bug again. Conversely, do NOT mark a watch that is meant to persist (a quest whose job is monitoring a bot's DMs or a channel) — unmarked is permanent, and that is the safe default.
 
-**Filter DM channel watches by quest relevance.** When a DM `slack_channel` watch fires with a new top-level message, read the message and decide whether it is a response on the original topic that established the watch. If it is on-topic, act per the quest objective. If it is unrelated (the person DMed you about something else entirely), log it to `timeline.ndjson` as an `info_received` event with `relevant: false` and a one-line note on what the message was about, and exit without composing a reply. A DM watch set up to track a specific outbound question is NOT an open licence to auto-reply on every future DM from that person. Scope is the specific outbound that established the watch.
+**Filter DM channel watches by quest relevance.** When a DM `slack_channel` watch fires with a new top-level message, read the message and decide whether it is a response on the original topic that established the watch. If it is on-topic, act per the quest objective. If it is unrelated (the person DMed you about something else entirely), log it with `log-event.py` as an `info_received` event with `relevant: false` and a one-line note on what the message was about, and exit without composing a reply. A DM watch set up to track a specific outbound question is NOT an open licence to auto-reply on every future DM from that person. Scope is the specific outbound that established the watch.
 
 **Exception — manual review queue (§3d):** when writing an action to `state/pending-approvals.json` instead of executing it immediately, do NOT append a `slack_thread` watch. Append an `approval` watch instead (see §3d). The `slack_thread` watch is added only after the approved action is actually executed, using the real `response_ts` as `last_checked_ts`.
 
@@ -145,7 +145,7 @@ When you post into an internal routing or expert channel to request help on beha
 2. Log it with `log-event.py` (§4).
 3. Do NOT post back into the thread. No follow-ups, no re-summaries, no "thanks."
 4. **Exception:** a human in the thread asks you a direct question by name. One reply is appropriate.
-5. **If a resolution arrives:** draft the relay message to the customer, but do NOT post it in the escalation thread. Log `draft_posted` to `timeline.ndjson` and surface under Attention needed in the Output Contract.
+5. **If a resolution arrives:** draft the relay message to the customer, but do NOT post it in the escalation thread. Log `draft_posted` with `log-event.py` and surface under Attention needed in the Output Contract.
 
 ### 3d. Manual review queue (general rule — all quests)
 
@@ -206,13 +206,13 @@ submit a fresh instruction after checking the outcome.
 3. Execute the action. **If the send fails because the channel is restricted (e.g., `mcp_externally_shared_channel_restricted`):** save the draft to the actual target thread via `slack_send_message_draft` (with `channel_id` + `thread_ts`), then DM the user only the permalink to that thread. Do not paste the draft text in the DM — they can open the thread, find the draft in the compose box, and send it themselves.
 4. Mark done: `python3 yaas-triage/ledger/approval-helper.py done <id> <response_ts>`.
 5. Append a `slack_thread` watch to `watch.json` with `last_checked_ts = response_ts` (per §3a).
-6. Log `executed` to `timeline.ndjson` with `approval_id`, `response_ts`, and a note on any changes applied from `review_note`.
+6. Log `executed` with `log-event.py`, including `approval_id`, `response_ts`, and a note on any changes applied from `review_note`.
 
 **Executing item whose lease expired.** A previous dispatch claimed this item and never closed it, so the send may or may not have landed. Do NOT resend blind. Read the target thread and look for the message. Present → close it with `approval-helper.py done <id> <response_ts>` and log `executed`. Absent → execute normally. Can't tell → log `blocked` and surface under Attention needed.
 
 **Cancellation edge case:** `start` returns `skip:cancelled` if the user cancelled between triage's check and your dispatch — log a `note`, exit 0.
 
-### 4. Log everything to timeline.ndjson
+### 4. Log everything with `log-event.py`
 
 Append one line per action **through `log-event.py`**. Never hand-write the JSON
 line, and never write a `ts` yourself: you have no clock. Your context carries a
@@ -252,7 +252,7 @@ It sends (or drafts), then appends a timeline entry carrying the exact `message_
 When closing an approval whose action was a Jira/GitHub/Gmail post, pass that URL to `approval-helper.py done <id> <url>` instead of a Slack ts: it is stored as `result_url` and becomes the history link.
 
 
-If you **couldn't** complete an action (error, ambiguous situation, needed user input), log it as a `blocked` event in `timeline.ndjson` with details, and **stop without finishing the rest of the work**. Surface the blocker in the Output Contract under "Errors". Ack the item as `blocked` (§ 4a) so triage holds its watermark.
+If you **couldn't** complete an action (error, ambiguous situation, needed user input), log it with `log-event.py` as a `blocked` event with details, and **stop without finishing the rest of the work**. Surface the blocker in the Output Contract under "Errors". Ack the item as `blocked` (§ 4a) so triage holds its watermark.
 
 ### 4a. Ack every dispatched item before you exit
 

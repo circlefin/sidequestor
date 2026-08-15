@@ -19,7 +19,7 @@
 #
 # classify() decides, per watch: misconfig | backoff | skip | hold | dirty | clean. Two
 # production incidents lived in this routing: a ratelimited read that dispatched as dirty (the
-# 2026-07-24 storm), and a clean-but-not-drained result that advanced past unseen items. Both
+# compounding dispatch loop), and a clean-but-not-drained result that advanced past unseen items. Both
 # are pinned here. The dangerous verdict is `dirty` (it dispatches) and `clean` (it advances),
 # so most cases assert something HOLDS.
 
@@ -51,7 +51,7 @@ eq "count>0 → dirty"  "$(c '{"outcome":"dirty","count":2,"complete":true,"adva
 eq "count=0 complete → clean" "$(c '{"outcome":"clean","count":0,"complete":true}' "$W")" "clean"
 
 echo
-echo "── the 2026-07-24 lesson: ratelimited SKIPS, never dirty ──────────────────"
+echo "── the rule: ratelimited SKIPS, never dirty ───────────────────────────────"
 eq "ratelimited → skip (not dirty)" "$(c '{"outcome":"ratelimited","preview":"slow down"}' "$W")" "skip"
 
 echo

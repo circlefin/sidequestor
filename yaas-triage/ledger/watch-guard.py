@@ -170,13 +170,17 @@ def cmd_verify(quest_id):
         if not isinstance(w, dict):
             continue
         wid = w.get("watch_id")
+        if wid and wid in seen:
+            continue
         if wid in before:
             repaired.append(before[wid])
         else:
             repaired.append(w)
-        seen.add(wid)
+        if wid:
+            seen.add(wid)
     for wid in removed:
-        repaired.append(before[wid])
+        if wid not in seen:
+            repaired.append(before[wid])
     write_atomic(path, {**data, "watches": repaired})
 
     print(json.dumps({"quest": quest_id, "verify": "violation_repaired",

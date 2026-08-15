@@ -137,6 +137,21 @@ i=[x for x in d['items'] if x['id']=='$ID2'][0]
 i['status']='executing'; i['lease_expires_at']='not-a-timestamp'
 json.dump(d,open(p,'w'))"
 eq "an unparseable lease is treated as live, not expired" "$(outcome "$ID2")" "clean"
+python3 - "$SCRIPT_DIR/approval_state.py" <<'PY'
+import importlib.util, sys
+from datetime import datetime
+spec = importlib.util.spec_from_file_location("approval_state", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+item = {"status": "executing", "lease_expires_at": "2020-01-01T00:00:00+00:00"}
+assert m._lease_expired(item, datetime(2026, 1, 1, 0, 0, 0)) is True
+assert "reclaim" in m.available_actions(item, datetime(2026, 1, 1, 0, 0, 0))
+PY
+if [ "$?" -eq 0 ]; then
+  ok "a naive now still detects an expired aware lease"
+else
+  bad "a naive now failed to detect an expired aware lease"
+fi
 
 echo
 echo "── the dashboard shows everything that is not finished ───────────────────"

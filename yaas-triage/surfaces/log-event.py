@@ -66,11 +66,12 @@ Exit codes:
     1  bad arguments
     2  quest not found
 """
+
+from __future__ import annotations  # PEP 604 unions below must not be
+# evaluated at def time: this file has to import on Python < 3.10.
 import argparse
-import fcntl
 import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 def _repo_root(start):
@@ -96,6 +97,8 @@ def _repo_root(start):
 
 
 REPO_ROOT = _repo_root(__file__)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from timeline_io import utc_now, quest_dir, append_timeline
 
 # The documented vocabulary, and the only names anything switches on: the
 # dashboard classifies these as agent/external/system, and the ack ledger and
@@ -116,33 +119,6 @@ KNOWN_EVENTS = (
     "note",
     "blocked",
 )
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _quest_dir(quest_id: str) -> Path | None:
-    """Locate a quest folder across active/completed/archived."""
-    base = REPO_ROOT / "state" / "quests"
-    for bucket in ("active", "completed", "archived"):
-        d = base / bucket / quest_id
-        if d.is_dir():
-            return d
-    return None
-
-
-def _append_timeline(quest_dir: Path, entry: dict):
-    """Append one NDJSON line to the quest timeline under an exclusive lock."""
-    path = quest_dir / "timeline.ndjson"
-    line = json.dumps(entry, ensure_ascii=False)
-    with open(path, "a", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            f.write(line + "\n")
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
-
 
 def die(msg: str, code: int = 1):
     print(f"error: {msg}", file=sys.stderr)
@@ -189,21 +165,21 @@ def main(argv) -> int:
               f"({', '.join(KNOWN_EVENTS)}); writing it anyway",
               file=sys.stderr)
     # A quest id is a directory name. Reject traversal before touching the path.
-    if "/" in quest_id or quest_id in ("", ".", ".."):
+    if "/" in quest_id or quest_id in ("", ".", "..") or any(ord(ch) < 32 or ord(ch) == 127 for ch in quest_id):
         die(f"invalid quest id '{quest_id}'")
 
-    qdir = _quest_dir(quest_id)
+    qdir = quest_dir(REPO_ROOT, quest_id)
     if qdir is None:
         die(f"quest '{quest_id}' not found", 2)
 
     supplied_ts = p.pop("ts", None)
-    entry = {"ts": _utc_now(), "event": event}
+    entry = {"ts": utc_now(), "event": event}
     for key, value in p.items():
         if key in ("quest_id", "event") or value in (None, ""):
             continue
         entry[key] = value
 
-    _append_timeline(qdir, entry)
+    append_timeline(qdir, entry)
 
     out = {"ok": True, "quest_id": quest_id, "event": event, "ts": entry["ts"]}
     if supplied_ts is not None:

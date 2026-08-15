@@ -86,6 +86,18 @@ for cmd in "$AGENT_BIN" jq perl python3 security; do
 done
 [ "$AGENT" = "claude" ] || ok "agent backend: $AGENT (YAAS_AGENT) — checking $AGENT_BIN, not claude"
 
+# Python floor. Checked explicitly because the failure is otherwise a TypeError on a
+# `X | None` annotation deep inside a dispatch, which reads as a code bug rather than
+# a version problem. zoneinfo and str.removeprefix put the real floor at 3.9.
+if command -v python3 >/dev/null 2>&1; then
+  PYV="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "?")"
+  if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
+    ok "python3 is $PYV (need 3.9+)"
+  else
+    fail "python3 is $PYV — yaas needs 3.9 or newer (zoneinfo and str.removeprefix)"
+  fi
+fi
+
 # Optional but common
 for cmd in gws node; do
   if command -v "$cmd" >/dev/null 2>&1; then

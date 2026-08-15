@@ -122,6 +122,25 @@ eq "the append is KEPT"        "$(jq -r --arg i watch-dddd '[.watches[]|select(.
 ok "...so a worker doing the right thing is never punished for it"
 
 echo
+echo "── duplicate watch_ids are deduped during repair ─────────────────────────"
+seed; G snapshot q1 >/dev/null
+python3 - "$W" <<'PY2'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p))
+d["watches"] = [
+  {"type":"slack_thread","channel_id":"C1","thread_ts":"1.1","watch_id":"watch-aaaa","last_checked_ts":"999","reason":"dup edit"},
+  {"type":"slack_thread","channel_id":"C1","thread_ts":"1.1","watch_id":"watch-aaaa","last_checked_ts":"998","reason":"dup edit 2"},
+  d["watches"][1],
+]
+json.dump(d,open(p,"w"),indent=2)
+PY2
+G verify q1 >/dev/null
+eq "the first duplicate is restored from snapshot" \
+   "$(jq -r '[.watches[]|select(.watch_id=="watch-aaaa")][0].last_checked_ts' "$W")" "100"
+eq "only one copy of the duplicated watch_id remains" \
+   "$(jq -r '[.watches[]|select(.watch_id=="watch-aaaa")]|length' "$W")" "1"
+
+echo
 echo "── the catastrophic case: the file is left unparseable ────────────────────"
 seed; G snapshot q1 >/dev/null
 printf 'not json\n' > "$W"

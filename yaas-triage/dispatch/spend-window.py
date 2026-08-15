@@ -38,11 +38,10 @@ Prints one JSON object:
 The cap comparison lives here rather than in the shell so the floats are compared
 in one language, with no dependency on bc.
 
-the original shell orchestrator enforces `--cap-1h`, `--cap-24h` and `--cap-dispatch-6h`. The hourly cap is
-the responsive dollar tripwire; the 24h cap catches slow drift; the count cap is the
-only one that works under the Codex and Cursor backends, which report no cost figure.
-`--cap-6h` is accepted but unused: 6h sits awkwardly between the hourly tripwire and
-the daily backstop and adds nothing. `spend_6h` is still reported for observability.
+the original shell orchestrator enforces `--cap-1h`, `--cap-6h`, `--cap-24h`, and
+`--cap-dispatch-6h`. The hourly cap is the responsive dollar tripwire; the 6h and 24h
+caps catch slower drift; the count cap is the only one that works under the Codex and
+Cursor backends, which report no cost figure.
 
 `uncosted_24h` matters: the Codex and Cursor backends report raw tokens with no
 cost figure, so a dollars-only ceiling is blind under those. the original shell orchestrator therefore

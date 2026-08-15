@@ -14,6 +14,7 @@ REPO="$TMP/repo"
 
 mkdir -p "$REPO/yaas-triage/surfaces" "$REPO/state/quests/active/q-log" "$REPO/state/quests/archived/q-old"
 cp "$HERE/surfaces/log-event.py" "$REPO/yaas-triage/surfaces/"
+cp "$HERE/surfaces/timeline_io.py" "$REPO/yaas-triage/surfaces/"
 : > "$REPO/state/quests/active/q-log/timeline.ndjson"
 : > "$REPO/state/quests/archived/q-old/timeline.ndjson"
 cd "$REPO" || exit 1
@@ -88,6 +89,8 @@ $LOG '{"quest_id":"q-log"}' >/dev/null 2>&1
 eq "a missing event is rejected" "$?" "1"
 $LOG '{"quest_id":"../../etc","event":"note"}' >/dev/null 2>&1
 eq "a traversing quest id is rejected" "$?" "1"
+$LOG "$(printf '{"quest_id":"q\001bad","event":"note"}')" >/dev/null 2>&1
+eq "a quest id with control characters is rejected" "$?" "1"
 $LOG '{"quest_id":"q-missing","event":"note"}' >/dev/null 2>&1
 eq "an unknown quest exits 2, distinct from bad args" "$?" "2"
 $LOG 'not json' >/dev/null 2>&1
@@ -121,7 +124,7 @@ for f in "${INSTRUCTION_FILES[@]}"; do
   # Drop prohibitions first: a line that says "never hand-write the line" names
   # the bad practice in order to forbid it, and must not read as permission.
   if grep -vi 'never' "$f" \
-     | grep -qE '"ts" *: *"<utc_iso>"|log (a send|it|this) by hand|hand-write the (line|entry|timeline)'; then
+     | grep -qE '"ts" *: *"<utc_iso>"|log (a send|it|this) by hand|hand-write the (line|entry|timeline)|Log .*timeline\.ndjson'; then
     bad "$name still permits a hand-written timeline entry"
   else
     ok "$name does not hand the model a ts to fill in"

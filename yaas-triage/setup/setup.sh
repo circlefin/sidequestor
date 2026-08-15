@@ -50,6 +50,34 @@ if [ ! -f "$CONFIG" ]; then
   exit 1
 fi
 
+# ── App manifest ────────────────────────────────────────────────────────────
+# Generated from yaas-app-config.json rather than kept as a second copy: the
+# scope list is the thing that drifts, and a manifest pasted into Slack months
+# ago is invisible from here. Whatever this prints is exactly what setup.sh will
+# then ask Slack to authorize.
+print_manifest() {
+  jq -r '
+    "display_information:",
+    "  name: " + .slack_app.app_name,
+    "  description: " + (.slack_app.description // "Personal Slack assistant."),
+    "oauth_config:",
+    "  redirect_urls:",
+    "    - " + .slack_app.redirect_uri,
+    "  scopes:",
+    "    user:",
+    (.user_scopes[] | "      - " + .),
+    "settings:",
+    "  org_deploy_enabled: false",
+    "  socket_mode_enabled: false",
+    "  token_rotation_enabled: false"
+  ' "$CONFIG"
+}
+
+if [ "${1:-}" = "--manifest" ]; then
+  print_manifest
+  exit 0
+fi
+
 # Load per-install values from .env
 if [ ! -f "$ENV_FILE" ]; then
   echo "ERROR: $ENV_FILE not found. Copy .env.example to .env and fill in your Slack app values." >&2
@@ -58,12 +86,36 @@ fi
 # shellcheck source=../../.env
 set -a; source "$ENV_FILE"; set +a
 
+MISSING=""
 for var in SLACK_APP_ID SLACK_CLIENT_ID SLACK_WORKSPACE_NAME SLACK_WORKSPACE_DOMAIN; do
-  if [ -z "${!var:-}" ]; then
-    echo "ERROR: $var is not set in $ENV_FILE — see .env.example" >&2
-    exit 1
-  fi
+  [ -z "${!var:-}" ] && MISSING="$MISSING $var"
 done
+if [ -n "$MISSING" ]; then
+  # The app has to exist before these values can exist, so an empty .env almost
+  # always means "has not created the app yet" rather than "typo". Hand over the
+  # manifest instead of a filename to go read.
+  cat >&2 <<'BANNER'
+
+Slack app not configured yet. You need to create one in your workspace first;
+it takes about two minutes.
+
+  1. Open https://api.slack.com/apps → Create New App → From an app manifest
+  2. Pick your workspace, then paste the manifest below
+  3. Create, then Install to Workspace (your admin may need to approve it)
+  4. From Basic Information, copy App ID and Client ID into .env
+
+──────────────────────── paste this ────────────────────────
+BANNER
+  print_manifest >&2
+  cat >&2 <<BANNER
+────────────────────────────────────────────────────────────
+
+Then fill in$MISSING in $ENV_FILE and run this again.
+Re-print the manifest any time with: $0 --manifest
+
+BANNER
+  exit 1
+fi
 
 # Generic values from the JSON config (scopes, redirect URI, PKCE flag, app_name)
 APP_NAME=$(jq -r '.slack_app.app_name' "$CONFIG")

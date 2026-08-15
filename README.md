@@ -101,6 +101,11 @@ everything it has done — with `cat`.
 
 ## Install
 
+**Requires Python 3.9 or newer.** `zoneinfo` and `str.removeprefix` set that floor. On an
+older interpreter the first symptom is a `TypeError` on a `X | None` annotation partway
+through a dispatch, which reads like a code bug rather than a version problem, so
+`yaas-triage/ops/doctor.sh` checks the version explicitly and says so.
+
 ### Let your agent install it
 
 These prompts are for Claude Code, Codex, or another coding agent with terminal access. The agent
@@ -178,8 +183,8 @@ cp CLAUDE.example.md CLAUDE.md
 Two files to edit, and only two:
 
 **`.env`** — the Slack app details, your sender identity for email replies, and any reaction
-workflow emoji overrides you want. Every optional knob has a working default, and `.env.example`
-explains each one and why it's set where it is. Worth a glance at the spend ceilings before you
+workflow emoji overrides you want. The four `SLACK_*` values are **required and have no default**;
+everything else does, and `.env.example` explains each one and why it's set where it is. Worth a glance at the spend ceilings before you
 leave them alone.
 
 **`CLAUDE.md`** — your agent's rules: who it is, how it writes, what it must never do. Add your
@@ -187,6 +192,30 @@ voice here. Leave the protocol sections alone; the orchestrator has a contract w
 
 > If you already have a `CLAUDE.md` in this repo for your own interactive use, that's the point
 > — the sleeve reads the same file your agent already reads.
+
+### 2a. Create your Slack app
+
+The `SLACK_*` values above come from an app in **your** workspace, so the app has to exist before
+you can fill them in. Sidequestor deliberately ships no shared Marketplace app: the polling loop
+needs a credential it can use without waking a model, and that credential has to belong to you
+rather than to a vendor. `ARCHITECTURE.md` has the full reasoning.
+
+Print the manifest, with every scope and the redirect URL already filled in:
+
+```bash
+./yaas-triage/setup/setup.sh --manifest
+```
+
+Paste it into <https://api.slack.com/apps> → **Create New App** → **From an app manifest**, pick
+your workspace, then install it. Copy `App ID` and `Client ID` from Basic Information into `.env`.
+
+Budget more than two minutes if your workspace restricts app installs: some orgs require admin
+approval, and `reactions:read` / `reactions:write` are the scopes most often held for review.
+Without them the reaction triggers return nothing and your emoji never changes; grant them later
+and re-run `setup.sh` to re-authorize.
+
+The manifest is generated from `yaas-triage/setup/yaas-app-config.json`, the same file `setup.sh`
+reads when it asks Slack for scopes, so the two cannot drift apart.
 
 ### 3. Install
 

@@ -24,7 +24,7 @@ Usage:
     python3 dashboard-server.py [port]   (default: 8877)
 
 Endpoints:
-    GET  /                    → dashboard-v2.html (v1 at /v1)
+    GET  /                    → dashboard.html
     GET  /api/dashboard       → live JSON snapshot of all quest state
     GET  /state/<path>        → raw state file
     POST /api/review/<id>     → mark item reviewed (optionally with edits)
@@ -34,6 +34,9 @@ Endpoints:
     POST /api/reclaim/<id>    → recover an expired executing lease
     POST /api/quests          → create a draft-only quest from an operator prompt
 """
+
+from __future__ import annotations  # PEP 604 unions below must not be
+# evaluated at def time: this file has to import on Python < 3.10.
 
 import hashlib
 import hmac
@@ -90,7 +93,6 @@ from tick_state import NUMERIC_KNOBS, load_watch_manifests
 # vanishing.
 TERMINAL_APPROVAL_STATUSES = ("executed", "cancelled")
 DASHBOARD_HTML = REPO_ROOT / "dashboard.html"
-DASHBOARD_V2_HTML = REPO_ROOT / "dashboard-v2.html"
 PORT           = int(sys.argv[1]) if len(sys.argv) > 1 else 8877
 
 # Workspace-specific hosts. No hardcoded defaults: they belong to whoever runs
@@ -834,6 +836,10 @@ def build_dashboard() -> dict:
 
         last_action  = None
         last_blocked = None
+        # True once ANY event other than `created` exists, i.e. a worker has actually
+        # picked this quest up. Distinct from last_action, which skips note/blocked and
+        # so cannot tell "never ran" from "ran but only left a note".
+        has_run      = False
         last_seen_ts = None   # newest non-blocked event of ANY type (incl. notes):
                               # a later note means the worker recovered after a block
         timeline_path = quest_dir / "timeline.ndjson"
@@ -843,6 +849,8 @@ def build_dashboard() -> dict:
                 try:
                     e = json.loads(raw)
                     ev = e.get("event", "")
+                    if ev and ev != "created":
+                        has_run = True
                     if ev == "blocked" and last_blocked is None:
                         last_blocked = {"ts": e.get("ts"), "reason": (e.get("reason") or e.get("note") or "")[:80]}
                     if ev != "blocked" and last_seen_ts is None:
@@ -886,6 +894,7 @@ def build_dashboard() -> dict:
             "last_action":   last_action,
             "last_blocked":  last_blocked,
             "last_seen_ts":  last_seen_ts,
+            "has_run":       has_run,
             "backoff_count": 0,     # filled in below
             "backoff_watches": [],  # filled in below
             "ratelimited": False,   # filled in below (transient, from run-log)
@@ -1239,7 +1248,19 @@ def build_control() -> dict:
         "queued": messages["queued_items"],
         "activity": [_control_activity(rec) for rec in messages["recent_activity"]],
         "history": build_history(),
+        "reaction_emojis": build_reaction_emojis(),
     }
+
+
+def build_reaction_emojis() -> dict:
+    """Expose only the resolved emoji names, never the surrounding environment."""
+    from reaction_config import EMOJI_SETTINGS, load_reaction_emojis
+
+    env = {var: _dotenv(var, default) for var, default in EMOJI_SETTINGS.values()}
+    try:
+        return {"roles": load_reaction_emojis(env), "error": None}
+    except ValueError as exc:
+        return {"roles": {}, "error": str(exc)}
 
 
 # ── Quest detail builder (lazy-fetched by the drawer) ────────────────────────
@@ -1727,14 +1748,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(403, "forbidden host")
             return
 
-        # Bootstrap route: unauthenticated, issues the session cookie. v2 is the
-        # default surface; v1 stays reachable at /v1 as a fallback while it is
-        # still the one with a longer track record.
-        if path in ("/", "/index.html", "/v2", "/dashboard-v2.html"):
-            self._serve_dashboard(DASHBOARD_V2_HTML)
-            return
-        if path in ("/v1", "/dashboard.html"):
-            self._serve_dashboard(DASHBOARD_HTML)
+        # Bootstrap route: unauthenticated and responsible for issuing the
+        # session cookie used by every state and control endpoint.
+        if path in ("/", "/index.html", "/dashboard.html"):
+            self._serve_dashboard()
             return
 
         # Everything else (state + APIs) requires the cookie.

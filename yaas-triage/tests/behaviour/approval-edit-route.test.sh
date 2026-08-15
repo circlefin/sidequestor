@@ -13,9 +13,7 @@ cp "$HERE/tick_check.py" "$REPO/yaas-triage/"
 cp "$HERE/approval_state.py" "$HERE/approval_store.py" "$REPO/yaas-triage/"
 mkdir -p "$REPO/yaas-triage/checkers"
 cp "$HERE"/checkers/*.py "$HERE"/checkers/*.watch.json "$REPO/yaas-triage/checkers/"
-# "/" serves v2 now, so the shell needs both files present to issue a cookie.
 cp "$HERE/../dashboard.html" "$REPO/dashboard.html"
-cp "$HERE/../dashboard-v2.html" "$REPO/dashboard-v2.html"
 cd "$REPO" || exit 1
 
 PASS=0; FAIL=0

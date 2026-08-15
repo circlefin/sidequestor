@@ -125,9 +125,16 @@ def _thread_epoch(w):
         return 0.0
 
 
+def malformed_thread(w):
+    """A slack_thread with no usable parent ts. Keep it, but surface it."""
+    return w.get("type") == "slack_thread" and _thread_epoch(w) <= 0
+
+
 def retire_thread(w, cutoff_epoch):
     """A slack_thread whose parent is older than the cutoff. cutoff_epoch None → never."""
     if cutoff_epoch is None:
+        return False
+    if malformed_thread(w):
         return False
     return w.get("type") == "slack_thread" and _thread_epoch(w) < cutoff_epoch
 
@@ -203,10 +210,19 @@ def partition(watches, cutoff_epoch, done_ids, ephemeral_cutoff_epoch=None, now=
     does not matter, but they are checked in a fixed order for a stable count.
     """
     kept = []
-    counts = {"slack_thread": 0, "approval": 0, "schedule": 0, "ephemeral": 0}
+    counts = {
+        "slack_thread": 0,
+        "approval": 0,
+        "schedule": 0,
+        "ephemeral": 0,
+        "malformed_slack_thread": 0,
+    }
     before = [w.get("created_ts") for w in watches]
     for w in watches:
-        if retire_thread(w, cutoff_epoch):
+        if malformed_thread(w):
+            counts["malformed_slack_thread"] += 1
+            kept.append(w)
+        elif retire_thread(w, cutoff_epoch):
             counts["slack_thread"] += 1
         elif retire_approval(w, done_ids):
             counts["approval"] += 1
@@ -260,6 +276,9 @@ def cmd_retire(watch_path, meta_path, approvals_path, now):
     kept, counts, mutated = partition(watches, cutoff, done_ids, eph_cutoff, now)
 
     if len(kept) == len(watches) and not mutated:
+        if counts["malformed_slack_thread"]:
+            print(f"Kept {counts['malformed_slack_thread']} malformed slack_thread watch(es) "
+                  f"(missing or invalid thread_ts)")
         return 0  # nothing retired and no clock started; leave the file untouched
 
     watch["watches"] = kept
@@ -277,6 +296,9 @@ def cmd_retire(watch_path, meta_path, approvals_path, now):
     if counts["ephemeral"]:
         print(f"Retired {counts['ephemeral']} expired ephemeral watch(es) "
               f"(created more than {eph_hours}h ago)")
+    if counts["malformed_slack_thread"]:
+        print(f"Kept {counts['malformed_slack_thread']} malformed slack_thread watch(es) "
+              f"(missing or invalid thread_ts)")
     return 0
 
 

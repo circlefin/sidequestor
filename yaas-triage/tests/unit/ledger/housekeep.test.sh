@@ -41,12 +41,16 @@ ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 eq()  { [ "$2" = "$3" ] && ok "$1" || bad "$1 (want $3, got $2)"; }
 
-# retire <watch-json> <meta-json> <approvals-json> <now> ; echoes surviving watch_ids
-retire() {
+# retire_raw <watch-json> <meta-json> <approvals-json> <now> ; prints stdout from housekeep
+retire_raw() {
   printf '%s' "$1" > "$TMP/watch.json"
   printf '%s' "$2" > "$TMP/meta.json"
   printf '%s' "$3" > "$TMP/appr.json"
-  python3 "$HK" retire "$TMP/watch.json" "$TMP/meta.json" "$TMP/appr.json" --now "$4" >/dev/null 2>&1
+  python3 "$HK" retire "$TMP/watch.json" "$TMP/meta.json" "$TMP/appr.json" --now "$4" 2>&1
+}
+# retire <watch-json> <meta-json> <approvals-json> <now> ; echoes surviving watch_ids
+retire() {
+  retire_raw "$@" >/dev/null
   jq -c '[.watches[].watch_id]' "$TMP/watch.json"
 }
 # resolve <meta-json> ; prints the resolved window ("None" or an int) via a tiny python shim
@@ -125,6 +129,19 @@ AT=$(( NOW - 14*DAY ))
 BW='{"watches":[{"watch_id":"at","type":"slack_thread","thread_ts":"'$AT'.0"}]}'
 eq "a thread exactly at the 14d cutoff survives (strict <)" \
    "$(retire "$BW" '{}' '{"items":[]}' "$NOW")" '["at"]'
+MAL='{"watches":[{"watch_id":"bad","type":"slack_thread","thread_ts":"garbage","reason":"bad ts"}]}'
+eq "a malformed slack_thread is kept, not retired on a guess" \
+   "$(retire "$MAL" '{}' '{"items":[]}' "$NOW")" '["bad"]'
+case "$(retire_raw "$MAL" '{}' '{"items":[]}' "$NOW")" in
+  *"Kept 1 malformed slack_thread watch(es) (missing or invalid thread_ts)"*)
+    ok "...and it is surfaced as malformed"
+    ;;
+  *)
+    bad "...and it should be surfaced as malformed"
+    ;;
+esac
+eq "...without auto-repairing thread_ts" \
+   "$(jq -r '.watches[0].thread_ts' "$TMP/watch.json")" "garbage"
 # schedule exactly at next_fire_ts: watermark >= fire → fired.
 SB='{"watches":[{"watch_id":"eq","type":"schedule","next_fire_ts":"500","last_checked_ts":"500"}]}'
 eq "a schedule with watermark == next_fire_ts is fired (>=)" \

@@ -63,6 +63,13 @@ eq "2 recent + 1 unparseable kept live"    "$LIVE" "3"
 eq "conservation: nothing vanished"        "$((LIVE + ARCH))" "6"
 grep -q "not json" "$STATE/run-log.ndjson" && ok "an unparseable line is KEPT, never dropped" \
   || bad "an unparseable line was discarded"
+printf '{"event":"gate_idle","n":"missing-ts"}\n' >> "$STATE/run-log.ndjson"
+R
+grep -q '"n":"missing-ts"' "$STATE/run-log.ndjson" \
+  && ok "an untimestamped line is KEPT, never silently archived" \
+  || bad "an untimestamped line was archived"
+ARCH2=$(cat "$STATE"/run-log-archive-*.ndjson 2>/dev/null | grep -c '"n":"missing-ts"' || true)
+eq "...and it does not appear in the archive" "$ARCH2" "0"
 
 echo
 echo "── timelines: trimmed to the newest 100, overflow archived ────────────────"

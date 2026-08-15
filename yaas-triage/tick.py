@@ -530,7 +530,7 @@ def run_tick(t):
     # ── Check every quest, a few at a time ──────────────────────────────────────
     # Bounded concurrency (YAAS_TRIAGE_MAX_PARALLEL, default 3) is the peak number of
     # simultaneous Slack API calls, and low is deliberate: burst concurrency is what trips
-    # Slack's rate-limit detection (the 2026-07-24 storm). Each check_quest RETURNS its rows,
+    # Slack's rate-limit detection. Each check_quest RETURNS its rows,
     # which we reassemble in the original quest order so t.results — and therefore analyze() —
     # is deterministic regardless of which checker finished first. The dispatch order is
     # separately re-sorted anyway, so ordering here is about a stable log/diff, not correctness.

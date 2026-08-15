@@ -16,7 +16,7 @@ Two failure modes matter. Everything below exists to prevent one of them.
 - **Silent data loss.** The watermark advances past activity that was never seen. The watch
   reports clean forever; the missed item never comes back.
 - **Runaway cost.** The checker reports dirty when nothing happened, or holds forever, and
-  every tick pays for an Opus dispatch. The 2026-07-24 Slack storm was >$1k over 13.5 hours.
+  every tick pays for an Opus dispatch. Unbounded, that compounds fast.
 
 Read `checkers/result.py` before anything else. It is the contract, and it is short.
 

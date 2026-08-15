@@ -57,7 +57,7 @@ Output: count|preview   (preview = "#<num> [state] title" of most-recently
                          updated changed PR; count = number of changed PRs)
         0|              (nothing changed since the watermark)
         ratelimited|r   (transient gh/API failure — triage SKIPS the tick rather
-                         than burning a dispatch; see the 2026-07-24 storm note
+                         than burning a dispatch; see the rate-limit note
                          in the original shell orchestrator check_quest)
         error|reason    (hard failure — triage treats this as dirty/retry)
 

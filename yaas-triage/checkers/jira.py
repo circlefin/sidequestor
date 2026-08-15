@@ -31,7 +31,7 @@ Output: count|preview   (preview = "KEY [status] — summary" of newest-updated
                          changed issue; count = number of changed issues)
         0|              (nothing changed since the watermark)
         ratelimited|r   (transient Jira 429/5xx/timeout — triage SKIPS the tick
-                         instead of dispatching; see the 2026-07-24 storm note
+                         instead of dispatching; see the rate-limit note
                          in the original shell orchestrator check_quest)
         error|reason    (hard failure — triage treats this as dirty/retry)
 

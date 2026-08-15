@@ -87,6 +87,9 @@ def rotate_runlog(state: Path):
         except Exception:
             keep.append(line)      # unparseable lines are kept, never silently dropped
             continue
+        if not ts:
+            keep.append(line)      # untimestamped lines are malformed; keep them visible
+            continue
         (archive if ts < cutoff else keep).append(line)
     if not archive:
         return

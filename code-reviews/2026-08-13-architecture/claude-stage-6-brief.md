@@ -28,8 +28,7 @@ Assert, over `checkers/*.watch.json`:
 - **Every type with `"upstream": "slack"` has a name starting with `slack_`.**
   This is the dangerous direction. `tick.py:256-258,340,352` and `tick_dispatch.py:66` decide
   "does this share the Slack rate limit?" by prefix. A Slack-backed type named anything else is
-  silently excluded from that pacing, and Slack throttling has already caused a costly runaway
-  loop in this repo's history.
+  silently excluded from that pacing, and unpaced Slack calls trip throttling and burn budget.
 - **Every type named `slack_*` declares `"upstream": "slack"`.**
   The cheaper direction to get wrong, but it means the manifest is lying about what the type talks
   to.

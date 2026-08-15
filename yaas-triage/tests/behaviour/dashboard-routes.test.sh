@@ -11,14 +11,13 @@ mkdir -p "$REPO/yaas-triage/ops" "$REPO/yaas-triage/ledger" \
 cp "$HERE/ops/dashboard-server.py" "$REPO/yaas-triage/ops/"
 cp "$HERE/tick_state.py" "$REPO/yaas-triage/"
 cp "$HERE/tick_check.py" "$REPO/yaas-triage/"
+cp "$HERE/reaction_config.py" "$REPO/yaas-triage/"
 cp "$HERE/approval_state.py" "$HERE/approval_store.py" "$REPO/yaas-triage/"
 cp "$HERE/ledger/approval-helper.py" "$HERE/ledger/add-watch.py" "$REPO/yaas-triage/ledger/"
 cp "$HERE/skills/yaas-quest-creation/new-quest.py" "$REPO/yaas-triage/skills/yaas-quest-creation/"
 mkdir -p "$REPO/yaas-triage/checkers"
 cp "$HERE"/checkers/*.py "$HERE"/checkers/*.watch.json "$REPO/yaas-triage/checkers/"
-# "/" serves v2 now, so the shell needs both files present to issue a cookie.
 cp "$HERE/../dashboard.html" "$REPO/dashboard.html"
-cp "$HERE/../dashboard-v2.html" "$REPO/dashboard-v2.html"
 printf '%s\n' '{"id":"q-prompt","title":"Prompt quest"}' > "$REPO/state/quests/active/q-prompt/meta.json"
 printf '%s\n' '{"watches":[{"type":"slack_thread","channel_id":"C1","thread_ts":"1.0","last_checked_ts":"1","reason":"route fixture"}]}' > "$REPO/state/quests/active/q-prompt/watch.json"
 cd "$REPO" || exit 1
@@ -65,6 +64,8 @@ print(json.dumps({
             "action_type": "slack_message",
             "status": "reviewed",
             "message_text": "edit me",
+            "context": "Answer the deployment question in the release thread",
+            "risk_reason": "allow_send is false",
             "reviewed_at": now.isoformat(),
             "target": {"channel_id": "C3", "thread_ts": "3.0"},
         },
@@ -101,6 +102,12 @@ print(json.dumps({
 }, indent=2))
 PY
 
+YAAS_REACTION_PROCESS_EMOJI=route_process \
+YAAS_REACTION_DRAFT_EMOJI=route_draft \
+YAAS_REACTION_SAVE_EMOJI=route_save \
+YAAS_REACTION_ADOPT_EMOJI=route_adopt \
+YAAS_REACTION_LOADING_EMOJI=route_loading \
+YAAS_REACTION_DONE_EMOJI=route_done \
 python3 yaas-triage/ops/dashboard-server.py "$PORT" >/dev/null 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 100); do
@@ -137,8 +144,8 @@ route_actions = sorted(set(module.approval_state.HTTP_ACTIONS) | {"prompt"})
 html = open("dashboard.html").read()
 client_actions = set()
 client_actions.update(["review", "revise", "cancel", "reclaim"])
-if "if(result.status==='reviewed'||result.status==='cancelled') showUndoToast(id,action);" not in html:
-    raise AssertionError("client offers Undo without checking the resulting approval status")
+if "(a.available_actions||[]).includes('undo')" not in html:
+    raise AssertionError("client offers Undo without checking the server's available actions")
 if 'class="queued-save"' in html and '/api/edit/' in html:
     client_actions.add("edit")
 if 'class="ut-undo"' in html and '/api/undo/' in html:
@@ -193,6 +200,25 @@ expected_defaults = {
 }
 for key, expected in expected_defaults.items():
     assert config_items[key]["default"] == expected, (key, config_items[key])
+conn.close()
+
+conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+conn.request("GET", "/api/control", headers={"Host": host, "Cookie": cookie})
+resp = conn.getresponse()
+control_body = resp.read().decode()
+assert resp.status == 200, f"control returned {resp.status}: {control_body}"
+control = json.loads(control_body)
+assert control["reaction_emojis"] == {
+    "roles": {
+        "process": "route_process", "draft": "route_draft", "save": "route_save",
+        "adopt": "route_adopt", "loading": "route_loading", "done": "route_done",
+    },
+    "error": None,
+}, control["reaction_emojis"]
+queued = {item["id"]: item for item in control["queued"]}
+assert queued["route-edit"]["quest_title"] == "Q3", queued["route-edit"]
+assert queued["route-edit"]["context"] == "Answer the deployment question in the release thread", queued["route-edit"]
+assert queued["route-edit"]["message_text"] == "edit me", queued["route-edit"]
 conn.close()
 
 conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)

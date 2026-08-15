@@ -139,7 +139,7 @@ run_mutation "Slack health gate always passes" \
   "slack_down_gates_dispatch"
 
 # 4b. A Slack rate-limit must route as its own outcome (held + gate_watch_ratelimited), NOT
-#     silently fall through — the 2026-07-24 storm came from ratelimited being mishandled. The
+#     silently fall through — mishandling ratelimited is what makes a retry loop compound. The
 #     routing lives in tick_check.classify().
 run_mutation "ratelimited stops being handled as ratelimited" \
   '    if outcome == "ratelimited":' '    if False and outcome == "ratelimited":' \

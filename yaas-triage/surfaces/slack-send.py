@@ -60,15 +60,16 @@ Exit codes:
     2  send failed (Slack/MCP error) — nothing sent, nothing logged
 """
 
+from __future__ import annotations  # PEP 604 unions below must not be
+# evaluated at def time: this file has to import on Python < 3.10.
+
 import argparse
-import fcntl
 import json
 import os
 import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 def _repo_root(start):
@@ -94,33 +95,9 @@ def _repo_root(start):
 
 
 REPO_ROOT = _repo_root(__file__)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from timeline_io import utc_now, quest_dir, append_timeline
 MCP_CALL = os.environ.get("MCP_CALL", str(Path(__file__).parent / "mcp-call.sh"))
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _quest_dir(quest_id: str) -> Path | None:
-    """Locate a quest folder across active/completed/archived."""
-    base = REPO_ROOT / "state" / "quests"
-    for bucket in ("active", "completed", "archived"):
-        d = base / bucket / quest_id
-        if d.is_dir():
-            return d
-    return None
-
-
-def _append_timeline(quest_dir: Path, entry: dict):
-    """Append one NDJSON line to the quest timeline under an exclusive lock."""
-    path = quest_dir / "timeline.ndjson"
-    line = json.dumps(entry, ensure_ascii=False)
-    with open(path, "a", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            f.write(line + "\n")
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _call_slack(tool: str, args: dict) -> str:
@@ -295,10 +272,10 @@ def main():
         reason = _stale_reason(channel_id, thread_ts)
         if reason:
             appr_id = _queue_for_review(p, reason)
-            quest_dir = _quest_dir(quest_id) if quest_id else None
-            if quest_dir:
-                _append_timeline(quest_dir, {
-                    "ts": _utc_now(), "event": "draft_posted",
+            quest_dir_path = quest_dir(REPO_ROOT, quest_id) if quest_id else None
+            if quest_dir_path:
+                append_timeline(quest_dir_path, {
+                    "ts": utc_now(), "event": "draft_posted",
                     "channel_id": channel_id, "thread_ts": thread_ts,
                     "approval_id": appr_id, "held_reason": reason,
                     "note": (note or "") + " [auto-held by the stale-reply guard]"})
@@ -334,13 +311,13 @@ def main():
     # 3. Log the verbatim body to the quest timeline (the whole point).
     logged = False
     if quest_id:
-        qdir = _quest_dir(quest_id)
+        qdir = quest_dir(REPO_ROOT, quest_id)
         if qdir is None:
             print(f"warning: quest '{quest_id}' not found; send succeeded but "
                   f"not logged", file=sys.stderr)
         else:
             entry = {
-                "ts": _utc_now(),
+                "ts": utc_now(),
                 "event": event,
                 "channel_id": channel_id,
                 "message_text": message,
@@ -354,7 +331,7 @@ def main():
                 entry["permalink"] = permalink
             if note:
                 entry["note"] = note
-            _append_timeline(qdir, entry)
+            append_timeline(qdir, entry)
             logged = True
 
     print(json.dumps({

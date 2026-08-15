@@ -54,6 +54,7 @@ bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 REPO="$TMP/repo"; TRI="$REPO/yaas-triage"
 mkdir -p "$TRI/surfaces" "$TRI/ledger" "$TRI/checkers" "$REPO/state/quests/active/q-demo"
 cp "$SCRIPT_DIR/surfaces/slack-send.py" "$TRI/surfaces/"
+cp "$SCRIPT_DIR/surfaces/timeline_io.py" "$TRI/surfaces/"
 cp "$SCRIPT_DIR/ledger/approval-helper.py" "$TRI/ledger/"
 cp "$SCRIPT_DIR/ledger/add-watch.py" "$TRI/ledger/"
 cp "$SCRIPT_DIR/tick_state.py" "$TRI/"

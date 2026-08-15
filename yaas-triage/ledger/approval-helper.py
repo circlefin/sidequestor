@@ -68,6 +68,9 @@ abandon <id> <reason>
     reconciled safely. This prevents an expired lease from dispatching forever.
 """
 
+from __future__ import annotations  # PEP 604 unions below must not be
+# evaluated at def time: this file has to import on Python < 3.10.
+
 import json
 import os
 import random
