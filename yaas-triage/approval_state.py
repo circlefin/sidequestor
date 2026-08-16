@@ -40,7 +40,9 @@ TRANSITIONS = {
     ("reviewed", "undo"): {"http": True},
     ("cancelled", "undo"): {"http": True},
     ("executing", "reclaim"): {"http": True},
-    ("pending_review", "start"): {"http": False},
+    # `start` is legal only from `reviewed`: a worker must not move an unreviewed
+    # item into `executing`, so the human-approval gate is structural, not merely
+    # a convention enforced by the checker that decides what is dispatchable.
     ("reviewed", "start"): {"http": False},
     ("needs_reply", "answer"): {"http": False},
     ("executing", "done"): {"http": False},
