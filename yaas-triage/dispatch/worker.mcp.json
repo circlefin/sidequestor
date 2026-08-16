@@ -1,0 +1,26 @@
+{
+  "_comment": "Minimal MCP surface for the Mode A worker dispatch. Loaded via --mcp-config --strict-mcp-config by the worker dispatch. The worker also has WebFetch/WebSearch built-in tools for public URLs (Google Doc public-share links, web pages). For authenticated Google Workspace reads (private Docs, Drive), the worker shells out to the `gws` CLI via Bash — no GWS MCP needed. Coda and Atlassian are MCP because they need authenticated API access and there's no equivalent CLI.",
+  "mcpServers": {
+    "slack": {
+      "type": "http",
+      "url": "https://mcp.slack.com/mcp",
+      "oauth": {
+        "clientId": "1601185624273.8899143856786",
+        "callbackPort": 3118
+      }
+    },
+    "coda": {
+      "command": "node",
+      "args": [
+        "${CODA_MCP_PATH}"
+      ],
+      "env": {
+        "CODA_API_KEY": "${CODA_API_KEY}"
+      }
+    },
+    "atlassian": {
+      "type": "http",
+      "url": "https://mcp.atlassian.com/v1/mcp"
+    }
+  }
+}

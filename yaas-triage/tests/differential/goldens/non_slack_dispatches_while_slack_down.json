@@ -1,0 +1,72 @@
+{
+  "acks": {
+    "q-mail/quest": {
+      "we": "handled"
+    }
+  },
+  "dispatches": [
+    "q-mail"
+  ],
+  "events": [
+    {
+      "event": "gate_slack_down",
+      "still_dispatched": [
+        "q-mail"
+      ],
+      "targets": [
+        "q-slack"
+      ]
+    },
+    {
+      "dirty_watches": [
+        {
+          "advance_to": null,
+          "checker_outcome": "dirty",
+          "complete": true,
+          "quest_id": "q-mail",
+          "type": "email",
+          "watch_id": "we"
+        },
+        {
+          "advance_to": null,
+          "checker_outcome": "dirty",
+          "complete": true,
+          "quest_id": "q-slack",
+          "type": "slack_thread",
+          "watch_id": "ws"
+        }
+      ],
+      "event": "gate_dispatch",
+      "targets": [
+        "q-mail"
+      ]
+    },
+    {
+      "backend": "stub",
+      "event": "gate_dispatch_tokens",
+      "input_tokens": 0,
+      "note": "raw tokens; no cost (non-claude backend)",
+      "output_tokens": 0,
+      "targets": "q-mail"
+    },
+    {
+      "acked": 1,
+      "event": "gate_dispatch_success",
+      "targets": [
+        "q-mail"
+      ]
+    }
+  ],
+  "exit": 0,
+  "planned": [
+    "q-mail"
+  ],
+  "quests": {
+    "q-mail": "active",
+    "q-slack": "active"
+  },
+  "watches": {
+    "q-mail/we": "advanced_to_now",
+    "q-slack/ws": "held"
+  }
+}

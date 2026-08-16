@@ -1,0 +1,24 @@
+{
+  "acks": {},
+  "dispatches": [],
+  "events": [
+    {
+      "event": "gate_idle",
+      "quests_checked": 1,
+      "quests_skipped": 0,
+      "watches_in_backoff": 0,
+      "watches_misconfigured": 0,
+      "watches_skipped": 0,
+      "watches_truncated": 0
+    }
+  ],
+  "exit": 0,
+  "planned": [],
+  "quests": {
+    "q-demo": "active"
+  },
+  "watches": {
+    "q-demo/w1": "advanced_to_now",
+    "q-demo/w2": "advanced_to_now"
+  }
+}

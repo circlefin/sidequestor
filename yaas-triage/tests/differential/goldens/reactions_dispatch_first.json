@@ -1,0 +1,104 @@
+{
+  "acks": {
+    "q-aaa-first-alphabetically/quest": {
+      "w1": "handled"
+    },
+    "q-zzz-last-alphabetically/quest": {
+      "w2": "handled"
+    },
+    "reactions/reactions": {
+      "claude-intensifies:1770000001.000100": "handled"
+    }
+  },
+  "dispatches": [
+    "reactions",
+    "q-aaa-first-alphabetically",
+    "q-zzz-last-alphabetically"
+  ],
+  "events": [
+    {
+      "dirty_watches": [
+        {
+          "advance_to": "1786337052",
+          "checker_outcome": "dirty",
+          "complete": true,
+          "quest_id": "q-aaa-first-alphabetically",
+          "type": "slack_thread",
+          "watch_id": "w1"
+        },
+        {
+          "advance_to": "1786337052",
+          "checker_outcome": "dirty",
+          "complete": true,
+          "quest_id": "q-zzz-last-alphabetically",
+          "type": "slack_thread",
+          "watch_id": "w2"
+        }
+      ],
+      "event": "gate_dispatch",
+      "targets": [
+        "q-aaa-first-alphabetically",
+        "q-zzz-last-alphabetically",
+        "reactions"
+      ]
+    },
+    {
+      "backend": "stub",
+      "event": "gate_dispatch_tokens",
+      "input_tokens": 0,
+      "note": "raw tokens; no cost (non-claude backend)",
+      "output_tokens": 0,
+      "targets": "reactions"
+    },
+    {
+      "event": "gate_dispatch_success",
+      "targets": [
+        "reactions"
+      ]
+    },
+    {
+      "backend": "stub",
+      "event": "gate_dispatch_tokens",
+      "input_tokens": 0,
+      "note": "raw tokens; no cost (non-claude backend)",
+      "output_tokens": 0,
+      "targets": "q-aaa-first-alphabetically"
+    },
+    {
+      "acked": 1,
+      "event": "gate_dispatch_success",
+      "targets": [
+        "q-aaa-first-alphabetically"
+      ]
+    },
+    {
+      "backend": "stub",
+      "event": "gate_dispatch_tokens",
+      "input_tokens": 0,
+      "note": "raw tokens; no cost (non-claude backend)",
+      "output_tokens": 0,
+      "targets": "q-zzz-last-alphabetically"
+    },
+    {
+      "acked": 1,
+      "event": "gate_dispatch_success",
+      "targets": [
+        "q-zzz-last-alphabetically"
+      ]
+    }
+  ],
+  "exit": 0,
+  "planned": [
+    "q-aaa-first-alphabetically",
+    "q-zzz-last-alphabetically",
+    "reactions"
+  ],
+  "quests": {
+    "q-aaa-first-alphabetically": "active",
+    "q-zzz-last-alphabetically": "active"
+  },
+  "watches": {
+    "q-aaa-first-alphabetically/w1": "advanced_to_checker_value",
+    "q-zzz-last-alphabetically/w2": "advanced_to_checker_value"
+  }
+}

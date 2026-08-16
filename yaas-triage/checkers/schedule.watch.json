@@ -1,0 +1,15 @@
+{
+  "_comment": "checker_example is a minimal checker input, not an add-watch or new-quest creation template; it intentionally includes last_checked_ts.",
+  "schema_version": 1,
+  "required": [["cron", "tz"], ["next_fire_ts"]],
+  "identity": ["id", "cron", "next_fire_ts"],
+  "checker_example": {
+    "type": "schedule",
+    "cron": "* * * * *",
+    "tz": "UTC",
+    "last_checked_ts": "1"
+  },
+  "open_loop": false,
+  "user_creatable": true,
+  "upstream": null
+}

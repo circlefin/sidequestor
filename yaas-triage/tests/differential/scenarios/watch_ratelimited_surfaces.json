@@ -1,0 +1,28 @@
+{
+  "name": "watch_ratelimited_surfaces",
+  "why": "A Slack rate-limit skip holds the watermark and, before this, persisted NOTHING \u2014 so the dashboard could not tell a quest was being throttled (a throttling episode was invisible per-quest). The skip must (a) hold the watermark, no dispatch, and (b) emit a gate_watch_ratelimited run-log event carrying quest+watch+type, which the dashboard reads as a transient 'rate limited' flag \u2014 symmetric to gate_watch_misconfigured.",
+  "quests": {
+    "q-demo": {
+      "context": "# demo\n",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "type": "slack_thread",
+          "channel_id": "C1",
+          "thread_ts": "@now-7200.000100",
+          "last_checked_ts": "@now-3600",
+          "reason": "test"
+        }
+      ]
+    }
+  },
+  "checkers": {
+    "w1": {
+      "outcome": "ratelimited",
+      "preview": "slow down; watermark held"
+    }
+  },
+  "agent": {
+    "exit": 0
+  }
+}
