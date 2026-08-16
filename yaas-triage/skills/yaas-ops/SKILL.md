@@ -267,7 +267,12 @@ python3 yaas-triage/ops/health-monitor.py   # is it working right now
 yaas-triage/tests/run-all.sh     # is the code correct (fixtures, safe any time)
 ```
 
-`setup.sh` walks through Slack OAuth (PKCE flow, no client secret needed), stores the user `xoxp` token in macOS keychain at `(service=slack-xoxp-token, account=yaas)`, runs a connectivity check, and optionally installs the launchd job. Each user creates their own Slack app at https://api.slack.com/apps with the scopes listed in `setup/yaas-app-config.json`.
+`setup.sh` walks through Slack OAuth (PKCE flow, no client secret needed), stores the user `xoxp`
+token in macOS Keychain at `(service=slack-xoxp-token, account=yaas)`, runs a connectivity check,
+and offers the triage, independent heartbeat, and dashboard launchd jobs. It can also initialize
+opt-in daily template tracking and run verification. Each user creates their own Slack app at
+https://api.slack.com/apps from the manifest printed by `setup.sh --manifest`; the manifest and
+OAuth flow share `setup/yaas-app-config.json`, so their scopes cannot drift.
 
 ### Manual launchd control
 
@@ -275,6 +280,8 @@ yaas-triage/tests/run-all.sh     # is the code correct (fixtures, safe any time)
 ./yaas-triage/setup/install-launchd.sh           # install + load
 ./yaas-triage/setup/install-launchd.sh status    # show plist + load state
 ./yaas-triage/setup/install-launchd.sh uninstall # unload + remove plist
+./yaas-triage/setup/install-launchd-heartbeat.sh  # independent dead-man switch
+./yaas-triage/setup/install-launchd-dashboard.sh  # optional always-on localhost UI
 
 launchctl unload ~/Library/LaunchAgents/com.yaas.triage.plist   # temp disable
 launchctl load   ~/Library/LaunchAgents/com.yaas.triage.plist   # temp enable
@@ -317,7 +324,7 @@ Current spend against the ceilings:
 | Quest never fires | `DRY_RUN=1 VERBOSE=1 python3 yaas-triage/tick.py` — see per-type checker output |
 | Checker returns `0\|` when it should find messages | Run checker directly: `MCP_CALL=yaas-triage/surfaces/mcp-call.sh python3 yaas-triage/checkers/slack_thread.py '<entry_json>'` |
 | Email quest misses messages | Watermark too far ahead? Check `watches[].last_checked_ts` in the quest's `watch.json`. Gmail indexes ~60s after delivery; `email.lag=120` gives a 2-min buffer |
-| Worker keeps retrying the same error | Check `logs/worker-latest.log`. If the quest has a permanently-deleted thread, remove it from `watches[]` |
+| Worker keeps retrying the same error | Check `logs/worker-latest.log` and the watch's checker-health entry. Never delete an existing watch by hand; resolve or archive the quest, or change its objective through the supported quest workflow. |
 | Triage lock stuck | Check `logs/triage.lock.holder`. If PID is dead, the OS releases the lock automatically on next tick |
 | `LastExitStatus = 512` on launchd | Exit code 2 — a bad `.env` knob (a spend/limit value that isn't numeric) makes the orchestrator refuse to run (`gate_bad_env_knob`). Fix the value in `.env`; run `python3 yaas-triage/tick.py` manually to see it. (The old bash orchestrator exited 2 the same way on `.env` syntax errors under `set -eu`.) |
 | `LastExitStatus = 36608` on launchd | Exit 143 (SIGTERM). Expected if the worker watchdog killed a runaway dispatch; or if macOS slept mid-run. |

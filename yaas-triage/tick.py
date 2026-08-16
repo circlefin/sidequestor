@@ -294,7 +294,9 @@ def check_quest(t, qid):
         # [a-z0-9_]+ (see checkers/*.py); treat anything else as a missing checker,
         # which routes to the misconfig verdict rather than an exec.
         checker = t.script_dir / "checkers" / f"{wtype}.py"
-        checker_exists = bool(_re.fullmatch(r"[a-z0-9_]+", wtype)) and os.access(checker, os.X_OK)
+        checker_exists = (isinstance(wtype, str)
+                          and bool(_re.fullmatch(r"[a-z0-9_]+", wtype))
+                          and os.access(checker, os.X_OK))
 
         # Structural gates first — exactly the shell's order — and only run the checker once
         # they pass (so a held watch costs nothing and side-effects nothing). Each maps to a

@@ -1,6 +1,6 @@
 ---
 name: yaas-answering-quality
-description: Quality rules for composing bot replies in Slack threads and channels — research the asker/channel/partnership context first, multiple hypotheses for debugging questions, search prior Slack threads before answering tooling questions, follow up on answered threads within 48 hours, hedge confidence appropriately, and handle vague or suspiciously simple questions by clarifying or scoping the interpretation. Load whenever the worker is about to post a reply in a team Q&A channel, a reaction-workflow process thread or draft, or any other public/private channel Q&A. Does not apply to partner-facing DMs on quest-driven outreach — those follow the quest's own tone.
+description: Quality rules for composing replies in Slack threads, channels, and partner-facing quest conversations — research the asker/channel/partnership context first, consider multiple hypotheses for debugging questions, search prior Slack threads before answering tooling questions, follow up on answered threads within 48 hours, hedge confidence appropriately, and handle vague questions by clarifying or scoping the interpretation. Load whenever the worker is about to compose a Slack answer or partner-facing quest reply; the quest still owns its specific tone and objective.
 ---
 
 # Answering Quality Rules

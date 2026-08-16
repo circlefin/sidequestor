@@ -17,7 +17,8 @@ Scaffold a new yaas quest. A quest is a folder under `state/quests/active/` cont
 
 - If the user is just asking a question about a thread
 - If the task can be completed inside the current session (no follow-up needed)
-- If the user is updating an existing quest — in that case, edit the existing files directly
+- If the user is updating an existing quest — use the locking helpers and Mode B coexistence
+  rules from `yaas-quest-dispatch`; never hand-edit shared JSON
 
 ## Run loop
 
@@ -148,7 +149,10 @@ The script will:
 Do NOT include `last_checked_ts` in the watches — the script will reject it.
 Do NOT include reaction watch entries — reactions are tracked globally.
 
-After the script runs, update `context.md` via `Edit` if you need to add more detail (Slack permalinks, links, richer current-state narrative) that wasn't in the spec.
+After the script runs, update `context.md` via `Edit` if you need to add more detail (Slack
+permalinks, links, richer current-state narrative) that wasn't in the spec. Before editing it in
+an interactive session, confirm no dispatch manifest is active for the quest; creation and the
+background loop may overlap immediately after the folder appears.
 
 ### 4. Confirm to the user
 

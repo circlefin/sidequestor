@@ -203,7 +203,7 @@ submit a fresh instruction after checking the outcome.
 
 1. Claim it: `python3 yaas-triage/ledger/approval-helper.py start <id>`. If it prints `skip:<status>`, another worker beat you or it was cancelled — log a `note` and exit 0.
 2. Read `message_text` from the item (the user may have edited it in the dashboard). Read `review_note` if present — apply it as an instruction: rewrite tone, change format, adjust recipients, whatever it says. Use your full LLM judgment.
-3. Execute the action. **If the send fails because the channel is restricted (e.g., `mcp_externally_shared_channel_restricted`):** save the draft to the actual target thread via `slack_send_message_draft` (with `channel_id` + `thread_ts`), then DM the user only the permalink to that thread. Do not paste the draft text in the DM — they can open the thread, find the draft in the compose box, and send it themselves.
+3. Execute the action through `slack-send.py`. **If the send fails because the channel is restricted (e.g., `mcp_externally_shared_channel_restricted`):** retry through `slack-send.py` with `"draft": true`, saving the draft to the actual target thread with `channel_id` + `thread_ts`; then DM the user only the permalink to that thread. Do not paste the draft text in the DM — they can open the thread, find the draft in the compose box, and send it themselves.
 4. Mark done: `python3 yaas-triage/ledger/approval-helper.py done <id> <response_ts>`.
 5. Append a `slack_thread` watch to `watch.json` with `last_checked_ts = response_ts` (per §3a).
 6. Log `executed` with `log-event.py`, including `approval_id`, `response_ts`, and a note on any changes applied from `review_note`.
