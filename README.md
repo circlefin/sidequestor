@@ -2,6 +2,8 @@
 
 > *Safely expose your local interactive agent setup as a service.*
 
+**Version 2.5** (see [`CHANGELOG.md`](CHANGELOG.md); the current version is also in `VERSION`).
+
 **Sidequestor (YaaS, short for Yourself-as-a-Service)** keeps your local agent tending the work
 you can't sit and watch: it turns the loose ends scattered across your channels into things your
 own agent chases down while you're doing something else.
