@@ -1,6 +1,6 @@
 {
   "name": "nothing_to_do_with_saturated_window_holds",
-  "why": "THE LIVE INCIDENT, 2026-08-05. A worker correctly acks nothing_to_do on an out-of-scope item while the checker reports complete:false. The ack is honest and the hold is correct, but the combination is a livelock: the watermark never moves, the same item re-fires every tick, and after YAAS_UNACKED_PROMOTE (3) no-progress dispatches the watch is parked as misconfig. It ran 424 times over 14 hours on a live github_pr watch. incomplete_window_holds covers the handled+incomplete pair; this covers nothing_to_do+incomplete, which is what actually happened.",
+  "why": "THE LIVELOCK. A worker correctly acks nothing_to_do on an out-of-scope item while the checker reports complete:false. The ack is honest and the hold is correct, but the combination stalls: the watermark never moves, the same item re-fires every tick, and after YAAS_UNACKED_PROMOTE (3) no-progress dispatches the watch is parked as misconfig. Left alone it repeats indefinitely on a live watch. incomplete_window_holds covers the handled+incomplete pair; this covers nothing_to_do+incomplete, which is the pair that actually bites.",
   "quests": {
     "q-demo": {
       "context": "# demo\n",

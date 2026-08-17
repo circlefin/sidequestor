@@ -1,6 +1,6 @@
 {
   "name": "reactions_dispatch_first",
-  "why": "A reaction is the one target with a human actively waiting on it: you add the emoji and watch for the bot to acknowledge. Queued behind dirty quests it waited for every one of them to finish first (measured 2026-08-08: a trigger sat 4.5 minutes behind three quest dispatches before its worker even started, so the emoji showed nothing and looked broken). Reactions must therefore dispatch FIRST, ahead of every dirty quest, and the fairness rotation must not be able to push them back.",
+  "why": "A reaction is the one target with a human actively waiting on it: you add the emoji and watch for the bot to acknowledge. Queued behind dirty quests it waits for every one of them to finish first, so a few quest dispatches ahead of it push its worker minutes back and the emoji shows nothing meanwhile, which reads as broken. Reactions must therefore dispatch FIRST, ahead of every dirty quest, and the fairness rotation must not be able to push them back.",
   "quests": {
     "q-aaa-first-alphabetically": {
       "context": "# a quest that sorts BEFORE 'reactions', so a naive sort would dispatch it first\n",

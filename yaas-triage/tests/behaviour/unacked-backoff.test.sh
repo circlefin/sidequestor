@@ -17,19 +17,19 @@
 
 # unacked-backoff.test.sh — a watch that makes no progress backs off; it is never parked.
 #
-# History, in two incidents. (1) A worker acked one watch `blocked` three ticks running, hit
-# YAAS_UNACKED_PROMOTE, and classify() returned misconfig "watermark held pending review".
-# Nothing re-dispatched it and nothing surfaced it, so the real request behind it sat untouched
-# behind a "coming right up" reply. The fix then was to file an approval card asking a human to
-# unstick it. (2) Later the same day a 40-minute DNS outage on the host produced three of those
-# cards across three quests, because a worker that cannot reach the API cannot ack, and "did not
-# ack" scored the same as "ran and refused to ack". Neither card was actionable.
+# Two failure modes shape this. (1) A worker acks one watch `blocked` on consecutive ticks, hits
+# YAAS_UNACKED_PROMOTE, and classify() returns misconfig "watermark held pending review". Nothing
+# re-dispatches it and nothing surfaces it, so the real request behind it sits untouched behind a
+# "coming right up" reply. Parking it and filing an approval card for a human is not a fix: it
+# just moves the stall. (2) An offline stretch produces those cards in bulk, because a worker that
+# cannot reach the API cannot ack, and "did not ack" scores the same as "ran and refused to ack".
+# Cards like that are not actionable.
 #
-# So no-progress now BACKS OFF and keeps retrying forever — 5m doubling to a 24h cap — and
-# files nothing. A transient failure heals itself; a permanent one costs a dispatch a day and
-# stays visible on the dashboard. The watermark is held throughout either way.
+# So no-progress BACKS OFF and keeps retrying forever — 5m doubling to a 24h cap — and files
+# nothing. A transient failure heals itself; a permanent one costs a dispatch a day and stays
+# visible on the dashboard. The watermark is held throughout either way.
 #
-# Incident (2) is handled upstream of all this: a tick with no network does not run at all, so
+# Case (2) is also handled upstream of all this: a tick with no network does not run at all, so
 # an offline stretch cannot produce a strike in the first place. See tick-offline-gate.test.sh.
 
 set -u

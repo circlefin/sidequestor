@@ -168,7 +168,7 @@ def _new_id(data: dict) -> str:
 
 # Reaction-sourced drafts arrive with quest_id "reactions", which is the fast-path target and
 # has no quest folder — so the approval watch could never arm and the item stranded at
-# "reviewed" forever (a real incident). They are routed to a durable executor-only host quest
+# "reviewed" forever. They are routed to a durable executor-only host quest
 # instead. This is a SPECIFIC map for the one known non-quest target, NOT a generic
 # "missing quest -> fallback" (that would hide typos and funnel unrelated broken approvals
 # into the host, per review).

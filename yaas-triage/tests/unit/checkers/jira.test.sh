@@ -19,8 +19,8 @@
 #
 # jira paginated newest-first and stopped at a page cap. When the cap was hit it reported
 # `complete: false`, which holds the watermark — so on an issue set busier than the cap the
-# cursor could never advance past it. Exactly the livelock that stalled a github_pr watch for
-# 14 hours on 2026-08-05, waiting to happen in a different file.
+# cursor could never advance past it. Exactly the livelock github_pr had, waiting to happen in
+# a different file.
 #
 # The fix is the query: bound the low end with `updated >= "..."` and sort ASCENDING, so the
 # pages held form a contiguous PREFIX of the gap, which is committable up to its newest row.

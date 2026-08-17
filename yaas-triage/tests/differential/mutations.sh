@@ -191,8 +191,8 @@ run_mutation "drop the fairness rotation" \
   "dispatch/plan.py"
 
 # 10. Reactions must jump the dispatch queue. Queued behind dirty quests, a reaction waits for
-#     every one of them to finish before its worker even starts (measured 2026-08-08: 4.5
-#     minutes behind three quest dispatches), and the emoji shows nothing meanwhile — the one
+#     every one of them to finish before its worker even starts (a few quest dispatches ahead
+#     of it cost minutes), and the emoji shows nothing meanwhile — the one
 #     case where a human is actively watching and reads the delay as "it's broken".
 run_mutation "reactions stop jumping the dispatch queue" \
   '    if "reactions" in rotated:' '    if False:' \
@@ -200,7 +200,7 @@ run_mutation "reactions stop jumping the dispatch queue" \
 
 # 11. ...but reactions must not EAT a quest's slot. Jumping the queue while also consuming
 #     the fan-out budget turns priority into starvation: at fan-out 1 with a reaction pending
-#     across ticks, every dirty quest is deferred forever. Caught by Codex review, 2026-08-10.
+#     across ticks, every dirty quest is deferred forever.
 run_mutation "reactions consume a quest fan-out slot" \
   '        over_fanout = target != "reactions" and quest_dispatched >= t.max_fanout' \
   '        over_fanout = quest_dispatched >= t.max_fanout or t.dispatched >= t.max_fanout' \
@@ -208,8 +208,8 @@ run_mutation "reactions consume a quest fan-out slot" \
 
 # ── NOT mutated here, deliberately: the CHECK-phase fairness rotation ────────
 # tick_check.rotate_check_order() has no mutation in this file, and that is a considered
-# omission rather than an oversight — verified empirically on 2026-08-10 by disabling it
-# (offset always 0) and re-running: all 32 goldens still passed.
+# omission rather than an oversight — verified empirically by disabling it (offset always 0)
+# and re-running: all 32 goldens still passed.
 #
 # It is invisible to this harness BY CONSTRUCTION. The rotation changes the order quests are
 # EXECUTED in; run_tick then reassembles results in quest_dirs order before anything is

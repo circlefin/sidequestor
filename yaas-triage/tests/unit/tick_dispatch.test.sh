@@ -17,8 +17,8 @@
 
 # tick_dispatch.test.sh — the two dispatch-phase gates of the tick.py orchestrator.
 #
-# slack_gate must drop ONLY Slack-needing targets during an outage (the ~183/day stall that a
-# per-target gate replaced), and slice_plan must never grant a dispatch that runs past the tick
+# slack_gate must drop ONLY Slack-needing targets during an outage (a blanket gate stalls every
+# non-Slack target too, which is what the per-target gate replaced), and slice_plan must never grant a dispatch that runs past the tick
 # budget nor start a target it cannot give MIN_SLICE seconds. Both are the money/data-loss
 # edges, so most cases assert something is GATED or DEFERRED.
 

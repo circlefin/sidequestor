@@ -20,16 +20,16 @@ health-monitor.py — the dead-man switch. Runs OUTSIDE triage.
 
 Why this exists
 ───────────────
-Twice now the whole system has been dead for hours while every surface said it was
-fine:
+The whole system can be dead for hours while every surface still says it is fine. Two
+ways that happens:
 
-  * 2026-06-30 — a stray `.pth` crashed every tick for 6.5 hours. `triage-loop.sh`
-    swallows the orchestrator's exit code behind `|| true`, so launchd happily reported a
-    healthy long-running job the entire time.
-  * 2026-06 — launchd's StartInterval delivery silently stopped firing after a macOS
-    update. Same outcome: nothing looked wrong.
+  * A crashing tick. `triage-loop.sh` swallows the orchestrator's exit code behind
+    `|| true`, so if every tick crashes on import, launchd still reports a healthy
+    long-running job.
+  * launchd's StartInterval delivery silently stopping (a macOS update is enough to do
+    it). Same outcome: nothing looks wrong.
 
-The lesson is that a health check living inside triage cannot detect triage being
+Both share a property: a health check living inside triage cannot detect triage being
 dead. So this runs as its own launchd job (`com.yaas.heartbeat`), shares no code path
 with the triage loop, and is deliberately dependency-free: it reads state files and
 shells out to `osascript`. Nothing it does can be broken by the thing it watches.

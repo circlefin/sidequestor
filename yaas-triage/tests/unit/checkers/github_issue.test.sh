@@ -18,10 +18,10 @@
 # github_issue.test.sh — the issues half of the GitHub pair.
 #
 # github_issue.py now adapts through shared github.py doctrine, but this suite still asserts
-# the 2026-08-05 stall fix on the issues surface directly. The dangerous regression is the
-# same as before (unbounded DESCENDING query -> suffix of the gap -> the watermark can never
-# cross it -> 424 misconfigured events over 14 hours), and count assertions alone still do
-# not catch it. So the query shape is asserted here too, in its own suite.
+# the stall fix on the issues surface directly. The dangerous regression is the same as on the
+# PR surface (unbounded DESCENDING query -> suffix of the gap -> the watermark can never cross
+# it -> the watch parks as misconfigured), and count assertions alone still do not catch it.
+# So the query shape is asserted here too, in its own suite.
 #
 # Two things are genuinely new versus github_pr and get the bulk of this file:
 #

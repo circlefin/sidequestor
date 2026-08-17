@@ -123,7 +123,7 @@ def main():
 
     # Bound the LOW end and sort ASCENDING, so the pages we hold are a contiguous PREFIX of
     # the gap. Newest-first was a suffix: on a set busier than the page cap the cursor could
-    # never advance past it, which is the livelock github_pr hit for 14 hours on 2026-08-05.
+    # never advance past it, which livelocks the surface.
     # JQL wants "yyyy/MM/dd HH:mm" and is minute-granular, so back off a minute and re-apply
     # the exact boundary in the post-filter below.
     caller_ordered = "order by" in jql.lower()

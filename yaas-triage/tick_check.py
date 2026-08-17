@@ -34,7 +34,7 @@ no progress? is its watch_id even valid?), which of the six verdicts does this w
 
 `classify()` is PURE: it takes the checker result and the watch's health/unacked state as data
 and returns the verdict. It runs no checker, reads no file, writes nothing. That is what makes
-the six-way routing — where two production incidents hid — unit-testable in isolation, which it
+the six-way routing — where the costly mistakes hide — unit-testable in isolation, which it
 never was inside the shell.
 
 The impure fan-out (running every checker in parallel, capped) lives in `run_checks()` and calls
@@ -195,9 +195,9 @@ def rotate_check_order(quest_ids, cursor):
 
     WHY THIS EXISTS. The Slack token has a finite request budget and a tick spends it in
     order. Whoever is at the back when it runs out gets a rate limit and is skipped — and
-    with a fixed order, it is the SAME quests every tick, forever. Measured 2026-08-09: four
-    quests were rate-limited on 100% of ticks purely because they sorted last, so messages to
-    them went unseen for hours while quests near the front were checked every minute. The
+    with a fixed order, it is the SAME quests every tick, forever. A quest that sorts last can
+    be rate-limited on every single tick, so messages to it go unseen for hours while quests
+    near the front are checked every minute. The
     watermark is held so nothing is lost, but "not lost" is not "noticed".
 
     Rotation, not randomisation. Random order fixes starvation only on average: a quest can

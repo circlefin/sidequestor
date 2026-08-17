@@ -17,11 +17,11 @@
 
 # tick-offline-gate.test.sh — a tick with no network does not happen at all.
 #
-# The incident (2026-08-11): the host lost DNS for ~40 minutes. Ticks kept firing, dispatched
-# nine workers, and every one of them exited without reaching the API (`ENOTFOUND`, 0 tokens,
-# ~3 minutes of wall time each). A worker that never reached the model cannot ack its manifest,
-# so each of those dispatches counted as a no-progress strike against a watch that had done
-# nothing wrong, and three watches ended up held across three quests.
+# The failure this guards: the host loses DNS for a stretch. Ticks keep firing and keep
+# dispatching workers, and every one exits without reaching the API (`ENOTFOUND`, 0 tokens,
+# minutes of wall time each). A worker that never reached the model cannot ack its manifest,
+# so each of those dispatches counts as a no-progress strike against a watch that did nothing
+# wrong, and watches end up held across quests.
 #
 # Nothing a tick does works without a network, so the fix is upstream of every counter: probe
 # first, and if the machine is offline treat the tick as if launchd had never fired. No checks,
@@ -62,7 +62,7 @@ class T:
 print('yes' if tick.have_network(T()) else 'no')
 "
 }
-# A name that cannot resolve is exactly the ENOTFOUND the incident produced.
+# A name that cannot resolve is exactly the ENOTFOUND a DNS failure produces.
 eq "an unresolvable host reads as offline" "$(probe 'api.anthropic.com.invalid')" "no"
 eq "the real API host reads as online"     "$(probe 'api.anthropic.com')" "yes"
 

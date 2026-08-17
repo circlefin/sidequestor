@@ -19,10 +19,10 @@
 #
 # WHY THIS EXISTS. client.py collapses HTTP 429, 5xx, socket timeouts and connection
 # failures into one exit code (4), and every Slack checker reported all of them as
-# "rate limit or network". That phrasing reads as a rate limit, so on 2026-08-08 a day's
-# 2,286 transient events were taken as evidence Slack was throttling us — when only 50 of
-# them actually said `ratelimited`. Concurrency was nearly retuned against a number that
-# mostly measured something else.
+# "rate limit or network". That phrasing reads as a rate limit, so a day's worth of transient
+# events looks like evidence of throttling even when only a small fraction actually said
+# `ratelimited` — and concurrency then gets retuned against a number that mostly measured
+# something else.
 #
 # So the categories here are load-bearing for diagnosis, and the inputs below are real
 # client.py stderr shapes (it writes `ERROR: <detail>` before exiting). If client.py ever

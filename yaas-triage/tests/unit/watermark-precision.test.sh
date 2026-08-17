@@ -20,10 +20,10 @@
 # Slack's `oldest`/`latest` return ZERO messages for a timestamp with more precision than
 # that, and return them normally with exactly 6. The checkers normalize on the way out, but
 # a dispatched worker reads last_checked_ts straight from watch.json and passes it through,
-# so an over-precise stored value makes the worker blind while the checker sees fine. That
-# asymmetry burned a real message on 2026-08-17: DIRTY at 04:08:44Z, worker read the channel
-# with oldest=1786939623.4141629, got nothing, acked nothing_to_do, watermark advanced past
-# an unanswered request.
+# so an over-precise stored value makes the worker blind while the checker sees fine. The
+# asymmetry loses messages silently: the quest goes DIRTY, the worker reads the channel with
+# something like oldest=1786939623.4141629, gets nothing back, acks nothing_to_do, and the
+# watermark advances past a request nobody answered.
 #
 # The other half of the rule is direction: truncate, never round. Rounding can move the
 # watermark FORWARD by up to half a microsecond and step over a message sitting exactly on
@@ -58,7 +58,7 @@ print(m.slack_ts(sys.argv[1] if False else '$1'))
 echo "── tick.slack_ts: exactly 6 decimals, truncating ──────────────────────────"
 # Both cut DOWN, never up: .4141629 → .414162, not the .414163 rounding would give.
 eq "raw float repr is cut to 6dp"      "$(ts 1786939623.4141629)" "1786939623.414162"
-eq "the incident's own watermark"      "$(ts 1786120954.8022919)" "1786120954.802291"
+eq "a 7dp value from time.time()"      "$(ts 1786120954.8022919)" "1786120954.802291"
 eq "an already-6dp Slack ts is intact" "$(ts 1786939695.038339)"  "1786939695.038339"
 eq "a short ts is padded, not moved"   "$(ts 555.5)"              "555.500000"
 eq "an integer ts gains decimals"      "$(ts 100)"                "100.000000"

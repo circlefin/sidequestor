@@ -157,9 +157,9 @@ eq "...and the watch is intact" "$(jq -c '[.watches[].watch_id]' "$TMP/w.json")"
 
 echo
 echo "── ephemeral: the reply-catcher expires, the standing subscription does not "
-# The 2026-08-08 bug: a slack_channel watch opened on a DM to catch one top-level reply
-# never retired, so two quests kept waking on every unrelated DM for 3 and 12 days, and one
-# of them acted on a message the reactions path was also handling — a double-send.
+# The bug this pins: a slack_channel watch opened on a DM to catch one top-level reply never
+# retires, so the quest keeps waking on every unrelated DM in that DM forever — and can act on
+# a message the reactions path is also handling, which is a double-send.
 HR=3600
 EPH_OLD=$(( NOW - 240*HR )); EPH_NEW=$(( NOW - 5*HR ))   # 10 days vs 5 hours, around a 168h window
 DW='{"watches":[{"watch_id":"stale","type":"slack_channel","channel_id":"D1","ephemeral":true,"created_ts":"'$EPH_OLD'.0"},

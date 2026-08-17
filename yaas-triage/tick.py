@@ -206,8 +206,8 @@ def slack_ts(value):
     verbatim blind to every message after it. The checkers normalize on the way out
     (checkers/slack_channel.py, slack_thread.py), but a dispatched worker reads this
     field straight from watch.json, so the stored value has to be safe by itself.
-    That asymmetry silently dropped a message on 2026-08-17: checker saw it, worker
-    did not, watermark advanced past it.
+    That asymmetry drops messages silently: the checker sees them, the worker does
+    not, and the watermark advances past them.
 
     Truncates rather than rounds. Rounding can move the watermark FORWARD by up to
     half a microsecond, which is enough to step over a message sitting exactly on the
@@ -540,8 +540,7 @@ def run_tick(t):
 
     # NOTE: zero active quests does NOT mean the tick is idle — the global reaction
     # sweep (below) is independent of quests. Returning here would silently stop the
-    # bot from ever answering an emoji-triggered message whenever no quest is active
-    # (bug: 2026-08-08, a process-reaction DM went unanswered while quest_count==0).
+    # bot from ever answering an emoji-triggered message whenever no quest is active.
     # With an empty quest_dirs the check block below is a natural no-op, so we fall
     # through to the reaction sweep and the normal dispatch decision.
 
@@ -568,8 +567,8 @@ def run_tick(t):
     # separately re-sorted anyway, so ordering here is about a stable log/diff, not correctness.
     checkable = [qd.name for qd in quest_dirs if qd.name not in unreadable]
     # Fairness rotation for the CHECK phase. The Slack budget runs out partway through a
-    # tick, and with a fixed (alphabetical) order the same tail lost every time: on
-    # 2026-08-09 four quests were rate-limited on 100% of ticks purely for sorting last.
+    # tick, and with a fixed (alphabetical) order the same tail loses every time: a quest
+    # can be rate-limited on every single tick purely for sorting last.
     # Rotating the START each tick spreads that loss, so a quest waits a few ticks instead
     # of forever. Execution order only — results are reassembled in quest_dirs order below,
     # so every log, diff and golden stays deterministic.
@@ -919,9 +918,9 @@ def dispatch_loop(t, dispatch_targets, targets_json):
     # Reactions jump the queue, AFTER the rotation so the cursor cannot push them back.
     # A reaction is the one target with a human watching: you add the emoji and wait for the
     # bot to acknowledge it. Everything else is background work nobody is staring at. Queued
-    # last (the previous behaviour) a reaction waited for every dirty quest to finish first —
-    # measured 2026-08-08, a trigger sat 4.5 minutes behind three quest dispatches before its
-    # worker even started, so the emoji showed nothing for minutes and looked broken.
+    # last (the previous behaviour) a reaction waits for every dirty quest to finish first: a
+    # few quest dispatches ahead of it push the worker minutes back, so the emoji shows nothing
+    # for minutes and looks broken.
     # Excluded from the rotation rather than merely sorted first: the rotation exists to stop
     # a quest starving, and there is only ever one reactions target, so rotating it buys
     # nothing and would just reintroduce the delay on some ticks.
