@@ -313,6 +313,17 @@ state/quests/active/<quest_id>/
 Lifecycle: `active/` → `completed/` or `archived/`. A quest is a folder. No database, no schema
 migration.
 
+Workspace-level briefings are separate from quests:
+
+```
+state/briefs/
+└── <date>_<hhmm>_<type>.md    morning, evening, weekly, or monthly Markdown briefing
+```
+
+`state/briefs/` is the canonical briefing store. The dashboard reads and renders these files;
+Slack posts are delivery copies. A briefing does not belong in a quest folder because it may
+summarize several quests and other workspace activity.
+
 ---
 
 ## 10. The file map

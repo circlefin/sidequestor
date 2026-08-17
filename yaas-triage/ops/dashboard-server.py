@@ -27,6 +27,7 @@ Endpoints:
     GET  /                    → dashboard.html
     GET  /yaas-triage/assets/sidequestor-mark.png → dashboard logo
     GET  /api/dashboard       → live JSON snapshot of all quest state
+    GET  /api/briefs          → canonical Markdown briefings
     GET  /state/<path>        → raw state file
     POST /api/review/<id>     → mark item reviewed (optionally with edits)
     POST /api/edit/<id>       → update a reviewed draft in place
@@ -823,6 +824,34 @@ def build_config() -> dict:
 # file that grows while a worker runs) — that's a genuine state change, so a
 # non-304 response on every poll during a live run is correct, not a bug.
 
+def build_briefs(limit: int = 30) -> list:
+    """Return newest canonical briefings with their full Markdown content."""
+    briefs = []
+    briefs_dir = STATE_DIR / "briefs"
+    if not briefs_dir.exists():
+        return briefs
+
+    for brief_path in sorted(briefs_dir.glob("*.md"), reverse=True)[:limit]:
+        try:
+            markdown = brief_path.read_text()
+            modified_at = brief_path.stat().st_mtime
+        except OSError:
+            continue
+        parts = brief_path.stem.split("_")
+        brief_type = parts[2] if len(parts) >= 3 else (parts[-1] if parts else "")
+        title = next(
+            (line[2:].strip() for line in markdown.splitlines() if line.startswith("# ")),
+            brief_path.name,
+        )
+        briefs.append({
+            "file": brief_path.name,
+            "type": brief_type,
+            "title": title,
+            "markdown": markdown,
+            "ts": datetime.fromtimestamp(modified_at, timezone.utc).isoformat(),
+        })
+    return briefs
+
 def build_dashboard() -> dict:
     active_dir = STATE_DIR / "quests" / "active"
     quests         = []
@@ -1024,39 +1053,13 @@ def build_dashboard() -> dict:
         except Exception:
             pass
 
-    # Daily briefs: markdown files in state/briefs/, named <date>_<hhmm>_<type>.md
-    # (e.g. 2026-06-05_0830_morning.md). Newest first, full markdown included so
-    # the dashboard renders them client-side with clickable links.
-    briefs = []
-    briefs_dir = STATE_DIR / "briefs"
-    if briefs_dir.exists():
-        for bf in sorted(briefs_dir.glob("*.md"), reverse=True)[:30]:
-            try:
-                md = bf.read_text()
-            except Exception:
-                continue
-            parts = bf.stem.split("_")
-            btype = parts[2] if len(parts) >= 3 else (parts[-1] if parts else "")
-            title = ""
-            for line in md.splitlines():
-                if line.startswith("# "):
-                    title = line[2:].strip()
-                    break
-            briefs.append({
-                "file":     bf.name,
-                "type":     btype,
-                "title":    title or bf.name,
-                "markdown": md,
-                "ts":       datetime.fromtimestamp(bf.stat().st_mtime, timezone.utc).isoformat(),
-            })
-
     return {
         "triage":         triage_state,
         "live_run":       build_live_run(),
         "quests":         quests,
         "recent_activity": recent_activity,
         "pending_review": pending_review,
-        "briefs":         briefs,
+        "briefs":         build_briefs(),
         "config":         build_config(),
     }
 
@@ -1781,6 +1784,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/control":
             self._send_json_etag(build_control)
+            return
+
+        if path == "/api/briefs":
+            self._send_json_etag(lambda: {"briefs": build_briefs()})
             return
 
         if path == "/api/messages":

@@ -7,7 +7,8 @@ TMP="$(mktemp -d)"
 trap 'kill "${SERVER_PID:-}" 2>/dev/null || true; wait "${SERVER_PID:-}" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 REPO="$TMP/repo"
 mkdir -p "$REPO/yaas-triage/ops" "$REPO/yaas-triage/ledger" "$REPO/yaas-triage/assets" \
-  "$REPO/yaas-triage/skills/yaas-quest-creation" "$REPO/state/quests/active/q-prompt"
+  "$REPO/yaas-triage/skills/yaas-quest-creation" "$REPO/state/quests/active/q-prompt" \
+  "$REPO/state/briefs"
 cp "$HERE/ops/dashboard-server.py" "$REPO/yaas-triage/ops/"
 cp "$HERE/tick_state.py" "$REPO/yaas-triage/"
 cp "$HERE/tick_check.py" "$REPO/yaas-triage/"
@@ -21,6 +22,7 @@ cp "$HERE/../dashboard.html" "$REPO/dashboard.html"
 cp "$HERE/assets/sidequestor-mark.png" "$REPO/yaas-triage/assets/"
 printf '%s\n' '{"id":"q-prompt","title":"Prompt quest"}' > "$REPO/state/quests/active/q-prompt/meta.json"
 printf '%s\n' '{"watches":[{"type":"slack_thread","channel_id":"C1","thread_ts":"1.0","last_checked_ts":"1","reason":"route fixture"}]}' > "$REPO/state/quests/active/q-prompt/watch.json"
+printf '%s\n' '# Route Brief' '' 'A canonical briefing fixture.' > "$REPO/state/briefs/2026-08-17_0830_morning.md"
 cd "$REPO" || exit 1
 
 PORT="$(python3 - <<'PY'
@@ -143,6 +145,19 @@ spec.loader.exec_module(module)
 route_actions = sorted(set(module.approval_state.HTTP_ACTIONS) | {"prompt"})
 
 html = open("dashboard.html").read()
+assert 'data-mode="briefings"' in html, "Briefings desktop mode is missing"
+assert 'id="mode-menu-trigger"' in html, "compact mode menu is missing"
+assert 'data-mode-option="briefings"' in html
+assert '.top.compact-modes .navs{display:none}' in html
+assert 'nav.scrollWidth>nav.clientWidth+1' in html
+assert 'button.scrollWidth>button.clientWidth+1' in html
+assert 'new ResizeObserver(measureModeNavigation)' in html
+assert '.mode-option{display:block' in html and 'font:900 12px var(--sans)' in html
+assert '.navs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}' in html
+assert 'id="brief-picker-trigger"' in html, "compact briefing picker is missing"
+assert '.brief-index-head,.brief-list{display:none}.brief-picker{display:block}' in html
+assert 'data-brief="${esc(brief.file)}" aria-selected="${selected}"' in html
+assert "fetch('/api/briefs'" in html, "Briefings UI is not wired to its API"
 client_actions = set()
 client_actions.update(["review", "revise", "cancel", "reclaim"])
 if "(a.available_actions||[]).includes('undo')" not in html:
@@ -177,6 +192,13 @@ assert not (worker_only & set(route_actions)), (
 )
 
 conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+conn.request("GET", "/api/briefs", headers={"Host": host})
+resp = conn.getresponse()
+resp.read()
+assert resp.status == 403, f"unauthenticated briefs returned {resp.status}"
+conn.close()
+
+conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
 conn.request("GET", "/", headers={"Host": host})
 resp = conn.getresponse()
 cookie = resp.getheader("Set-Cookie", "").split(";", 1)[0]
@@ -195,6 +217,19 @@ assert resp.status == 200, f"dashboard logo returned {resp.status}"
 assert resp.getheader("Content-Type") == "image/png"
 assert resp.getheader("Cache-Control") == "no-store"
 assert logo_body.startswith(b"\x89PNG\r\n\x1a\n")
+conn.close()
+
+conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+conn.request("GET", "/api/briefs", headers={"Host": host, "Cookie": cookie})
+resp = conn.getresponse()
+briefs_body = resp.read().decode()
+assert resp.status == 200, f"briefs returned {resp.status}: {briefs_body}"
+briefs = json.loads(briefs_body)["briefs"]
+assert len(briefs) == 1, briefs
+assert briefs[0]["file"] == "2026-08-17_0830_morning.md", briefs[0]
+assert briefs[0]["type"] == "morning", briefs[0]
+assert briefs[0]["title"] == "Route Brief", briefs[0]
+assert "canonical briefing fixture" in briefs[0]["markdown"], briefs[0]
 conn.close()
 
 conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)

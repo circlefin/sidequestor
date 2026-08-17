@@ -392,10 +392,16 @@ Once installed, there is nothing to do. It ticks every 60 seconds.
 The pinned dashboard at `localhost:8877` is the whole interface. That's where drafts wait for you and every quest's messages are one click from Slack. A pulsing
 pill appears when a worker is running: click it to watch the agent think in real time. Stuck
 (misconfigured) or throttled (rate limited) quests sort to the top with a badge. **Control** is
-the live map, **Audit** keeps prior approvals and dispatch runs, and **Field guide** in the header
-explains quests and Slack reaction spells.
+the live map, **Briefings** reads the canonical Markdown archive, **Audit** keeps prior approvals
+and dispatch runs, and **Field guide** in the header explains quests and Slack reaction spells.
 
 The dashboard is the map. The files remain the truth, and your agent is the one that reads them.
+
+Briefings have one canonical home: `state/briefs/`. Each briefing is a Markdown file named
+`<date>_<hhmm>_<type>.md`, for example `2026-08-17_0830_morning.md`. Morning, evening, weekly,
+and monthly briefs all use the same store. The dashboard is a read-only view of those files, and
+anything posted to Slack is a delivery copy rather than the source of truth. Briefings stay outside
+quest folders because they can summarize work across several quests.
 
 For anything the dashboard doesn't show, ask. Your agent knows the ops surface, so questions work
 better than commands:
