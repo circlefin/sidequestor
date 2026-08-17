@@ -1,2 +1,5 @@
-# Default owner for every file in this repository.
-* @guangmian-circle
+# Default owners for every file in this repository.
+# Two handles because this tree is mirrored to two GitHub tenants, and a handle only
+# resolves in its own: @guangmian-circle on github.com, @guangmian-kung_crcl on the
+# enterprise-managed org. Each tenant applies the one it knows and warns on the other.
+* @guangmian-circle @guangmian-kung_crcl
