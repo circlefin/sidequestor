@@ -88,6 +88,60 @@ import json; print(json.load(open('$Q/watch.json'))['watches'][0]['last_checked_
 " 2>/dev/null || echo MISSING)"
 eq "explicit over-precise ts is truncated" "$GOT" "1786939623.414162"
 
+# ── result.emit: the checker's own claim is truncated before triage ever sees it ──
+echo
+echo "── result.emit: advance_to is truncated, not rounded ──────────────────────"
+# The checker formats advance_to itself, and tick.py truncates AFTER. Truncation cannot
+# undo an upward round, so rounding here would put the watermark half a microsecond ahead
+# of the proven-safe point and a message sitting exactly on the rounded value would read as
+# already-seen forever. safe_advance() returns `now - lag`, a full-precision float, so this
+# path is exercised on every clean slack_dm / slack_mention tick.
+adv() { python3 -c "
+import sys; sys.path.insert(0, '$SCRIPT_DIR/checkers')
+import json, result
+result.emit('clean', advance_to=float(sys.argv[1]))
+" "$1" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['advance_to'])"; }
+eq "a 7dp claim is cut DOWN, not rounded up" "$(adv 1786939623.4141695)" "1786939623.414169"
+eq "...even when rounding would carry the second" "$(adv 1786939623.9999995)" "1786939623.999999"
+eq "an exact 6dp claim is unchanged"             "$(adv 1786939623.414162)" "1786939623.414162"
+eq "matches tick.slack_ts on the same input"     "$(adv 1786939623.4141629)" "$(ts 1786939623.4141629)"
+
+# ── the search-backed checkers must hand emit() a FLOAT, not a pre-rounded string ──
+echo
+echo "── search checkers do not pre-round their claim ────────────────────────────"
+# result.emit truncating is useless if the caller already rounded: formatting with :.6f
+# at the call site loses the microsecond before emit ever sees it, and truncation cannot
+# put it back. slack_dm / slack_mention are the two callers that pass advance_to
+# explicitly (via search_advance_to, whose value is a full-precision now - lag).
+for f in slack_dm slack_mention; do
+  if grep -A2 'advance_to=' "$SCRIPT_DIR/checkers/$f.py" | grep -q ':\.6f'; then
+    bad "$f.py pre-rounds advance_to with :.6f — emit() cannot undo it"
+  else
+    ok "$f.py passes advance_to unformatted"
+  fi
+done
+# End to end: the float that used to round UP must now come out truncated.
+E2E="$(python3 -c "
+import sys, io, json, contextlib
+sys.path.insert(0, '$SCRIPT_DIR/checkers')
+import slack_utils, result
+adv = slack_utils.search_advance_to(0.0, now=1786939623.4141695 + slack_utils.SEARCH_INDEX_LAG)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf): result.counted(1, 'x', advance_to=adv)
+print(json.loads(buf.getvalue())['advance_to'])
+" 2>/dev/null)"
+eq "a search claim reaches triage truncated" "$E2E" "1786939623.414169"
+# emit() must never raise, including on a non-finite claim (its docstring promises this).
+NONFINITE="$(python3 -c "
+import sys, io, json, contextlib
+sys.path.insert(0, '$SCRIPT_DIR/checkers')
+import result
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf): result.emit('clean', advance_to=float('inf'))
+print(json.loads(buf.getvalue()).get('advance_to', 'OMITTED'))
+" 2>&1 | tail -1)"
+eq "a non-finite claim omits the key instead of raising" "$NONFINITE" "OMITTED"
+
 echo
 printf 'watermark-precision: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

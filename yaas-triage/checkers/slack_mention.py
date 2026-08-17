@@ -140,7 +140,9 @@ def main():
     # in the search index was buried. search_advance_to() encodes the safe rule once, in
     # code, for both search-backed checkers.
     result.counted(count, preview,
-                   advance_to=f"{slack_utils.search_advance_to(newest):.6f}",
+                   # Pass the FLOAT. Formatting it here with `:.6f` would round-half-even, and
+                   # result.emit truncates — it cannot undo a round that already happened.
+                   advance_to=slack_utils.search_advance_to(newest),
                    complete=hits < SEARCH_LIMIT)
 
 

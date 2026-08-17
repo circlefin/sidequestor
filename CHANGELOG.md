@@ -4,6 +4,46 @@ All notable changes to Sidequestor (YaaS). The current version also lives in `VE
 
 Versions are dated by the day the snapshot was published.
 
+## 2.5.1 - 2026-08-17
+
+A same-day patch release: eight defects found by auditing the 2.5 snapshot, plus one reported from
+using the dashboard. No new features, no config changes required.
+
+### Fixed
+- Watermark claims are truncated to Slack's 6 decimals, never rounded. `checkers/result.py`
+  formatted `advance_to` with `:.6f`, which is round-half-even and could move a claim FORWARD of the
+  point actually proven covered; a message sitting exactly on the rounded microsecond was then read
+  as already-seen forever. `slack_dm` and `slack_mention` were also pre-rounding at the call site,
+  which made the emit-side fix a no-op for the two checkers that reach it.
+- `result.emit()` no longer raises on a non-finite claim, as its docstring promises.
+- `classify()` no longer erases a numeric `0` watermark claim through falsiness. An erased claim is
+  not a hold: the commit layer falls back to `now - lag` and jumps the watermark to NOW.
+- The dashboard no longer rebuilds DOM it has not changed. Every 2s poll rewrote whole subtrees even
+  when the payload was identical, which made the prompt box flicker and reset a long draft's scroll
+  in the review interface. Writes now compare first, and a textarea's value is left alone when it
+  matches.
+- Briefings are no longer rebuilt on every poll and discarded (~114ms and 75KB of JSON per poll on a
+  150-file archive). They are served on demand from `/api/briefs`.
+- Briefings have one canonical timestamp, `at`, derived from the filename with an explicit UTC
+  offset. Dates were previously read from the filename as a bare local wall clock, or from the file's
+  mtime, which are different things.
+- `build_briefs()` checks the `<date>_<hhmm>_<type>` filename prefix, so a stray `.md` in
+  `state/briefs/` can no longer sort above every dated file and be served as the newest briefing. A
+  trailing segment is kept in the type rather than silently trimmed.
+- The markdown renderer's link placeholder can no longer be forged from prose, and a `$&` in a URL
+  or label is inserted literally instead of being expanded as a substitution pattern.
+
+### Changed
+- A fractional value for a whole-number knob is now refused at startup instead of being floored to 0
+  and silently disabling the cap it was meant to set. Knobs whose reader honours a fraction
+  (`YAAS_STALE_REPLY_HOURS`, `YAAS_MAX_SPEND_*`) still accept one.
+
+### Added
+- `yaas-triage/tests/unit/dashboard-render.test.sh`: the dashboard's renderer, date helpers and
+  write guards are tested by behaviour, running the shipped implementations rather than asserting
+  that the file contains certain strings. Skips cleanly where `node` is absent, naming what it did
+  not cover.
+
 ## 2.5 - 2026-08-17
 
 The first versioned release. Everything below landed after the initial public import.

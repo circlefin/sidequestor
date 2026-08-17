@@ -124,7 +124,13 @@ def classify(result, watch, health=None, unacked=0, unacked_due=True,
 
     outcome = result.get("outcome", "error")
     preview = result.get("preview", "")
-    advance_to = result.get("advance_to") or None
+    # `is not None` and not falsiness: a numeric 0 is a legitimate claim, and `or None`
+    # would turn it into "no claim given", which makes advance_watches() fall back to
+    # now - lag and jump the watermark to NOW instead of holding it near zero. Empty
+    # string still means absent. tick.py:advance_watches applies the same test.
+    advance_to = result.get("advance_to")
+    if advance_to is None or str(advance_to) == "":
+        advance_to = None
     complete = result.get("complete", True) is not False
     count = result.get("count", 0)
 

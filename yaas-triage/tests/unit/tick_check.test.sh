@@ -137,6 +137,14 @@ echo "── dirty carries advance_to and complete through for the commit layer 
 OUT=$(python3 "$CHK" '{"outcome":"dirty","count":2,"complete":true,"advance_to":"1785920000.0"}' "$W")
 eq "advance_to preserved" "$(printf '%s' "$OUT" | python3 -c "import json,sys;print(json.load(sys.stdin)['advance_to'])")" "1785920000.0"
 eq "complete preserved" "$(printf '%s' "$OUT" | python3 -c "import json,sys;print(json.load(sys.stdin)['complete'])")" "True"
+# A numeric 0 is a legitimate claim and must survive. Falsiness (`or None`) would erase it,
+# and an erased claim is not "hold" — advance_watches() falls back to now - lag, which jumps
+# the watermark to NOW and buries everything between. An empty string still means absent.
+adv() { python3 "$CHK" "$1" "$W" | python3 -c "import json,sys;print(json.load(sys.stdin).get('advance_to','ABSENT'))"; }
+eq "a numeric 0 claim survives"  "$(adv '{"outcome":"dirty","count":1,"complete":true,"advance_to":0}')"   "0"
+eq "a 0.0 claim survives"        "$(adv '{"outcome":"dirty","count":1,"complete":true,"advance_to":0.0}')" "0.0"
+eq "a \"0.000000\" claim survives" "$(adv '{"outcome":"dirty","count":1,"complete":true,"advance_to":"0.000000"}')" "0.000000"
+eq "an empty claim reads as absent" "$(adv '{"outcome":"dirty","count":1,"complete":true,"advance_to":""}')" "None"
 
 echo
 echo "── priority: structural checks beat the checker result ────────────────────"

@@ -23,6 +23,13 @@ cp "$HERE/assets/sidequestor-mark.png" "$REPO/yaas-triage/assets/"
 printf '%s\n' '{"id":"q-prompt","title":"Prompt quest"}' > "$REPO/state/quests/active/q-prompt/meta.json"
 printf '%s\n' '{"watches":[{"type":"slack_thread","channel_id":"C1","thread_ts":"1.0","last_checked_ts":"1","reason":"route fixture"}]}' > "$REPO/state/quests/active/q-prompt/watch.json"
 printf '%s\n' '# Route Brief' '' 'A canonical briefing fixture.' > "$REPO/state/briefs/2026-08-17_0830_morning.md"
+# Finding 5 fixture: a file that does NOT follow <date>_<hhmm>_<type>.md. Under a plain
+# reverse-lexicographic sort "notes.md" outranks every dated file and would be served as
+# the newest briefing, with its whole stem read as the type.
+printf '%s\n' '# Stray Note' '' 'Not a briefing.' > "$REPO/state/briefs/notes.md"
+# A hand-made name with a fourth segment. It is still a briefing and must be served, with
+# the trailing segment kept in the type rather than silently trimmed off.
+printf '%s\n' '# Weekly Two' '' 'A four-segment name.' > "$REPO/state/briefs/2026-08-16_0900_weekly_v2.md"
 cd "$REPO" || exit 1
 
 PORT="$(python3 - <<'PY'
@@ -144,6 +151,14 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 route_actions = sorted(set(module.approval_state.HTTP_ACTIONS) | {"prompt"})
 
+# THE BITING ASSERTION for the poll-cost fix. build_control() (polled every 2s) calls
+# build_dashboard() with the default, so the default must not BUILD briefings: doing so
+# re-reads every file in state/briefs/ on every poll and the control payload then throws
+# them away. Checking the response body instead would prove nothing, because
+# build_control() always dropped the key. This fails if the default flips back on.
+assert module.build_dashboard()["briefs"] == [], "build_dashboard() builds briefings by default"
+assert module.build_dashboard(include_briefs=True)["briefs"], "opt-in briefings are missing"
+
 html = open("dashboard.html").read()
 assert 'data-mode="briefings"' in html, "Briefings desktop mode is missing"
 assert 'id="mode-menu-trigger"' in html, "compact mode menu is missing"
@@ -225,11 +240,39 @@ resp = conn.getresponse()
 briefs_body = resp.read().decode()
 assert resp.status == 200, f"briefs returned {resp.status}: {briefs_body}"
 briefs = json.loads(briefs_body)["briefs"]
-assert len(briefs) == 1, briefs
+assert len(briefs) == 2, briefs
 assert briefs[0]["file"] == "2026-08-17_0830_morning.md", briefs[0]
 assert briefs[0]["type"] == "morning", briefs[0]
 assert briefs[0]["title"] == "Route Brief", briefs[0]
 assert "canonical briefing fixture" in briefs[0]["markdown"], briefs[0]
+# Only conforming filenames are served, so the stray note is absent and cannot displace
+# the newest real briefing.
+assert len(briefs) == 2, briefs
+assert all(b["file"] != "notes.md" for b in briefs), briefs
+extra = [b for b in briefs if b["file"] == "2026-08-16_0900_weekly_v2.md"]
+assert extra, "a four-segment briefing name was dropped instead of served"
+assert extra[0]["type"] == "weekly_v2", f"trailing segment was trimmed: {extra[0]['type']}"
+# `at` is the canonical briefing time, derived from the filename and stamped with this
+# host's offset. `ts` is only the file mtime. A client rendering a date from anything but
+# `at` reinterprets a local wall clock, so the field has to be there and has to carry an
+# offset rather than being a bare naive stamp.
+assert briefs[0]["at"].startswith("2026-08-17T08:30:00"), briefs[0]["at"]
+assert briefs[0]["at"][19] in "+-", f"canonical time has no UTC offset: {briefs[0]['at']}"
+conn.close()
+
+# /api/control is what the dashboard POLLS every 2s, and briefings are a
+# read-on-demand surface. Asserting the briefs are ABSENT from the response body is
+# not enough — build_control() always dropped the key, so that assertion passes even
+# with the waste present. The biting assertion is at the builder: build_dashboard()
+# must not BUILD briefings unless asked, because building them re-reads every file in
+# state/briefs/ on every poll. That is checked in the builder block further down.
+conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+conn.request("GET", "/api/control", headers={"Host": host, "Cookie": cookie})
+resp = conn.getresponse()
+control_body = resp.read().decode()
+assert resp.status == 200, f"control returned {resp.status}: {control_body}"
+assert "canonical briefing fixture" not in control_body, "poll payload carries briefing markdown"
+assert "briefs" not in json.loads(control_body), "control payload still has a briefs key"
 conn.close()
 
 conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
@@ -238,6 +281,9 @@ resp = conn.getresponse()
 dashboard_body = resp.read().decode()
 assert resp.status == 200, f"dashboard returned {resp.status}: {dashboard_body}"
 dashboard = json.loads(dashboard_body)
+# ...while /api/dashboard, whose payload contract still includes them, opts in.
+assert dashboard["briefs"], "dashboard payload lost its briefs"
+assert dashboard["briefs"][0]["file"] == "2026-08-17_0830_morning.md", dashboard["briefs"][0]
 config_items = {
     item["key"]: item
     for group in dashboard["config"]["groups"]
