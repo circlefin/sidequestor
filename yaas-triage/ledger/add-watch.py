@@ -46,6 +46,7 @@ malformed watch is loud rather than silently appended and never checked.
 import fcntl
 import hashlib
 import json
+import math
 import os
 import sys
 import time
@@ -164,7 +165,16 @@ def main():
             entry["last_checked_ts"] = str(entry["thread_ts"])
         else:
             entry["last_checked_ts"] = f"{time.time():.6f}"
-    entry["last_checked_ts"] = str(entry["last_checked_ts"])
+    # Normalize to Slack's own 6-decimal precision, including a caller-supplied value.
+    # A raw `time.time()` handed in here used to be stored verbatim (17 significant
+    # digits), and Slack's `oldest` returns ZERO messages for anything more precise
+    # than 6 decimals, so any consumer passing the watermark through would go blind.
+    # Truncate, never round: rounding can step the watermark forward over a message.
+    _raw = str(entry["last_checked_ts"])
+    try:
+        entry["last_checked_ts"] = f"{math.floor(float(_raw) * 1_000_000) / 1_000_000:.6f}"
+    except ValueError:
+        entry["last_checked_ts"] = _raw
 
     # Stamp WHEN this watch was created, which is not derivable from anything else on the
     # entry. last_checked_ts looks like an age but is a watermark: it advances every tick,

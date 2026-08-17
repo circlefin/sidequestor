@@ -56,6 +56,19 @@ Never read all four as a reflex. Each file read costs a model round-trip. After 
 
 **Slack watch types** (`slack_thread`, `slack_channel`, `slack_dm`): query with the appropriate MCP tool (`slack_read_thread`, `slack_read_channel`, `slack_search_public_and_private`).
 
+> **Truncate `last_checked_ts` to 6 decimals before using it as `oldest`/`latest`.** Slack returns
+> ZERO messages for a timestamp with more precision than that, and returns them normally with
+> exactly 6, so an over-precise watermark makes you blind to the very activity you were dispatched
+> for. `1786939623.4141629` → `1786939623.414162`. Truncate, never round up. The orchestrator now
+> stores watermarks already normalized, but entries written before 2026-08-17 can still carry the
+> old precision, so check the value you read rather than trusting it.
+>
+> This is not hypothetical: on 2026-08-17 a worker passed a 7-decimal watermark to
+> `slack_read_channel`, got an empty result, acked `nothing_to_do`, and the orchestrator advanced
+> the watermark past a real unanswered request. **If a channel reads as empty but the dispatch says
+> it is dirty, suspect this before concluding there is nothing to do** — and if the read still comes
+> back empty, ack `blocked`, not `nothing_to_do`, so the watermark is not burned.
+
 **Slack mention watch type** (`slack_mention`): fires on any new message that @mentions the entry's `user_id`, anywhere Slack search can see (global, not channel-scoped). The entry has no channel, so read `watch.json` for the entry's `last_checked_ts`, re-run `slack_search_public_and_private` with query `<@USER_ID> after:<date>`, keep only results newer than the watermark (skipping `[BOT]` authors and the watched user's own posts), then `slack_read_thread` on each hit before acting.
 
 **Email watch type** (`email`): read `watch.json` to get each entry's `query` and `last_checked_ts`. Then:

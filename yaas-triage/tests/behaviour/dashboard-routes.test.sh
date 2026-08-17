@@ -193,6 +193,7 @@ resp = conn.getresponse()
 logo_body = resp.read()
 assert resp.status == 200, f"dashboard logo returned {resp.status}"
 assert resp.getheader("Content-Type") == "image/png"
+assert resp.getheader("Cache-Control") == "no-store"
 assert logo_body.startswith(b"\x89PNG\r\n\x1a\n")
 conn.close()
 

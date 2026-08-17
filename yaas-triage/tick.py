@@ -39,6 +39,7 @@ the original shell orchestrator has been retired to archive/.
 
 import errno
 import json
+import math
 import os
 import socket
 import subprocess
@@ -196,6 +197,30 @@ class Tick:
             pass
 
 
+def slack_ts(value):
+    """Format a watermark the way Slack writes timestamps: exactly 6 decimals.
+
+    Not cosmetic. Slack's `oldest`/`latest` silently return ZERO messages when handed
+    more precision than that, so `str(time.time())` — 17 significant digits, e.g.
+    '1786939623.4141629' — makes any consumer that passes the watermark through
+    verbatim blind to every message after it. The checkers normalize on the way out
+    (checkers/slack_channel.py, slack_thread.py), but a dispatched worker reads this
+    field straight from watch.json, so the stored value has to be safe by itself.
+    That asymmetry silently dropped a message on 2026-08-17: checker saw it, worker
+    did not, watermark advanced past it.
+
+    Truncates rather than rounds. Rounding can move the watermark FORWARD by up to
+    half a microsecond, which is enough to step over a message sitting exactly on the
+    rounded value; truncating can only ever re-show a message, and re-showing is
+    cheap while skipping is silent data loss.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{math.floor(v * 1_000_000) / 1_000_000:.6f}"
+
+
 # ── The single place a watermark ever moves ──────────────────────────────────
 # Both the clean path and the post-dispatch commit call this. One writer, one rule: use the
 # checker's own advance_to when it gave one, else advance to now minus the type's lag. Mirrors
@@ -216,10 +241,10 @@ def advance_watches(t, qid, moves):
             continue
         adv = m.get("advance_to")
         if adv is not None and str(adv) != "":
-            w["last_checked_ts"] = str(adv)
+            w["last_checked_ts"] = slack_ts(adv)
         else:
             lag = t.lag_map.get(w.get("type"), 0)
-            w["last_checked_ts"] = str(t.now_ts - lag)
+            w["last_checked_ts"] = slack_ts(t.now_ts - lag)
     try:
         tmp = watch.parent / f".watch.{os.getpid()}.tmp"
         tmp.write_text(json.dumps(data, indent=2) + "\n")

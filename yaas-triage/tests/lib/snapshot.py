@@ -59,11 +59,26 @@ def _load_json(path, default=None):
         return default
 
 
+def _same_ts(a, b):
+    """Same instant, regardless of how it is spelled.
+
+    Watermarks are stored normalized to Slack's 6-decimal form, so the checker's "555.5"
+    lands as "555.500000". Comparing the strings called that a "now minus lag" advance and
+    turned a correctness fix into three golden failures. Compare the number; the property
+    under test is WHERE the cursor landed, not its formatting. Tolerance is half a
+    microsecond because the writer truncates to 6dp.
+    """
+    try:
+        return abs(float(a) - float(b)) < 5e-7
+    except (TypeError, ValueError):
+        return str(a) == str(b)
+
+
 def _classify(before, after, advance_to):
     """How did this watermark move? Time-independent by design."""
     if after == before:
         return "held"
-    if advance_to is not None and str(after) == str(advance_to):
+    if advance_to is not None and _same_ts(after, advance_to):
         # Deliberately WITHOUT the number. Scenario times are relative to the real
         # clock, so embedding the value would make the golden differ on every run.
         # That it equals what the checker supplied is the whole property.
