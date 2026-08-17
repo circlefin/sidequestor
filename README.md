@@ -1,4 +1,4 @@
-# Sidequestor <img src="assets/sidequestor-mark.png" width="35" height="35" alt="Sidequestor pixel robot mark">
+# Sidequestor <img src="yaas-triage/assets/sidequestor-mark.png" width="35" height="35" alt="Sidequestor pixel robot mark">
 
 > *Safely expose your local interactive agent setup as a service.*
 
