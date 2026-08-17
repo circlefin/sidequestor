@@ -4,4 +4,4 @@
 # mirrors at once: listing the other tenant's handle makes the whole entry an "Unknown
 # owner" error there. The handle below is correct for this repository; the publish
 # script rewrites it when it delivers a snapshot to the other tenant.
-* @guangmian-kung_crcl
+* @guangmian-circle
