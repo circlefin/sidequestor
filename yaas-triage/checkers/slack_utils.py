@@ -232,7 +232,15 @@ def parse_slack_messages(
             continue
 
         ts_m = re.match(r"Message TS:\s*([0-9]+\.[0-9]+)", lines[i])
-        if ts_m:
+        # A real message is always `=== header ===` then `Message TS:` on ADJACENT
+        # lines. Require that adjacency so a `Message TS:` line an author typed into
+        # a message body is read as body text, not counted as a new message.
+        # ponytail: this enforces the format contract and kills the orphan/lone-TS
+        # mis-count, but cannot stop a body that forges BOTH an adjacent
+        # `=== Message from ... ===` and its `Message TS:` line — that is inherent to
+        # the Slack MCP returning unescaped delimited text and is only fully closed
+        # by structured (per-message) MCP output.
+        if ts_m and i > 0 and re.match(r"=== Message from .+\(([A-Z0-9]+)\) at .+ ===", lines[i - 1]):
             # current_user_id is only valid for the message right after its
             # header; capture then clear so a TS block with no preceding header
             # can't inherit (and mis-attribute to) the previous message's author.
@@ -301,8 +309,20 @@ def _parse_page(text, since, filter_user_ids=None, filter_keywords=None):
             current_user_id = None
             ts = float(ts_m.group(1))
             raw_seen += 1
+            # Same adjacency contract as parse_slack_messages: a real message is
+            # `=== header ===` then `Message TS:` on adjacent lines. A forged/orphan
+            # TS still counts toward raw_seen (coverage stays conservative → cursor
+            # held) but is never attributed or counted as a dispatchable message.
+            # ponytail: an adjacent forged header+TS pair typed into a body remains
+            # indistinguishable in this text format; only structured MCP output
+            # closes that fully.
+            header_adjacent = i > 0 and re.match(
+                r"=== Message from .+\(([A-Z0-9]+)\) at .+ ===", lines[i - 1])
             if ts <= since:
                 saw_old = True
+                i += 1
+                continue
+            if not header_adjacent:
                 i += 1
                 continue
 

@@ -111,15 +111,6 @@ APPROVALS_FILE = approval_store.APPROVALS_FILE
 QUESTS_DIR     = REPO_ROOT / "state" / "quests"
 
 
-def _find_watch_json(quest_id: str) -> Path | None:
-    """Locate a quest's watch.json across active/completed/archived."""
-    for bucket in ("active", "completed", "archived"):
-        p = QUESTS_DIR / bucket / quest_id / "watch.json"
-        if p.exists():
-            return p
-    return None
-
-
 def _arm_approval_watch(quest_id: str, approval_id: str):
     """Append an `approval` watch so triage re-dispatches the worker when the
     reviewer approves or sends the item back (needs_reply). Additive only, and

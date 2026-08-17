@@ -17,8 +17,8 @@ Reactions are their own dispatch target, **handled independently from quests**. 
 
 | Reaction | Behavior | State file |
 |---|---|---|
-| `process` | The user's "process this" trigger. Research the thread, reply in-thread with `slack_send_message` + `thread_ts`. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/claude_intensifies_replied.json` |
-| `draft` | Research, create a draft via `slack_send_message_draft` (never send). Drive the reaction lifecycle as you go (see § Reaction lifecycle). If draft fails with `mcp_externally_shared_channel_restricted`, save the draft to the actual target thread (with `channel_id` + `thread_ts`), then DM the user only the permalink to that thread — not the draft text. They'll open the thread, edit the draft in the compose box, and send it themselves. | `state/writing_hand_replied.json` |
+| `process` | The user's "process this" trigger. Research the thread, then reply through `surfaces/slack-send.py` without a `quest_id` (send-only mode) and with the parent `thread_ts`. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/claude_intensifies_replied.json` |
+| `draft` | Research, then create a draft through `surfaces/slack-send.py` with `"draft": true` and no `quest_id`. Drive the reaction lifecycle as you go (see § Reaction lifecycle). If the draft fails with `mcp_externally_shared_channel_restricted`, save it to the actual target thread through the same helper, then DM the user only the permalink to that thread — not the draft text. They'll open the thread, find the draft in the compose box, and send it themselves. | `state/writing_hand_replied.json` |
 | `save` | Save context silently to `state/context-memory/` (see § Context memory). Do not reply. No lifecycle (one-shot, no emoji swaps). | `state/floppy_disk_saved.json` |
 | `adopt` | Adopt the message into its owning quest: find the active quest watching this channel/thread, append a `slack_thread` watch on it, log to that quest's timeline with `log-event.py` (never hand-write the line: it stamps the real UTC time, which you cannot know). Do not reply. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/incoming_envelope_adopted.json` |
 
@@ -52,6 +52,18 @@ For the `reactions` target, execute exactly these steps:
    f. **Append `msg_ts`** to the emoji's state file. This is how we avoid re-processing.
 3. **Ack each `(emoji, msg_ts)` pair** in the ledger (§ 4a) using item_id `<emoji>:<msg_ts>` — `handled` when you replied / drafted / saved, `nothing_to_do` for a conscious skip, `blocked` if you couldn't. Triage keeps every unacked pair in `pending_reactions.json` for the next tick and deletes the file only once all of them are closed, so a reaction you silently skip is no longer lost.
 4. **Exit 0** when all entries are processed and acked.
+
+For `process` and `draft`, never call `slack_send_message` or
+`slack_send_message_draft` directly. Use the sanctioned surface even though reaction work has no
+quest timeline:
+
+```bash
+python3 yaas-triage/surfaces/slack-send.py '{"channel_id":"C...","thread_ts":"...","message":"..."}'
+python3 yaas-triage/surfaces/slack-send.py '{"channel_id":"C...","thread_ts":"...","message":"...","draft":true}'
+```
+
+Omitting `quest_id` deliberately selects send-only mode. The helper still enforces the stale
+reply guard and keeps every backend on the same Slack identity.
 
 ### State file schemas
 

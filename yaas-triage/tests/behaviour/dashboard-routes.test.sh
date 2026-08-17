@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'kill "${SERVER_PID:-}" 2>/dev/null || true; wait "${SERVER_PID:-}" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 REPO="$TMP/repo"
-mkdir -p "$REPO/yaas-triage/ops" "$REPO/yaas-triage/ledger" \
+mkdir -p "$REPO/yaas-triage/ops" "$REPO/yaas-triage/ledger" "$REPO/yaas-triage/assets" \
   "$REPO/yaas-triage/skills/yaas-quest-creation" "$REPO/state/quests/active/q-prompt"
 cp "$HERE/ops/dashboard-server.py" "$REPO/yaas-triage/ops/"
 cp "$HERE/tick_state.py" "$REPO/yaas-triage/"
@@ -18,6 +18,7 @@ cp "$HERE/skills/yaas-quest-creation/new-quest.py" "$REPO/yaas-triage/skills/yaa
 mkdir -p "$REPO/yaas-triage/checkers"
 cp "$HERE"/checkers/*.py "$HERE"/checkers/*.watch.json "$REPO/yaas-triage/checkers/"
 cp "$HERE/../dashboard.html" "$REPO/dashboard.html"
+cp "$HERE/assets/sidequestor-mark.png" "$REPO/yaas-triage/assets/"
 printf '%s\n' '{"id":"q-prompt","title":"Prompt quest"}' > "$REPO/state/quests/active/q-prompt/meta.json"
 printf '%s\n' '{"watches":[{"type":"slack_thread","channel_id":"C1","thread_ts":"1.0","last_checked_ts":"1","reason":"route fixture"}]}' > "$REPO/state/quests/active/q-prompt/watch.json"
 cd "$REPO" || exit 1
@@ -180,6 +181,19 @@ conn.request("GET", "/", headers={"Host": host})
 resp = conn.getresponse()
 cookie = resp.getheader("Set-Cookie", "").split(";", 1)[0]
 resp.read()
+conn.close()
+
+conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+conn.request(
+    "GET",
+    "/yaas-triage/assets/sidequestor-mark.png",
+    headers={"Host": host},
+)
+resp = conn.getresponse()
+logo_body = resp.read()
+assert resp.status == 200, f"dashboard logo returned {resp.status}"
+assert resp.getheader("Content-Type") == "image/png"
+assert logo_body.startswith(b"\x89PNG\r\n\x1a\n")
 conn.close()
 
 conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)

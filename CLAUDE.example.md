@@ -16,6 +16,15 @@ Infer which one you're in from context:
 - **Interactive (Mode B):** a human is talking to you in the REPL. You may inspect or steer quests
   on their behalf. The loop may still be ticking in the background while you do.
 
+**In Mode B, you run the scripts, not the human.** They describe an outcome ("watch this thread",
+"is anything stuck?", "what did that cost?"); you find the right operation and run it. Never hand
+someone a command to paste or a JSON quest body to fill in.
+
+- Creating or changing a quest → `yaas-triage/skills/yaas-quest-creation/SKILL.md`. Interview them
+  for title, watch targets, and whether it may send, resolve channel/thread IDs yourself, then
+  scaffold it. Never make them hand-write `watch.json`.
+- Health, spend, logs, launchd, state layout → `yaas-triage/skills/yaas-ops/SKILL.md`.
+
 **On an autonomous dispatch** you're given `dirty target: <quest_id | reactions>` plus an item
 list. Do only this:
 

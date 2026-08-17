@@ -288,8 +288,15 @@ def check_quest(t, qid):
                 except (TypeError, ValueError):
                     unacked = 0
                 unacked_due = tick_check.is_due(urec, t.now_ts)
+        # `wtype` is read straight from watch.json and names a checker script under
+        # checkers/, so a value with a path separator or `..` would escape that dir
+        # and run an arbitrary executable. A legitimate watch type is always
+        # [a-z0-9_]+ (see checkers/*.py); treat anything else as a missing checker,
+        # which routes to the misconfig verdict rather than an exec.
         checker = t.script_dir / "checkers" / f"{wtype}.py"
-        checker_exists = os.access(checker, os.X_OK)
+        checker_exists = (isinstance(wtype, str)
+                          and bool(_re.fullmatch(r"[a-z0-9_]+", wtype))
+                          and os.access(checker, os.X_OK))
 
         # Structural gates first — exactly the shell's order — and only run the checker once
         # they pass (so a held watch costs nothing and side-effects nothing). Each maps to a

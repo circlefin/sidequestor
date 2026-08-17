@@ -78,6 +78,8 @@ ID=$(A write '{"quest_id":"q1","quest_title":"Q","action_type":"slack_message","
 [ -n "$ID" ] && ok "write returns an id" || bad "write returned nothing"
 eq "write arms the tracking watch"        "$(jq -r '[.watches[] | select(.type=="approval")] | length' state/quests/active/q1/watch.json)" "1"
 eq "pending_review does not dispatch"     "$(outcome "$ID")" "clean"
+eq "pending_review cannot be claimed"     "$(A start "$ID")" "skip:pending_review"
+eq "a rejected claim leaves review pending" "$(jq -r '.items[0].status' "$APPROVALS")" "pending_review"
 set_status reviewed
 eq "reviewed dispatches"                  "$(outcome "$ID")" "dirty"
 

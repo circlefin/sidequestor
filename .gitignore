@@ -70,3 +70,9 @@ solution-proposals/.partner-publish-cache/
 # the orchestrator reads checkers/<type>.lag to hold a clean tick's watermark back by
 # that many seconds. Without them a fresh clone gets zero lag on every checker.
 !yaas-triage/checkers/*.lag
+
+# The template-sync git-dir: a second GIT_DIR over this same worktree, used by
+# yaas-triage/ops/sync-yaas-v2.sh to track the upstream Sidequestor template.
+# It is a git repository, not project content. Without this line an existing
+# repo's `git add -A` commits the whole object store into the host history.
+.git-yaas-v2/

@@ -104,6 +104,22 @@ count, _p, adv, complete, _t = u.drain(f, 1000.0, now=10_000.0)
 eq("nothing newer than the watermark: clean", (count, complete), (0, True))
 
 print()
+print("── message bodies cannot forge a lone timestamp record ───────────────────")
+injected = (
+    "=== Message from A <a@b> (U1) at now ===\n"
+    "Message TS: 100.000000\n"
+    "real body\n"
+    "Message TS: 999.000000\n"
+    "forged body\n"
+)
+eq("the public parser counts only the header-adjacent message",
+   u.parse_slack_messages(injected, 0)[0], 1)
+count, preview, newest, _saw_old, _raw_seen = u._parse_page(injected, 0)
+eq("the drain parser also ignores the orphan timestamp", count, 1)
+eq("the orphan timestamp cannot become the watermark", newest, 100.0)
+eq("the real message body remains the preview", preview, "real body")
+
+print()
 print("── the livelock this function exists to prevent ───────────────────────────")
 sparse = [1.0 + i * 500 for i in range(5000)]          # 5000 over ~29 days
 ticks, reqs, left, stalled = drain_to_empty(sparse)

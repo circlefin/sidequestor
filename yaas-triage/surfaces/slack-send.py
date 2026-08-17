@@ -251,6 +251,12 @@ def main():
     is_draft = bool(p.get("draft"))
     thread_ts = p.get("thread_ts")
     quest_id = p.get("quest_id")
+    # quest_id names a directory; reject traversal before it reaches quest_dir().
+    # Mirrors surfaces/log-event.py's guard so both send paths validate identically.
+    if quest_id and ("/" in quest_id or quest_id in (".", "..")
+                     or any(ord(ch) < 32 or ord(ch) == 127 for ch in quest_id)):
+        print(f"error: invalid quest id '{quest_id}'", file=sys.stderr)
+        sys.exit(1)
     note = p.get("note", "")
     event = p.get("event") or ("draft_posted" if is_draft else "message_sent")
 

@@ -25,6 +25,7 @@ Usage:
 
 Endpoints:
     GET  /                    → dashboard.html
+    GET  /yaas-triage/assets/sidequestor-mark.png → dashboard logo
     GET  /api/dashboard       → live JSON snapshot of all quest state
     GET  /state/<path>        → raw state file
     POST /api/review/<id>     → mark item reviewed (optionally with edits)
@@ -93,6 +94,7 @@ from tick_state import NUMERIC_KNOBS, load_watch_manifests
 # vanishing.
 TERMINAL_APPROVAL_STATUSES = ("executed", "cancelled")
 DASHBOARD_HTML = REPO_ROOT / "dashboard.html"
+DASHBOARD_LOGO = REPO_ROOT / "yaas-triage" / "assets" / "sidequestor-mark.png"
 PORT           = int(sys.argv[1]) if len(sys.argv) > 1 else 8877
 
 # Workspace-specific hosts. No hardcoded defaults: they belong to whoever runs
@@ -1752,6 +1754,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # session cookie used by every state and control endpoint.
         if path in ("/", "/index.html", "/dashboard.html"):
             self._serve_dashboard()
+            return
+
+        if path == "/yaas-triage/assets/sidequestor-mark.png":
+            try:
+                body = DASHBOARD_LOGO.read_bytes()
+            except OSError:
+                self.send_error(404, "dashboard logo not found")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         # Everything else (state + APIs) requires the cookie.

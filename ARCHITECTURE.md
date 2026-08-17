@@ -1,6 +1,6 @@
-# Architecture
+# Sidequestor Architecture
 
-YAAS watches the places you get asked things, and wakes an AI agent only when something
+Sidequestor watches the places you get asked things, and wakes an AI agent only when something
 actually changed. The whole design exists to answer one question safely:
 
 > **"Has this been dealt with, or does it just look like it has?"**
@@ -24,7 +24,7 @@ Everything below is downstream of that.
         │   tick.py     │   ONE TICK
         │               │
         │  1. CHECK ────┼──▶ checkers/<type>.py, one per watch, in parallel
-        │               │    "is there anything new?"  → clean | dirty | error
+        │               │    "is there anything new?"  → one of six outcomes
         │  2. DECIDE ───┼──▶ gates: cost, Slack health, backoff
         │  3. DISPATCH ─┼──▶ one AI worker per dirty target, isolated
         │  4. COMMIT ───┼──▶ move watermarks — but ONLY on evidence (§4)
@@ -45,7 +45,7 @@ Slack is used in two different execution planes:
    POLLING PLANE                              DISPATCH PLANE
    tick.py + deterministic checkers           Claude / Codex / Cursor
    runs every ~60s                            runs only after a dirty watch
-   must cost no model tokens                  may use the agent's native Slack connector
+   must cost no model tokens                  uses Sidequestor's named Slack surface
 ```
 
 A Slack credential identifies two parties, not one: the person granting access and the app
@@ -57,7 +57,9 @@ Codex, or Cursor Slack app. Each agent keeps its credential and refresh lifecycl
 runtime. None currently exposes a supported raw Slack tool-call interface that `tick.py` can use
 without invoking a model. Reverse-engineering the credential store would couple polling to one
 vendor's private storage format, make Sidequestor appear as that vendor in Slack's audit trail,
-and break as soon as storage or token refresh changes.
+and break as soon as storage or token refresh changes. The worker therefore uses the same local
+Sidequestor identity through `surfaces/mcp-call.sh` and `surfaces/slack-send.py`; native Slack
+plugins are not the canonical send path.
 
 Sidequestor therefore asks each workspace to create or approve its own internal Slack app. Local
 OAuth uses PKCE, stores the resulting user token in the operating-system Keychain, and gives the
@@ -268,8 +270,10 @@ Dashboard instructions use the same durable approval ledger but skip the human-r
 the operator already authorized the instruction by submitting it. The dashboard writes a
 `manual_instruction` item as `reviewed`; the next tick, while holding the global triage lock,
 arms its approval watch and dispatches it through the normal ack and lease lifecycle. Each
-submission has its own generated approval id. An expired execution lease is cancelled as
-outcome-uncertain rather than replaying arbitrary work blindly.
+submission has its own generated approval id. If an execution lease expires, the item is
+reclaimed with `needs_reconcile: true`: the next worker must inspect the external target before
+doing anything. A proven prior action is closed without replay; a proven absence may be executed;
+an unknowable or arbitrary `manual_instruction` is abandoned rather than run twice.
 
 The 24h rule matters most. After any pause the checkers hand the worker the **oldest** unread
 slice first (§3), so without it the agent answers a week-old question and then walks forward
@@ -396,6 +400,9 @@ If the loop dies, the agent goes quiet and *looks* idle. So a separate launchd j
 
 The verdict goes to `state/health-status.json`, so the dashboard and `doctor.sh` show the same
 answer. Notifications de-duplicate, so a persistent fault does not shout every five minutes.
+The dashboard is intentionally a map over these files, not a second source of truth: it reads
+quest state and timelines, and routes edits, reviews, and instructions through the same locking
+helpers used by the worker.
 
 **Three tools, three different questions:**
 
@@ -446,6 +453,27 @@ Worth knowing before trusting the system further than it has earned.
 | Acks are self-attestation | A worker claiming `handled` or `nothing_to_do` can advance a complete checker window. The ledger prevents accidental omission; it does not prove the worker read or understood the source. Reliable proof would require structured receipts from each source wrapper, not inference from agent event streams. |
 | Slack gating is by trigger, not by action | an email-triggered quest whose reply goes to Slack is still dispatched during an outage. The send fails, the item is acked `blocked`, so it costs an invocation rather than data. |
 | Prune rules have no golden | they delete logs, not watches, so a mistake costs history rather than tracking. |
+| Runtime and workspace share one root | `yaas-triage/`, agent rules, personal work, `.env`, state, and logs are resolved from the directory containing `yaas-triage/`. This keeps the worker's world legible, but makes blind installation into an arbitrary existing repository unsafe when paths collide. |
+
+### Installation boundary
+
+The shared root is a deliberate current constraint, not a packaging abstraction. More than one
+runtime process finds its root by walking upward to `yaas-triage/`, and then derives `.env`,
+`state/`, `logs/`, the dashboard, and the worker's current directory from it. Ambient
+`REPO_ROOT` is intentionally ignored by most components to prevent stale environment variables
+from silently splitting state across two trees.
+
+Consequences:
+
+- A fresh standalone checkout is deterministic to install.
+- An existing repository needs collision-aware merging of rules, configuration, and docs.
+- Moving runtime code outside the workspace requires a central runtime/workspace path contract
+  first; symlinking `yaas-triage/` is not a safe substitute because path resolution uses real
+  paths.
+
+The intended future seam is an immutable Sidequestor runtime plus a user-owned workspace that
+remains the agent's working directory. Until that seam exists, locality is safer than pretending
+the two roots are independent.
 
 ---
 

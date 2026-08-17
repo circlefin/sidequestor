@@ -99,6 +99,15 @@ OLD=$(( NOW - 7 * 24 * 3600 )).000100    # seven days ago
 EDGE_UNDER=$(( NOW - 23 * 3600 )).000100 # 23h — inside the 24h limit
 EDGE_OVER=$(( NOW - 25 * 3600 )).000100  # 25h — outside it
 
+echo "── quest ids cannot escape the quest directory ────────────────────────────"
+mk_slack "$FRESH"
+OUT=$( cd "$REPO" && python3 "$TRI/surfaces/slack-send.py" \
+       '{"quest_id":"../q-demo","channel_id":"C1","message":"hi"}' 2>&1 )
+printf '%s' "$OUT" | grep -q "invalid quest id" \
+  && ok "a traversing quest id is rejected" || bad "a traversing quest id reached the send path"
+grep -q SENT "$TMP/sent.log" \
+  && bad "Slack was called for an invalid quest id" || ok "...before any Slack call"
+
 echo "── a live conversation still gets a real reply ─────────────────────────────"
 mk_slack "$FRESH"
 OUT=$(send '"thread_ts":"1785000000.000100"')
