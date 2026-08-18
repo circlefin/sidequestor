@@ -824,14 +824,7 @@ def build_config() -> dict:
 # file that grows while a worker runs) — that's a genuine state change, so a
 # non-304 response on every poll during a live run is correct, not a bug.
 
-# A briefing filename starts <date>_<hhmm>_<type>. The prefix is what matters and is all
-# this checks: the reverse-lexicographic sort below is only chronological for names that
-# begin with the date, and any other .md in state/briefs/ ("notes.md") would sort above
-# every dated file and be served as the newest briefing with its whole stem as the type.
-# Anything AFTER the type is kept rather than rejected or trimmed — a hand-made
-# 2026-08-17_0830_weekly_v2.md is still a briefing, and dropping it would make a real file
-# silently invisible on the dashboard.
-_BRIEF_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}_[^_]+")
+_BRIEF_TYPES = ("morning", "evening", "weekly", "monthly")
 
 
 def build_briefs(limit: int = 30) -> list:
@@ -841,35 +834,40 @@ def build_briefs(limit: int = 30) -> list:
     if not briefs_dir.exists():
         return briefs
 
-    named = (p for p in briefs_dir.glob("*.md") if _BRIEF_NAME.match(p.stem))
-    for brief_path in sorted(named, reverse=True)[:limit]:
+    candidates = []
+    for brief_path in briefs_dir.glob("*.md"):
         try:
-            markdown = brief_path.read_text()
-            modified_at = brief_path.stat().st_mtime
+            file_stat = brief_path.stat()
         except OSError:
             continue
-        # maxsplit=2, so a trailing segment lands in the type instead of being dropped:
-        # "..._weekly_v2" is type "weekly_v2", not a silently truncated "weekly".
-        date_part, time_part, brief_type = brief_path.stem.split("_", 2)
+        created_at = getattr(file_stat, "st_birthtime", file_stat.st_mtime)
+        candidates.append((created_at, file_stat.st_mtime_ns, brief_path.name,
+                           brief_path, file_stat))
+
+    newest_first = sorted(candidates, key=lambda item: item[:3], reverse=True)
+    for created_at, _, _, brief_path, file_stat in newest_first:
+        if len(briefs) >= limit:
+            break
+        try:
+            markdown = brief_path.read_text()
+        except OSError:
+            continue
+        words = set(re.findall(r"[a-z0-9]+", brief_path.stem.lower()))
+        brief_type = next((kind for kind in _BRIEF_TYPES if kind in words), "brief")
         title = next(
             (line[2:].strip() for line in markdown.splitlines() if line.startswith("# ")),
             brief_path.name,
         )
-        # `at` is the canonical briefing time and the ONLY field a client should render a
-        # date from. The filename is written by the local agent as local wall clock
-        # ("0830" is 8:30 in the morning where the machine is), so it is stamped with this
-        # host's offset to make it an unambiguous instant rather than a bare wall clock a
-        # viewer would reinterpret. `ts` is the file's mtime and is not a briefing time:
-        # rewriting a file moves it, so it is kept only as a tiebreaker.
-        at = datetime(int(date_part[0:4]), int(date_part[5:7]), int(date_part[8:10]),
-                      int(time_part[0:2]), int(time_part[2:4])).astimezone()
+        # macOS exposes birth time; other platforms fall back to mtime. The filename is
+        # deliberately not a schema, so `at` always comes from filesystem metadata.
+        at = datetime.fromtimestamp(created_at, timezone.utc).astimezone()
         briefs.append({
             "file": brief_path.name,
             "type": brief_type,
             "title": title,
             "markdown": markdown,
             "at": at.isoformat(),
-            "ts": datetime.fromtimestamp(modified_at, timezone.utc).isoformat(),
+            "ts": datetime.fromtimestamp(file_stat.st_mtime, timezone.utc).isoformat(),
         })
     return briefs
 
@@ -956,6 +954,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             "last_blocked":  last_blocked,
             "last_seen_ts":  last_seen_ts,
             "has_run":       has_run,
+            "requires_initial_run": meta.get("requires_initial_run") is True,
             "backoff_count": 0,     # filled in below
             "backoff_watches": [],  # filled in below
             "ratelimited": False,   # filled in below (transient, from run-log)
@@ -1998,6 +1997,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "title": title,
             "priority": priority,
             "allow_send": False,
+            "requires_initial_run": True,
             "context": (
                 "## Operator request\n\n"
                 f"{prompt}\n\n"

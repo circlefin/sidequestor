@@ -88,8 +88,87 @@ for status in pending_review needs_reply reviewed executing executed cancelled; 
   done
 done
 
-eq "a question-style review requests a worker reply" \
-  "$(run_case pending_review review question)" "200:needs_reply:needs_reply"
+# Approve is terminal even when the reviewer's instruction reads like a question.
+# Both buttons are prompts to the worker; only `revise` reopens the item.
+eq "a question-style review still approves (terminal)" \
+  "$(run_case pending_review review question)" "200:reviewed:reviewed"
+
+# ── the reviewer's instruction must survive every button ────────────────────────
+# Both buttons are prompts to the worker, so the reviewer's instruction has to be
+# carried on either path. If Approve drops it, the stored draft goes out verbatim
+# and a retarget or a suppression instruction is silently lost.
+load_state='
+import importlib.util
+from datetime import datetime, timezone
+spec = importlib.util.spec_from_file_location("st", "yaas-triage/approval_state.py")
+st = importlib.util.module_from_spec(spec); spec.loader.exec_module(st)
+NOW = datetime.now(timezone.utc)
+'
+
+note_case() {
+  python3 -c "$load_state"'
+import sys
+action, field = sys.argv[1:3]
+item = {"status": "pending_review", "message_text": "hello", "review_history": []}
+up = st.apply_transition(item, action, {"review_note": "send it to the other reviewer instead"}, NOW)
+item.update({k: v for k, v in up.items() if v is not None})
+print(item.get(field) or "-")
+' "$1" "$2"
+}
+
+eq "approve carries the instruction to the worker" \
+  "$(note_case review review_note)" "send it to the other reviewer instead"
+eq "request-change carries the instruction to the worker" \
+  "$(note_case revise review_note)" "send it to the other reviewer instead"
+eq "approve with an instruction is still terminal" \
+  "$(note_case review status)" "reviewed"
+
+# The instruction is consumed at close time, so it has to land in the trail.
+fold_case() {
+  python3 -c "$load_state"'
+item = {"status": "executing", "review_note": "send it to the other reviewer instead",
+        "asked_at": "2026-08-18T04:21:00Z", "review_history": []}
+up = st.apply_transition(item, "done", {"response_ts": "1.0"}, NOW)
+hist = up.get("review_history") or []
+print("%d:%s:%s" % (len(hist), hist[0]["note"] if hist else "-", up.get("review_note", "kept")))
+'
+}
+
+eq "closing folds the approve-time instruction into the trail" \
+  "$(fold_case)" "1:send it to the other reviewer instead:None"
+
+# Undo must not leave a stale reviewer turn attached to a re-opened item.
+undo_case() {
+  python3 -c "$load_state"'
+item = {"status": "reviewed", "review_note": "stale", "asked_at": "x"}
+up = st.apply_transition(item, "undo", {}, NOW)
+print("%s:%s" % (up["review_note"], up["asked_at"]))
+'
+}
+
+# A bare Approve after a Request change must not inherit the old instruction.
+stale_case() {
+  python3 -c "$load_state"'
+import importlib.util, json, pathlib, tempfile
+spec = importlib.util.spec_from_file_location("store", "yaas-triage/approval_store.py")
+store = importlib.util.module_from_spec(spec); spec.loader.exec_module(store)
+
+tmp = pathlib.Path(tempfile.mkdtemp())
+store.APPROVALS_FILE = tmp / "pending-approvals.json"
+store.STATE_DIR = tmp
+store.APPROVALS_FILE.write_text(json.dumps({"version": 1, "items": [
+    {"id": "a1", "status": "needs_reply", "message_text": "draft",
+     "review_note": "make it shorter", "asked_at": "x"}]}))
+store.mutate_item("a1", lambda cur: st.apply_transition(cur, "review", {}, NOW))
+saved = json.loads(store.APPROVALS_FILE.read_text())["items"][0]
+print("%s:%s:%s" % (saved["status"], "review_note" in saved, "asked_at" in saved))
+'
+}
+
+eq "a bare approve clears the earlier revision instruction from stored state" \
+  "$(stale_case)" "reviewed:False:False"
+
+eq "undo clears the stale reviewer instruction" "$(undo_case)" "None:None"
 
 echo
 echo "────────────────────────────────────────────────────────────────────────────"

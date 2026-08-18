@@ -397,11 +397,11 @@ and dispatch runs, and **Field guide** in the header explains quests and Slack r
 
 The dashboard is the map. The files remain the truth, and your agent is the one that reads them.
 
-Briefings have one canonical home: `state/briefs/`. Each briefing is a Markdown file named
-`<date>_<hhmm>_<type>.md`, for example `2026-08-17_0830_morning.md`. Morning, evening, weekly,
-and monthly briefs all use the same store. The dashboard is a read-only view of those files, and
-anything posted to Slack is a delivery copy rather than the source of truth. Briefings stay outside
-quest folders because they can summarize work across several quests.
+Briefings have one canonical home: `state/briefs/`. Every Markdown file in that directory is a
+briefing; filenames are free-form labels rather than a schema. The dashboard sorts files by their
+filesystem creation time and recognizes `morning`, `evening`, `weekly`, or `monthly` in a name only
+as an optional display hint. Anything posted to Slack is a delivery copy rather than the source of
+truth. Briefings stay outside quest folders because they can summarize work across several quests.
 
 For anything the dashboard doesn't show, ask. Your agent knows the ops surface, so questions work
 better than commands:

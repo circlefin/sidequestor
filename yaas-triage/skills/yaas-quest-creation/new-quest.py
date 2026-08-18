@@ -234,6 +234,7 @@ def main():
     title      = spec.get("title", "").strip()
     priority   = spec.get("priority", "normal")
     allow_send = spec.get("allow_send", False)
+    requires_initial_run = spec.get("requires_initial_run", False)
     context    = spec.get("context", "")
     watches_in = spec.get("watches", [])
     note_raw   = spec.get("note", context[:80] if context else "Quest created")
@@ -243,6 +244,8 @@ def main():
         die("'title' is required")
     if priority not in ("high", "normal", "low"):
         die(f"priority must be high/normal/low, got: {priority!r}")
+    if not isinstance(requires_initial_run, bool):
+        die(f"requires_initial_run must be a boolean, got: {requires_initial_run!r}")
     if retire_days is not None and retire_days is not False:
         if not isinstance(retire_days, int) or retire_days < 0:
             die(f"retire_slack_threads_after_days must be a non-negative int or false, got: {retire_days!r}")
@@ -274,6 +277,8 @@ def main():
     }
     if retire_days is not None:
         meta["retire_slack_threads_after_days"] = retire_days
+    if requires_initial_run:
+        meta["requires_initial_run"] = True
     (quest_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
 
     # ── watch.json ───────────────────────────────────────────────────────────

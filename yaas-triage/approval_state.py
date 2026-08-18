@@ -108,19 +108,26 @@ def apply_transition(item, action, payload, now):
     now_iso = now_dt.isoformat()
 
     if action == "review":
+        # Approve is a prompt, not a rubber stamp. Whatever the reviewer typed is the
+        # governing instruction for the worker; `message_text` is only the default action
+        # when no instruction was given. Approve is always terminal: the worker executes
+        # the instruction and closes the item. `revise` is the button that iterates.
         note = str(payload.get("review_note") or "").strip()
         edited = "message_text" in payload
-        if note and "?" in note and not edited:
-            return {"status": "needs_reply", "review_note": note, "asked_at": now_iso}
-        updates = {"status": "reviewed", "reviewed_at": now_iso}
+        # A bare Approve means "send the draft as it stands", so any instruction left
+        # over from an earlier Request change must be cleared rather than inherited.
+        updates = {
+            "status": "reviewed",
+            "reviewed_at": now_iso,
+            "review_note": note or None,
+            "asked_at": now_iso if note else None,
+        }
         if edited:
             new_text = str(payload.get("message_text") or "").strip()
             if not new_text:
                 raise InvalidPayload("message_text required")
             updates["message_text"] = new_text
             updates["human_edited"] = True
-        if note:
-            updates["review_note"] = note
         return updates
 
     if action == "revise":
@@ -146,7 +153,13 @@ def apply_transition(item, action, payload, now):
         return {"message_text": new_text, "human_edited": True}
 
     if action == "undo":
-        return {"status": "pending_review", "reviewed_at": None, "cancelled_at": None}
+        return {
+            "status": "pending_review",
+            "reviewed_at": None,
+            "cancelled_at": None,
+            "review_note": None,
+            "asked_at": None,
+        }
 
     if action == "reclaim":
         if not _lease_expired(item, now_dt):
@@ -176,6 +189,7 @@ def apply_transition(item, action, payload, now):
             "status": "pending_review",
             "answered_at": now_iso,
             "review_note": None,
+            "asked_at": None,
         }
         if payload.get("message_text"):
             updates["message_text"] = payload["message_text"]
@@ -188,6 +202,18 @@ def apply_transition(item, action, payload, now):
             "sent_at": now_iso,
             "needs_reconcile": None,
         }
+        # An instruction given at approve time is consumed here, not by `answer`, so it
+        # has to land in the trail on the way out or it disappears from the conversation.
+        if item.get("review_note"):
+            hist = list(item.get("review_history") or [])
+            hist.append({"from": "reviewer", "note": item["review_note"], "at": item.get("asked_at")})
+            updates["review_history"] = hist
+            updates["review_note"] = None
+        if payload.get("worker_reply"):
+            hist = list(updates.get("review_history") or item.get("review_history") or [])
+            hist.append({"from": "worker", "reply": str(payload["worker_reply"]), "at": now_iso})
+            updates["review_history"] = hist
+            updates["worker_reply"] = str(payload["worker_reply"])
         response = payload.get("response_ts")
         if response:
             if str(response).startswith("https://"):

@@ -23,13 +23,11 @@ cp "$HERE/assets/sidequestor-mark.png" "$REPO/yaas-triage/assets/"
 printf '%s\n' '{"id":"q-prompt","title":"Prompt quest"}' > "$REPO/state/quests/active/q-prompt/meta.json"
 printf '%s\n' '{"watches":[{"type":"slack_thread","channel_id":"C1","thread_ts":"1.0","last_checked_ts":"1","reason":"route fixture"}]}' > "$REPO/state/quests/active/q-prompt/watch.json"
 printf '%s\n' '# Route Brief' '' 'A canonical briefing fixture.' > "$REPO/state/briefs/2026-08-17_0830_morning.md"
-# Finding 5 fixture: a file that does NOT follow <date>_<hhmm>_<type>.md. Under a plain
-# reverse-lexicographic sort "notes.md" outranks every dated file and would be served as
-# the newest briefing, with its whole stem read as the type.
+sleep 0.05
+# Briefing names are user-owned labels, not a schema. A plain name must be served too.
 printf '%s\n' '# Stray Note' '' 'Not a briefing.' > "$REPO/state/briefs/notes.md"
-# A hand-made name with a fourth segment. It is still a briefing and must be served, with
-# the trailing segment kept in the type rather than silently trimmed off.
-printf '%s\n' '# Weekly Two' '' 'A four-segment name.' > "$REPO/state/briefs/2026-08-16_0900_weekly_v2.md"
+sleep 0.05
+printf '%s\n' '# Free-form Weekly' '' 'A freely named briefing.' > "$REPO/state/briefs/anything goes weekly!.md"
 cd "$REPO" || exit 1
 
 PORT="$(python3 - <<'PY'
@@ -163,10 +161,15 @@ html = open("dashboard.html").read()
 assert 'data-mode="briefings"' in html, "Briefings desktop mode is missing"
 assert 'id="mode-menu-trigger"' in html, "compact mode menu is missing"
 assert 'data-mode-option="briefings"' in html
-assert '.top.compact-modes .navs{display:none}' in html
-assert 'nav.scrollWidth>nav.clientWidth+1' in html
-assert 'button.scrollWidth>button.clientWidth+1' in html
-assert 'new ResizeObserver(measureModeNavigation)' in html
+# The mode nav collapses into the menu on width alone. Both halves are asserted
+# because the <=620px rule must come last: it re-shows the wrapped full-width nav,
+# and a reordering that let the menu rule win would hide the nav on phones.
+assert '@media(max-width:840px){.navs{display:none}.mode-menu{display:block}}' in html
+assert html.index('@media(max-width:840px){.navs{display:none}') < html.index('@media(max-width:620px){.navs{display:grid}'), \
+    "the phone-width nav rule no longer overrides the mode-menu rule"
+assert 'ResizeObserver' not in html, "mode nav is measuring again instead of using a media query"
+assert "matchMedia('(max-width:840px)').addEventListener('change',closeModeMenu)" in html, \
+    "nothing closes the mode menu when its breakpoint is crossed"
 assert '.mode-option{display:block' in html and 'font:900 12px var(--sans)' in html
 assert '.navs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}' in html
 assert 'id="brief-picker-trigger"' in html, "compact briefing picker is missing"
@@ -240,24 +243,20 @@ resp = conn.getresponse()
 briefs_body = resp.read().decode()
 assert resp.status == 200, f"briefs returned {resp.status}: {briefs_body}"
 briefs = json.loads(briefs_body)["briefs"]
-assert len(briefs) == 2, briefs
-assert briefs[0]["file"] == "2026-08-17_0830_morning.md", briefs[0]
-assert briefs[0]["type"] == "morning", briefs[0]
-assert briefs[0]["title"] == "Route Brief", briefs[0]
-assert "canonical briefing fixture" in briefs[0]["markdown"], briefs[0]
-# Only conforming filenames are served, so the stray note is absent and cannot displace
-# the newest real briefing.
-assert len(briefs) == 2, briefs
-assert all(b["file"] != "notes.md" for b in briefs), briefs
-extra = [b for b in briefs if b["file"] == "2026-08-16_0900_weekly_v2.md"]
-assert extra, "a four-segment briefing name was dropped instead of served"
-assert extra[0]["type"] == "weekly_v2", f"trailing segment was trimmed: {extra[0]['type']}"
-# `at` is the canonical briefing time, derived from the filename and stamped with this
-# host's offset. `ts` is only the file mtime. A client rendering a date from anything but
-# `at` reinterprets a local wall clock, so the field has to be there and has to carry an
-# offset rather than being a bare naive stamp.
-assert briefs[0]["at"].startswith("2026-08-17T08:30:00"), briefs[0]["at"]
-assert briefs[0]["at"][19] in "+-", f"canonical time has no UTC offset: {briefs[0]['at']}"
+assert len(briefs) == 3, briefs
+assert [b["file"] for b in briefs] == [
+    "anything goes weekly!.md",
+    "notes.md",
+    "2026-08-17_0830_morning.md",
+], briefs
+by_file = {b["file"]: b for b in briefs}
+assert by_file["notes.md"]["title"] == "Stray Note", by_file["notes.md"]
+assert by_file["notes.md"]["type"] == "brief", by_file["notes.md"]
+assert by_file["anything goes weekly!.md"]["type"] == "weekly", by_file["anything goes weekly!.md"]
+assert "canonical briefing fixture" in by_file["2026-08-17_0830_morning.md"]["markdown"]
+# `at` is the canonical file-creation time and carries an explicit UTC offset.
+assert all(b["at"][-6] in "+-" for b in briefs), briefs
+assert [b["at"] for b in briefs] == sorted((b["at"] for b in briefs), reverse=True), briefs
 conn.close()
 
 # /api/control is what the dashboard POLLS every 2s, and briefings are a
@@ -283,7 +282,7 @@ assert resp.status == 200, f"dashboard returned {resp.status}: {dashboard_body}"
 dashboard = json.loads(dashboard_body)
 # ...while /api/dashboard, whose payload contract still includes them, opts in.
 assert dashboard["briefs"], "dashboard payload lost its briefs"
-assert dashboard["briefs"][0]["file"] == "2026-08-17_0830_morning.md", dashboard["briefs"][0]
+assert dashboard["briefs"][0]["file"] == "anything goes weekly!.md", dashboard["briefs"][0]
 config_items = {
     item["key"]: item
     for group in dashboard["config"]["groups"]
@@ -383,9 +382,20 @@ quest_dir = Path("state/quests/active") / created["quest_id"]
 meta = json.loads((quest_dir / "meta.json").read_text())
 watch = json.loads((quest_dir / "watch.json").read_text())["watches"][0]
 assert meta["allow_send"] is False, meta
+assert meta["requires_initial_run"] is True, meta
 assert watch["type"] == "schedule", watch
 assert float(watch["next_fire_ts"]) > float(watch["last_checked_ts"]), watch
 assert "Review the latest customer feedback" in (quest_dir / "context.md").read_text()
+
+conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+conn.request("GET", "/api/control", headers={"Host": host, "Cookie": cookie})
+resp = conn.getresponse()
+control = json.loads(resp.read().decode())
+conn.close()
+created_quest = next(q for q in control["quests"] if q["id"] == created["quest_id"])
+ordinary_quest = next(q for q in control["quests"] if q["id"] == "q-prompt")
+assert created_quest["requires_initial_run"] is True, created_quest
+assert ordinary_quest["requires_initial_run"] is False, ordinary_quest
 
 for payload, expected_error in (
     ({"prompt": 7}, "prompt must be a string"),

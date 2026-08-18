@@ -317,12 +317,13 @@ Workspace-level briefings are separate from quests:
 
 ```
 state/briefs/
-└── <date>_<hhmm>_<type>.md    morning, evening, weekly, or monthly Markdown briefing
+└── *.md                       free-form Markdown briefing names
 ```
 
 `state/briefs/` is the canonical briefing store. The dashboard reads and renders these files;
-Slack posts are delivery copies. A briefing does not belong in a quest folder because it may
-summarize several quests and other workspace activity.
+sorts them newest-first by filesystem creation time; and treats cadence words in filenames only as
+optional display hints. Slack posts are delivery copies. A briefing does not belong in a quest
+folder because it may summarize several quests and other workspace activity.
 
 ---
 

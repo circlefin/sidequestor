@@ -37,6 +37,8 @@ Usage:
   client.py mcp <tool_name> <arguments_json>
   client.py jira <METHOD> <path-with-query> [body_json]
   client.py slack-react <add|remove> <channel_id> <message_ts> <emoji>
+  client.py slack-profile get
+  client.py slack-profile set <status_text> <status_emoji> [expiration_epoch]
 
 Exit codes, identical across all three:
   0 success   1 auth   2 error   3 bad args   4 transient (retry, do not dispatch)
@@ -359,7 +361,87 @@ def cmd_slack_react(argv):
     return OK
 
 
-SURFACES = {"mcp": cmd_mcp, "jira": cmd_jira, "slack-react": cmd_slack_react}
+def cmd_slack_profile(argv):
+    """Read or set the calling user's own Slack profile status.
+
+    Only status_text / status_emoji / status_expiration are writable here. The
+    wider users.profile.set surface can overwrite a display name or title, and
+    nothing in this repo needs that, so the payload is built field by field
+    rather than passed through from the caller.
+    """
+    if not argv:
+        return fail("usage: client.py slack-profile <get|set> ...", BAD_ARGS)
+    action, rest = argv[0], argv[1:]
+    if action not in ("get", "set"):
+        return fail(f"action must be 'get' or 'set', got {action!r}", BAD_ARGS)
+
+    token = keychain("slack-xoxp-token")
+    if not token:
+        return fail("no xoxp token in keychain (service=slack-xoxp-token, account=yaas)", AUTH)
+
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": f"Bearer {token}",
+    }
+
+    if action == "get":
+        if rest:
+            return fail("usage: client.py slack-profile get", BAD_ARGS)
+        url, form = f"{SLACK_WEB_URL}/users.profile.get", ""
+    else:
+        if len(rest) < 2 or len(rest) > 3:
+            return fail("usage: client.py slack-profile set <status_text> <status_emoji> "
+                        "[expiration_epoch]", BAD_ARGS)
+        text_arg, emoji = rest[0], rest[1]
+        # Slack wants ":x:" delimiters; accept a bare name so callers need not care.
+        if emoji and not emoji.startswith(":"):
+            emoji = f":{emoji.strip(':')}:"
+        profile = {"status_text": text_arg, "status_emoji": emoji}
+        if len(rest) == 3:
+            try:
+                profile["status_expiration"] = int(rest[2])
+            except ValueError:
+                return fail(f"expiration must be an epoch integer, got {rest[2]!r}", BAD_ARGS)
+        else:
+            # Omitting the field leaves a previous expiry in place, which would
+            # silently clear a status the caller meant to be indefinite.
+            profile["status_expiration"] = 0
+        url = f"{SLACK_WEB_URL}/users.profile.set"
+        form = urllib.parse.urlencode({"profile": json.dumps(profile)})
+
+    try:
+        status, text = request(url, "POST", headers, form)
+    except Exception as exc:
+        return fail(f"{type(exc).__name__}: {exc}", classify_exception(exc))
+
+    verdict = classify_status(status)
+    if verdict == OK:
+        verdict = classify_body(text)
+    if verdict != OK:
+        # A scope error names the grant that is missing and the ones the token has;
+        # the generic 200-char slice cuts the provided list off mid-scope, which
+        # makes "is the write scope there?" unanswerable from the error alone.
+        try:
+            body = json.loads(text)
+        except Exception:
+            body = {}
+        if body.get("error") == "missing_scope":
+            return fail(f"slack users.profile.{action}: missing_scope "
+                        f"needed={body.get('needed')} provided={body.get('provided')}", verdict)
+        return fail(f"slack users.profile.{action}: {text[:200]}", verdict)
+
+    try:
+        got = (json.loads(text).get("profile") or {})
+        print(json.dumps({"status_text": got.get("status_text", ""),
+                          "status_emoji": got.get("status_emoji", ""),
+                          "status_expiration": got.get("status_expiration", 0)}))
+    except Exception:
+        print(text[:200])
+    return OK
+
+
+SURFACES = {"mcp": cmd_mcp, "jira": cmd_jira, "slack-react": cmd_slack_react,
+            "slack-profile": cmd_slack_profile}
 
 
 def main():

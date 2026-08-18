@@ -123,10 +123,17 @@ def grab_arrow(name):
 out = ["globalThis.location = { href: 'http://localhost:8877/' };",
        # the guards are installed on Element.prototype, which node has no notion of
        "globalThis.Element = class Element {};",
+       "const state = { control: { attention: [], queued: [], live: { targets: [] }, quests: [] } };",
+       "let questListHtml = '';",
+       "const $ = () => ({ set htmlOnce(v) { questListHtml = v; } });",
+       "const ago = () => '';",
        "const " + grab_arrow("esc") + ";",
        "const " + grab_arrow("safeUrl") + ";",
+       grab("pill"),
        grab("mdInline"), grab("markdown"),
        grab("briefDate"), grab("briefBucket"), grab("briefDateText"),
+       grab("queuedFor"), grab("attentionFor"), grab("isRunning"),
+       grab("isInitialising"), grab("questGroup"), grab("renderQuestList"),
        grab_stmt("Object.defineProperty(Element.prototype,'htmlOnce'"),
        grab_stmt("Object.defineProperty(Element.prototype,'textOnce'"),
        grab("setValue")]
@@ -165,6 +172,13 @@ if (mode === 'render') {
     briefBucket(brief),
     briefDateText(brief),
   ]));
+} else if (mode === 'questgroup') {
+  state.control = { attention: [], queued: [], live: { targets: [] } };
+  console.log(questGroup(JSON.parse(arg)));
+} else if (mode === 'questlist') {
+  state.control = JSON.parse(arg);
+  renderQuestList();
+  console.log(questListHtml);
 }
 """)
 PY
@@ -291,6 +305,31 @@ PY
   case "$OUT" in
     *'"Older"'*) ok "an old briefing buckets as Older" ;;
     *) bad "bucketing did not use the canonical field: $OUT" ;;
+  esac
+
+  echo
+  echo "── only quests that require an initial run are initialising ─────────────"
+  qg() { node "$TMP/render.js" questgroup "$1" 2>&1; }
+  eq "a frontend quest awaits its first run" \
+    "$(qg '{"requires_initial_run":true,"has_run":false}')" "Initialising"
+  eq "a frontend quest watches after its first run" \
+    "$(qg '{"requires_initial_run":true,"has_run":true}')" "Watching"
+  eq "an ordinary scheduled quest watches before its first run" \
+    "$(qg '{"requires_initial_run":false,"has_run":false}')" "Watching"
+
+  echo
+  echo "── quests surface multiple pending reviews in the main list ─────────────"
+  ql() { node "$TMP/render.js" questlist "$1" 2>&1; }
+  OUT="$(ql '{"quests":[{"id":"q1","title":"One","has_run":true}],"attention":[{"quest_id":"q1","kind":"review","approval":{"action_type":"slack_message"}},{"quest_id":"q1","kind":"review","approval":{"action_type":"email_reply"}},{"quest_id":"q1","kind":"review","approval":{"action_type":"file_edit"}},{"quest_id":"q1","kind":"quest_health"}],"queued":[],"live":{"targets":[]}}')"
+  case "$OUT" in
+    *'class="pill pending_review quest-review-count"'*'aria-label="2 messages to review"'*'>2</span>'*)
+      ok "two review messages render a count pill without counting other actions" ;;
+    *) bad "the quest row did not render its two-message review count: $OUT" ;;
+  esac
+  OUT="$(ql '{"quests":[{"id":"q1","title":"One","has_run":true}],"attention":[{"quest_id":"q1","kind":"review","approval":{"action_type":"slack_message"}}],"queued":[],"live":{"targets":[]}}')"
+  case "$OUT" in
+    *quest-review-count*) bad "a single review message rendered a redundant count pill: $OUT" ;;
+    *) ok "a single review message keeps the quest row uncluttered" ;;
   esac
 fi
 

@@ -57,7 +57,8 @@ answer <id> <json>
     pending_review so the item re-surfaces on the dashboard for another review
     pass. Does NOT send. Prints "ok", or "skip:<status>" if not needs_reply.
 
-done <id> [response_ts | result_url]
+done <id> [response_ts | result_url] [report]
+  report: one line per action the instruction produced; lands in the review trail
     Transition executing → executed. Optionally records the Slack response_ts,
     or — for a Jira comment / GitHub PR comment / Gmail reply — pass the URL of
     the posted reply instead and it is stored as result_url so the dashboard can
@@ -388,11 +389,14 @@ def cmd_answer(approval_id: str, payload_json: str):
     print("ok")
 
 
-def cmd_done(approval_id: str, response_ts: str | None = None):
+def cmd_done(approval_id: str, response_ts: str | None = None, worker_reply: str | None = None):
     item = approval_store.mutate_item(
         approval_id,
         lambda current: approval_state.apply_transition(
-            current, "done", {"response_ts": response_ts}, datetime.now(timezone.utc)
+            current,
+            "done",
+            {"response_ts": response_ts, "worker_reply": worker_reply},
+            datetime.now(timezone.utc),
         ),
     )
     if item is approval_store.NOT_FOUND:
@@ -447,7 +451,11 @@ def main():
     elif cmd == "answer":
         cmd_answer(sys.argv[2], sys.argv[3])
     elif cmd == "done":
-        cmd_done(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
+        cmd_done(
+            sys.argv[2],
+            sys.argv[3] if len(sys.argv) > 3 else None,
+            sys.argv[4] if len(sys.argv) > 4 else None,
+        )
     elif cmd == "abandon":
         cmd_abandon(sys.argv[2], sys.argv[3])
     else:

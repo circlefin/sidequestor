@@ -4,6 +4,12 @@ All notable changes to Sidequestor (YaaS). The current version also lives in `VE
 
 Versions are dated by the day the snapshot was published.
 
+## Unreleased
+
+### Changed
+- Every Markdown file in `state/briefs/` is now displayed. Briefing names are free-form, ordering
+  comes from filesystem creation time, and cadence words in names are optional display hints.
+
 ## 2.5.1 - 2026-08-17
 
 A same-day patch release: eight defects found by auditing the 2.5 snapshot, plus one reported from
