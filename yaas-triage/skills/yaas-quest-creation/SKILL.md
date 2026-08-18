@@ -107,6 +107,8 @@ Spec fields:
 - `watches` (required) — entries WITHOUT `last_checked_ts`; the script injects it
 - `priority` — `"high"` | `"normal"` | `"low"` (default: `"normal"`)
 - `allow_send` — `true` | `false` (default: `false`)
+- `requires_initial_run`: `true` only when the creation surface schedules an immediate
+  first worker request. Omit it for ordinary monitoring and recurring-schedule quests.
 - `context` — body text for `context.md`
 - `note` — short note for the `created` timeline event (defaults to first 80 chars of context)
 - `retire_slack_threads_after_days` — non-negative int or `false`:

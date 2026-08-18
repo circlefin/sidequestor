@@ -15,16 +15,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# github_pr.test.sh — the checker that stalled a live watch for 14 hours.
+# github_pr.test.sh — the checker whose query shape can stall a watch indefinitely.
 #
-# INCIDENT, 2026-08-05 15:00Z to 2026-08-06 05:19Z, 424 `gate_watch_misconfigured` events.
+# THE FAILURE MODE: a frozen watermark and an endless run of `gate_watch_misconfigured` events.
 #
 # The query was UNBOUNDED and DESCENDING: "the N most recently updated PRs". On a repo
 # busier than N that is a SUFFIX of the gap, and a watermark can never cross a suffix,
 # because the unread part sits directly above it. Coverage was tested as
 # `len(prs) < limit`, which on such a repo is permanently false — so `complete: false`
-# every tick, watermark frozen, watch parked as misconfigured. Three dispatches in seven
-# minutes, each correctly acked `nothing_to_do`, each held.
+# every tick, watermark frozen, watch parked as misconfigured. Each dispatch it triggers
+# correctly acks `nothing_to_do` and is still held.
 #
 # THE FIX IS THE QUERY, not the predicate. Bound the low end at the watermark and sort
 # ASCENDING: the page becomes a contiguous PREFIX of the gap, which is safe to commit up to
@@ -34,7 +34,7 @@
 # advance_to has been seen", NOT "the whole gap is done" — advance_to bounds the claim, the
 # same convention slack_utils.drain() uses for a covered forward slice. Reporting
 # complete=false on a prefix would hold the watermark and recreate the stall with entirely
-# plausible-looking code. That mistake was made while writing this fix and caught here.
+# plausible-looking code, which is exactly what this suite is here to catch.
 
 set -u
 # yaas-triage/, found by walking up rather than by counting "..": these suites live at
@@ -118,7 +118,7 @@ printf '%s' "$OUT" | grep -q "backlog" \
 
 echo
 echo "── the watermark advances MONOTONICALLY (no livelock) ────────────────────"
-# The property the incident violated: each tick must start strictly above the last.
+# The property the stall violates: each tick must start strictly above the last.
 mk_gh "$ROWS"
 A=$(field "$(run "$WM" 2)" advance_to)
 mk_gh '[{"number":3,"title":"c","updatedAt":"2026-08-05T15:00:00Z","state":"open"}]'

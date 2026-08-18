@@ -37,8 +37,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INTERVAL="${YAAS_TRIAGE_INTERVAL:-60}"
 
 # `|| true` is required — a worker failure legitimately makes tick.py exit non-zero
-# and this loop must not die on it. But discarding the code outright is what let the
-# 2026-06-30 crash loop run 6.5 hours while launchd reported a healthy job. So count
+# and this loop must not die on it. But discarding the code outright lets a crash loop
+# run indefinitely while launchd still reports a healthy job. So count
 # consecutive failures to a file that health-monitor.py reads. The threshold there is
 # several ticks, precisely because a single non-zero exit is normal.
 FAILFILE="$SCRIPT_DIR/../state/triage/consecutive-tick-failures"

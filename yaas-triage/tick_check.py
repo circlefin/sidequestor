@@ -34,7 +34,7 @@ no progress? is its watch_id even valid?), which of the six verdicts does this w
 
 `classify()` is PURE: it takes the checker result and the watch's health/unacked state as data
 and returns the verdict. It runs no checker, reads no file, writes nothing. That is what makes
-the six-way routing — where two production incidents hid — unit-testable in isolation, which it
+the six-way routing — where the costly mistakes hide — unit-testable in isolation, which it
 never was inside the shell.
 
 The impure fan-out (running every checker in parallel, capped) lives in `run_checks()` and calls
@@ -124,7 +124,13 @@ def classify(result, watch, health=None, unacked=0, unacked_due=True,
 
     outcome = result.get("outcome", "error")
     preview = result.get("preview", "")
-    advance_to = result.get("advance_to") or None
+    # `is not None` and not falsiness: a numeric 0 is a legitimate claim, and `or None`
+    # would turn it into "no claim given", which makes advance_watches() fall back to
+    # now - lag and jump the watermark to NOW instead of holding it near zero. Empty
+    # string still means absent. tick.py:advance_watches applies the same test.
+    advance_to = result.get("advance_to")
+    if advance_to is None or str(advance_to) == "":
+        advance_to = None
     complete = result.get("complete", True) is not False
     count = result.get("count", 0)
 
@@ -195,9 +201,9 @@ def rotate_check_order(quest_ids, cursor):
 
     WHY THIS EXISTS. The Slack token has a finite request budget and a tick spends it in
     order. Whoever is at the back when it runs out gets a rate limit and is skipped — and
-    with a fixed order, it is the SAME quests every tick, forever. Measured 2026-08-09: four
-    quests were rate-limited on 100% of ticks purely because they sorted last, so messages to
-    them went unseen for hours while quests near the front were checked every minute. The
+    with a fixed order, it is the SAME quests every tick, forever. A quest that sorts last can
+    be rate-limited on every single tick, so messages to it go unseen for hours while quests
+    near the front are checked every minute. The
     watermark is held so nothing is lost, but "not lost" is not "noticed".
 
     Rotation, not randomisation. Random order fixes starvation only on average: a quest can

@@ -2,6 +2,8 @@
 
 > *Safely expose your local interactive agent setup as a service.*
 
+**Version 2.5.1** (see [`CHANGELOG.md`](CHANGELOG.md); the current version is also in `VERSION`).
+
 **Sidequestor (YaaS, short for Yourself-as-a-Service)** keeps your local agent tending the work
 you can't sit and watch: it turns the loose ends scattered across your channels into things your
 own agent chases down while you're doing something else.
@@ -99,11 +101,12 @@ Attach https://github.com/circlefin/sidequestor.git to this repository. Follow i
 existing-repository contract exactly, preserve all existing work, and stop on any unsafe collision.
 ```
 
-Both prompts stop and ask you before Slack authorization and before background jobs are installed.
+Both prompts stop and ask you before Slack authorization, when local Slack checking is enabled,
+and before background jobs are installed.
 Prefer the fresh folder unless Sidequestor has to live inside an existing repository. Manual
 route and prerequisites: [Pack the kit](#pack-the-kit).
 
-> **macOS only.** It runs on `launchd` and keeps its Slack token in the Keychain, so it will not
+> **macOS only.** It runs on `launchd` and, when local Slack checking is enabled, keeps its Slack token in the Keychain, so it will not
 > run as-is on Linux or Windows. Early project, no support commitment.
 
 Sidequestor is built for solutions engineers, architects, PMs, support and ops leads, researchers,
@@ -181,15 +184,16 @@ is a confusing `TypeError` mid-dispatch, so `doctor.sh` checks the version expli
 ### What the install prompt does
 
 You paste the prompt; the agent does the work. It clones, creates `.env` and your agent-rules
-file, prints the Slack manifest, runs setup, installs the background jobs, and verifies the whole
+file, prints the Slack manifest when local Slack checking is wanted, runs setup, installs the background jobs, and verifies the whole
 thing with the doctor, the health monitor, and the test suite. It stops and asks before Slack
 authorization, before installing background jobs, and before any commit.
 
 Four things it cannot do for you. They are the whole of your install:
 
-**1. Create the Slack app.** Sidequestor ships no shared Marketplace app on purpose: the polling
+**1. Choose how Slack is checked.** Sidequestor ships no shared Marketplace app on purpose: the polling
 loop needs a credential it can use without waking a model, and that credential should belong to
-you rather than to a vendor. So the app has to exist in **your** workspace first.
+you rather than to a vendor. For free per-minute Slack checking, the app has to exist in **your**
+workspace first.
 
 Your agent prints a manifest with every scope and the redirect URL already filled in. Take it to
 <https://api.slack.com/apps> → **Create New App** → **From an app manifest**, pick your workspace,
@@ -199,12 +203,17 @@ Budget more than two minutes if your workspace restricts app installs. `reaction
 `reactions:write` are the scopes most often held for admin review; without them the reaction
 triggers do nothing. Grant them later and ask your agent to re-authorize.
 
-**2. Approve the OAuth.** A browser window, once. PKCE, no client secret. The token lands in your
-Keychain, never in the repo.
+If you are not able to set up an organisation level Slack app, set `YAAS_SLACK_CHECKERS_ENABLED=0` in `.env`. Setup then skips
+Slack OAuth. The Python loop leaves every `slack_*` watch and its watermark untouched, skips the
+reaction sweep, and continues checking schedules and all non-Slack sources. A scheduled paid
+worker may still read those Slack entries and access Slack through its own MCP connector.
 
-**3. Say what goes in `.env` beyond Slack.** Your sender identity for email replies, reaction emoji
-overrides, and the spend ceilings. Everything except the four `SLACK_*` values has a default, and
-your agent will walk you through the ones worth changing. Worth a glance at the ceilings.
+**2. Approve the OAuth, if local Slack checking is enabled.** A browser window, once. PKCE, no
+client secret. The token lands in your Keychain, never in the repo.
+
+**3. Say what goes in `.env`.** Choose whether local Slack checking is enabled, then configure
+the adapters you use, your sender identity for email replies, reaction emoji overrides, and the
+spend ceilings. Your agent will walk you through the values worth changing.
 
 **4. Put your voice in the agent-rules file.** `CLAUDE.md` for Claude, `AGENTS.md` for Codex, or
 the addendum merged into your harness's own project-rules file. Who your agent is, how it writes,
@@ -390,10 +399,16 @@ Once installed, there is nothing to do. It ticks every 60 seconds.
 The pinned dashboard at `localhost:8877` is the whole interface. That's where drafts wait for you and every quest's messages are one click from Slack. A pulsing
 pill appears when a worker is running: click it to watch the agent think in real time. Stuck
 (misconfigured) or throttled (rate limited) quests sort to the top with a badge. **Control** is
-the live map, **Audit** keeps prior approvals and dispatch runs, and **Field guide** in the header
-explains quests and Slack reaction spells.
+the live map, **Briefings** reads the canonical Markdown archive, **Audit** keeps prior approvals
+and dispatch runs, and **Field guide** in the header explains quests and Slack reaction spells.
 
 The dashboard is the map. The files remain the truth, and your agent is the one that reads them.
+
+Briefings have one canonical home: `state/briefs/`. Every Markdown file in that directory is a
+briefing; filenames are free-form labels rather than a schema. The dashboard sorts files by their
+filesystem creation time and recognizes `morning`, `evening`, `weekly`, or `monthly` in a name only
+as an optional display hint. Anything posted to Slack is a delivery copy rather than the source of
+truth. Briefings stay outside quest folders because they can summarize work across several quests.
 
 For anything the dashboard doesn't show, ask. Your agent knows the ops surface, so questions work
 better than commands:

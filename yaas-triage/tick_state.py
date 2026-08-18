@@ -82,6 +82,22 @@ NUMERIC_KNOBS = {
 }
 
 
+# Knobs whose reader honours a fraction, so validate_knobs() must not demand a whole number.
+# YAAS_STALE_REPLY_HOURS is read by surfaces/slack-send.py as float(), and Config.knob() is never
+# called for it, so `1.5` means a real 90-minute window rather than a value that floors to 1.
+# Everything else in NUMERIC_KNOBS is read either through Config.knob() (int(float(v)), floors) or
+# through a bare int() (ledger/housekeep.py raises on "0.5"), so a fraction there is unhonourable.
+FRACTIONAL_KNOBS = {"YAAS_STALE_REPLY_HOURS"}
+
+# Boolean feature switches use an intentionally narrow 0/1 interface. Accepting the many
+# spellings Python considers truthy makes a typo such as "off" silently ENABLE a network
+# adapter, which is the dangerous direction for an install that deliberately has no
+# credentials for that adapter.
+BOOLEAN_KNOBS = {
+    "YAAS_SLACK_CHECKERS_ENABLED": "1",
+}
+
+
 class BadEnvKnob(Exception):
     """A gate knob has a non-numeric value. tick.py turns this into gate_bad_env_knob + exit 2."""
 
@@ -132,13 +148,44 @@ def validate_knobs(env):
             return True
         return any(c not in "0123456789." for c in v)
 
+    def not_whole(v):
+        """True if v is numeric but not a whole number.
+
+        A fraction is rejected only where it cannot be honoured, which is decided by
+        the knob's READER, not by the fact that it is numeric:
+
+        * Config.knob() returns int(float(v)), which floors — 0.5 arrives as 0, so a
+          cap the operator meant to tighten reads as "disabled" instead. That is the
+          exact outcome this validator exists to refuse.
+        * a bare int() reader (ledger/housekeep.py) raises outright on "0.5".
+
+        FRACTIONAL_KNOBS and the spend caps are exempt: their readers use float(), so
+        a fraction is a real value there — 1.5 hours, $12.50.
+        """
+        v = str(v)
+        if v == "" or bad(v):
+            return False        # empty is fine; non-numeric is already an offender
+        try:
+            f = float(v)
+            return f != int(f)
+        except (ValueError, OverflowError):
+            # A digits-only value long enough to overflow to inf ("9" * 400) reaches here.
+            # int(inf) raises, and this validator's contract is to name the offender, never
+            # to blow up: an unusable knob is an offender.
+            return True
+
     offenders = []
     for k in NUMERIC_KNOBS:
-        if k in env and bad(env[k]):
+        if k not in env:
+            continue
+        if bad(env[k]) or (k not in FRACTIONAL_KNOBS and not_whole(env[k])):
             offenders.append(f"{k}={env[k]}")
     for k, v in env.items():
         if k.startswith("YAAS_MAX_SPEND_") and bad(v):
             offenders.append(f"{k}={v}")
+    for k in BOOLEAN_KNOBS:
+        if k in env and str(env[k]).strip() not in ("", "0", "1"):
+            offenders.append(f"{k}={env[k]}")
     if offenders:
         raise BadEnvKnob(" ".join(offenders))
 
@@ -286,6 +333,11 @@ class Config:
         """A validated numeric knob as an int, or its default if unset/empty."""
         v = str(self.env.get(name, "")).strip()
         return int(float(v)) if v else NUMERIC_KNOBS[name]
+
+    def enabled(self, name):
+        """A validated 0/1 feature switch, or its declared default when unset."""
+        v = str(self.env.get(name, "")).strip() or BOOLEAN_KNOBS[name]
+        return v == "1"
 
 
 def main():

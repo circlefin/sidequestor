@@ -34,6 +34,8 @@ CRON='{"title":"Recurring schedule","watches":[{"type":"schedule","cron":"0 9 * 
 NQ "$CRON" && ok "cron with timezone is accepted" || bad "cron with timezone was rejected"
 CRON_WATCH=$(find state/quests/active -path '*recurring-schedule*/watch.json' -print -quit)
 eq "recurring schedule preserves timezone" "$(jq -r '.watches[0].tz' "$CRON_WATCH")" "Asia/Singapore"
+eq "ordinary quests do not request an initial worker run" \
+  "$(jq -r '.requires_initial_run // false' "$(dirname "$CRON_WATCH")/meta.json")" "false"
 
 ONCE='{"title":"One shot schedule","watches":[{"type":"schedule","next_fire_ts":"1893456000","reason":"follow up once"}]}'
 NQ "$ONCE" && ok "one-shot schedule is accepted" || bad "one-shot schedule was rejected"
@@ -43,17 +45,24 @@ grep -q 'once at `1893456000`' "$ONCE_DIR/context.md" \
   && ok "one-shot context renders without assuming cron fields" \
   || bad "one-shot context is missing its fire time"
 
+INITIAL='{"title":"Frontend request","requires_initial_run":true,"watches":[{"type":"schedule","next_fire_ts":"1893456001","reason":"run the request"}]}'
+NQ "$INITIAL" && ok "a quest can opt into an initial worker run" || bad "initial-run opt-in was rejected"
+INITIAL_DIR=$(find state/quests/active -maxdepth 1 -type d -name '*frontend-request*' -print -quit)
+eq "initial-run intent is persisted in metadata" \
+  "$(jq -r '.requires_initial_run' "$INITIAL_DIR/meta.json")" "true"
+
 echo
 echo "-- invalid and runtime-only shapes are rejected -------------------------"
 for spec in \
   'bare cron|{"title":"Bare cron","watches":[{"type":"schedule","cron":"0 9 * * *","reason":"ambiguous"}]}' \
   'unknown type|{"title":"Unknown","watches":[{"type":"nope","reason":"typo"}]}' \
   'runtime-only approval|{"title":"Approval","watches":[{"type":"approval","approval_id":"a1","reason":"runtime only"}]}' \
+  'non-boolean initial run|{"title":"Bad initial run","requires_initial_run":"yes","watches":[{"type":"schedule","next_fire_ts":"1893456002","reason":"bad flag"}]}' \
   ; do
   label="${spec%%|*}"; body="${spec#*|}"
   NQ "$body" && bad "$label was accepted" || ok "$label is rejected"
 done
-eq "only the two valid quests were created" "$(find state/quests/active -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" "2"
+eq "only the three valid quests were created" "$(find state/quests/active -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" "3"
 
 echo
 echo "----------------------------------------------------------------------------"

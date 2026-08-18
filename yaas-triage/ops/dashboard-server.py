@@ -27,6 +27,7 @@ Endpoints:
     GET  /                    → dashboard.html
     GET  /yaas-triage/assets/sidequestor-mark.png → dashboard logo
     GET  /api/dashboard       → live JSON snapshot of all quest state
+    GET  /api/briefs          → canonical Markdown briefings
     GET  /state/<path>        → raw state file
     POST /api/review/<id>     → mark item reviewed (optionally with edits)
     POST /api/edit/<id>       → update a reviewed draft in place
@@ -552,6 +553,8 @@ def build_live_run() -> dict:
             started_at = l.removeprefix("=== Worker dispatch").removesuffix("===").strip()
         elif l.startswith("Dirty targets:"):
             targets = [t.strip() for t in l.removeprefix("Dirty targets:").split(",") if t.strip()]
+        elif l.startswith("Target:"):
+            targets = [t.strip() for t in l.removeprefix("Target:").split(",") if t.strip()]
 
     body = [l for l in lines[3:] if l.strip() and not l.startswith("===")]
     return {
@@ -783,6 +786,10 @@ def build_config() -> dict:
                 "default": str(default), "set": raw not in (None, ""), "desc": desc}
 
     groups = [
+        {"title": "Adapters", "items": [
+            knob("YAAS_SLACK_CHECKERS_ENABLED", 1,
+                 "Free local slack_* checkers and the reaction sweep. Set to 0 when Slack is available only through a paid worker's MCP."),
+        ]},
         {"title": "Concurrency", "items": [
             knob("YAAS_TRIAGE_MAX_PARALLEL", NUMERIC_KNOBS["YAAS_TRIAGE_MAX_PARALLEL"],
                  "Quests checked at once = peak simultaneous Slack calls. Low on purpose: "
@@ -823,7 +830,63 @@ def build_config() -> dict:
 # file that grows while a worker runs) — that's a genuine state change, so a
 # non-304 response on every poll during a live run is correct, not a bug.
 
-def build_dashboard() -> dict:
+_BRIEF_TYPES = ("morning", "evening", "weekly", "monthly")
+
+
+def build_briefs(limit: int = 30) -> list:
+    """Return newest canonical briefings with their full Markdown content."""
+    briefs = []
+    briefs_dir = STATE_DIR / "briefs"
+    if not briefs_dir.exists():
+        return briefs
+
+    candidates = []
+    for brief_path in briefs_dir.glob("*.md"):
+        try:
+            file_stat = brief_path.stat()
+        except OSError:
+            continue
+        created_at = getattr(file_stat, "st_birthtime", file_stat.st_mtime)
+        candidates.append((created_at, file_stat.st_mtime_ns, brief_path.name,
+                           brief_path, file_stat))
+
+    newest_first = sorted(candidates, key=lambda item: item[:3], reverse=True)
+    for created_at, _, _, brief_path, file_stat in newest_first:
+        if len(briefs) >= limit:
+            break
+        try:
+            markdown = brief_path.read_text()
+        except OSError:
+            continue
+        words = set(re.findall(r"[a-z0-9]+", brief_path.stem.lower()))
+        brief_type = next((kind for kind in _BRIEF_TYPES if kind in words), "brief")
+        title = next(
+            (line[2:].strip() for line in markdown.splitlines() if line.startswith("# ")),
+            brief_path.name,
+        )
+        # macOS exposes birth time; other platforms fall back to mtime. The filename is
+        # deliberately not a schema, so `at` always comes from filesystem metadata.
+        at = datetime.fromtimestamp(created_at, timezone.utc).astimezone()
+        briefs.append({
+            "file": brief_path.name,
+            "type": brief_type,
+            "title": title,
+            "markdown": markdown,
+            "at": at.isoformat(),
+            "ts": datetime.fromtimestamp(file_stat.st_mtime, timezone.utc).isoformat(),
+        })
+    return briefs
+
+def build_dashboard(include_briefs: bool = False) -> dict:
+    """The full quest-state snapshot.
+
+    `include_briefs` is OFF by default and the default is the one that matters:
+    build_control() calls this on every 2s dashboard poll, and briefings are a
+    read-on-demand surface served by /api/briefs, so building them here means
+    re-reading every file in state/briefs/ (~114ms and 75KB of JSON on a
+    150-file archive) only for build_control() to drop the key. Only
+    /api/dashboard, whose payload contract still carries them, opts in.
+    """
     active_dir = STATE_DIR / "quests" / "active"
     quests         = []
     recent_activity = []
@@ -897,6 +960,7 @@ def build_dashboard() -> dict:
             "last_blocked":  last_blocked,
             "last_seen_ts":  last_seen_ts,
             "has_run":       has_run,
+            "requires_initial_run": meta.get("requires_initial_run") is True,
             "backoff_count": 0,     # filled in below
             "backoff_watches": [],  # filled in below
             "ratelimited": False,   # filled in below (transient, from run-log)
@@ -919,6 +983,9 @@ def build_dashboard() -> dict:
             for key, entry in uc.items():
                 qid, _, wid = key.partition("|")
                 if not isinstance(entry, dict) or entry.get("count", 0) < promote:
+                    continue
+                if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                        and str(entry.get("type", "")).startswith("slack_")):
                     continue
                 backoff_by_quest.setdefault(qid, []).append({
                     "watch_id":      wid,
@@ -968,6 +1035,9 @@ def build_dashboard() -> dict:
                 qid = owner.get(wid)
                 if not qid:
                     continue  # orphan: the watch or its quest is gone
+                if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                        and str(wtype_of.get(wid, "")).startswith("slack_")):
+                    continue
                 if tick_check.is_due(rec, now):
                     remaining = 0
                 else:
@@ -995,6 +1065,9 @@ def build_dashboard() -> dict:
     # Annotate quests with recent rate-limiting (transient; from the run-log, not a state file).
     rl_by_quest: dict[str, set] = {}
     for e in _recent_runlog_events("gate_watch_ratelimited", RATELIMIT_WINDOW_SEC):
+        if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                and str(e.get("type", "")).startswith("slack_")):
+            continue
         qid = e.get("quest")
         if qid and e.get("watch_id"):
             rl_by_quest.setdefault(qid, set()).add(e.get("watch_id"))
@@ -1024,39 +1097,13 @@ def build_dashboard() -> dict:
         except Exception:
             pass
 
-    # Daily briefs: markdown files in state/briefs/, named <date>_<hhmm>_<type>.md
-    # (e.g. 2026-06-05_0830_morning.md). Newest first, full markdown included so
-    # the dashboard renders them client-side with clickable links.
-    briefs = []
-    briefs_dir = STATE_DIR / "briefs"
-    if briefs_dir.exists():
-        for bf in sorted(briefs_dir.glob("*.md"), reverse=True)[:30]:
-            try:
-                md = bf.read_text()
-            except Exception:
-                continue
-            parts = bf.stem.split("_")
-            btype = parts[2] if len(parts) >= 3 else (parts[-1] if parts else "")
-            title = ""
-            for line in md.splitlines():
-                if line.startswith("# "):
-                    title = line[2:].strip()
-                    break
-            briefs.append({
-                "file":     bf.name,
-                "type":     btype,
-                "title":    title or bf.name,
-                "markdown": md,
-                "ts":       datetime.fromtimestamp(bf.stat().st_mtime, timezone.utc).isoformat(),
-            })
-
     return {
         "triage":         triage_state,
         "live_run":       build_live_run(),
         "quests":         quests,
         "recent_activity": recent_activity,
         "pending_review": pending_review,
-        "briefs":         briefs,
+        "briefs":         build_briefs() if include_briefs else [],
         "config":         build_config(),
     }
 
@@ -1449,6 +1496,9 @@ def build_quest_detail(quest_id: str) -> dict | None:
             for key, entry in uc.items():
                 qid, _, wid = key.partition("|")
                 if qid == quest_id and entry.get("count", 0) >= promote:
+                    if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                            and str(entry.get("type", "")).startswith("slack_")):
+                        continue
                     backoff_watches.append({
                         "watch_id":      wid,
                         "type":          entry.get("type", "unknown"),
@@ -1476,6 +1526,9 @@ def build_quest_detail(quest_id: str) -> dict | None:
         for wid, rec in (health or {}).items():
             if wid not in mine or not isinstance(rec, dict):
                 continue
+            if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                    and str(mine.get(wid, "")).startswith("slack_")):
+                continue
             if tick_check.is_due(rec, now):
                 remaining = 0
             else:
@@ -1500,6 +1553,9 @@ def build_quest_detail(quest_id: str) -> dict | None:
     ratelimited_watches = []
     _rl_seen = set()
     for e in _recent_runlog_events("gate_watch_ratelimited", RATELIMIT_WINDOW_SEC):
+        if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                and str(e.get("type", "")).startswith("slack_")):
+            continue
         if e.get("quest") == quest_id and e.get("watch_id") and e["watch_id"] not in _rl_seen:
             _rl_seen.add(e["watch_id"])
             ratelimited_watches.append({
@@ -1764,6 +1820,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1775,11 +1832,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if path == "/api/dashboard":
-            self._send_json_etag(build_dashboard)
+            self._send_json_etag(lambda: build_dashboard(include_briefs=True))
             return
 
         if path == "/api/control":
             self._send_json_etag(build_control)
+            return
+
+        if path == "/api/briefs":
+            self._send_json_etag(lambda: {"briefs": build_briefs()})
             return
 
         if path == "/api/messages":
@@ -1960,6 +2021,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "title": title,
             "priority": priority,
             "allow_send": False,
+            "requires_initial_run": True,
             "context": (
                 "## Operator request\n\n"
                 f"{prompt}\n\n"

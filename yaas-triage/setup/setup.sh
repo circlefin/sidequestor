@@ -18,11 +18,10 @@
 # setup.sh — one-time colleague onboarding for yaas
 #
 # Walks a new user through:
-#   1. Reading the yaas app config
-#   2. OAuth flow with PKCE (no client secret needed)
-#   3. Storing the issued xoxp token in their macOS keychain
-#   4. Running a smoke test
-#   5. Optionally installing the launchd job
+#   1. Reading adapter configuration
+#   2. Optionally running Slack OAuth with PKCE and storing the xoxp token
+#   3. Running a smoke test when local Slack checking is enabled
+#   4. Optionally installing the launchd jobs
 #
 # Idempotent: re-running it rotates the token.
 
@@ -38,7 +37,7 @@ STATE_SERVER_LOG=$(mktemp)
 trap 'rm -f "$STATE_SERVER_LOG"' EXIT
 
 # ── Preflight ───────────────────────────────────────────────────────────────
-for cmd in jq curl python3 openssl security open; do
+for cmd in jq python3; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "ERROR: required command not found: $cmd" >&2
     exit 1
@@ -80,12 +79,31 @@ fi
 
 # Load per-install values from .env
 if [ ! -f "$ENV_FILE" ]; then
-  echo "ERROR: $ENV_FILE not found. Copy .env.example to .env and fill in your Slack app values." >&2
+  echo "ERROR: $ENV_FILE not found. Copy .env.example to .env and configure the adapters you use." >&2
   exit 1
 fi
 # shellcheck source=../../.env
 set -a; source "$ENV_FILE"; set +a
 
+SLACK_CHECKERS_ENABLED="${YAAS_SLACK_CHECKERS_ENABLED:-1}"
+case "$SLACK_CHECKERS_ENABLED" in
+  0|1) ;;
+  *)
+    echo "ERROR: YAAS_SLACK_CHECKERS_ENABLED must be 0 or 1, got: $SLACK_CHECKERS_ENABLED" >&2
+    exit 1
+    ;;
+esac
+
+if [ "$SLACK_CHECKERS_ENABLED" = "0" ]; then
+  echo "Slack Python checkers are disabled. Skipping Slack app validation and OAuth."
+  echo "Scheduled workers may still use Slack through their configured agent MCP."
+else
+for cmd in curl openssl security open; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "ERROR: required command for Slack OAuth not found: $cmd" >&2
+    exit 1
+  fi
+done
 MISSING=""
 for var in SLACK_APP_ID SLACK_CLIENT_ID SLACK_WORKSPACE_NAME SLACK_WORKSPACE_DOMAIN; do
   [ -z "${!var:-}" ] && MISSING="$MISSING $var"
@@ -325,6 +343,7 @@ else
   echo "   Output: $(printf '%s' "$TEST_RESULT" | head -c 200)"
   echo "   You can proceed — run 'python3 yaas-triage/tick.py' manually to test further."
 fi
+fi
 
 # ── Offer launchd install ───────────────────────────────────────────────────
 echo
@@ -407,7 +426,7 @@ fi
 # Prove the code is actually correct on THIS machine before you trust it. doctor.sh
 # checks the environment; run-all.sh runs the unit/behaviour suites + the end-to-end
 # differential goldens against tick.py (throwaway fixtures, no network, no real state).
-# Warn-only: setup's real work (OAuth, keychain, launchd) is already done above, so a
+# Warn-only: setup's configuration and any selected OAuth, keychain, or launchd work is already done above, so a
 # test failure is surfaced loudly but does not undo the install.
 echo
 read -p "Run the verification suite now to confirm the install is correct? [Y/n]: " RUN_TESTS
@@ -420,7 +439,7 @@ if [[ ! "$RUN_TESTS" =~ ^[Nn] ]]; then
   if bash "$TRIAGE_DIR/tests/run-all.sh"; then
     echo "✓ All tests passed — the install is verified."
   else
-    echo "⚠ Some tests failed (see above). The install itself is intact (token + jobs are set up),"
+    echo "⚠ Some tests failed (see above). The install steps already completed remain intact,"
     echo "  but something in this checkout or environment is off — fix it before relying on YAAS."
   fi
 else
@@ -435,6 +454,10 @@ echo "╠═══════════════════════�
 echo "║  Manual run:     python3 $TRIAGE_DIR/tick.py"
 echo "║  Dry run:        DRY_RUN=1 python3 $TRIAGE_DIR/tick.py"
 echo "║  Dashboard:      $TRIAGE_DIR/ops/dashboard-start.sh  (http://localhost:8877)"
-echo "║  Rotate token:   rerun setup.sh"
-echo "║  Revoke:         Settings → Manage apps in your Slack workspace    ║"
+if [ "$SLACK_CHECKERS_ENABLED" = "1" ]; then
+  echo "║  Rotate token:   rerun setup.sh"
+  echo "║  Revoke:         Settings → Manage apps in your Slack workspace    ║"
+else
+  echo "║  Slack adapter:  local Python checking disabled in .env            ║"
+fi
 echo "╚════════════════════════════════════════════════════════════════════╝"

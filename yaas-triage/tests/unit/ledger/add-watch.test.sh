@@ -58,7 +58,9 @@ ID=$(W q1 '{"type":"slack_thread","channel_id":"C1","thread_ts":"1.1","last_chec
 printf '%s' "$ID" | grep -Eq '^watch-[0-9a-f]{16}$' && ok "returns a well-formed watch_id" \
   || bad "bad watch_id: $ID"
 eq "the watch was appended"          "$(jq '.watches | length' "$WJ")" "2"
-eq "the explicit response_ts is kept" "$(jq -r '.watches[1].last_checked_ts' "$WJ")" "2.2"
+# Stored normalized to Slack's 6-decimal form (an over-precise `oldest` makes Slack
+# return nothing at all), so the assertion is the same INSTANT, not the same spelling.
+eq "the explicit response_ts is kept" "$(jq -r '.watches[1].last_checked_ts' "$WJ")" "2.200000"
 
 echo
 echo "── the invariant: an existing entry is never altered ──────────────────────"
@@ -71,7 +73,7 @@ DUP=$(W q1 '{"type":"slack_thread","channel_id":"C1","thread_ts":"1.1","last_che
 printf '%s' "$DUP" | grep -q '^skip:duplicate' && ok "a duplicate is skipped, not appended" \
   || bad "duplicate not detected: $DUP"
 eq "and the count did not grow"      "$(jq '.watches | length' "$WJ")" "2"
-eq "and it did not overwrite the ts" "$(jq -r '.watches[1].last_checked_ts' "$WJ")" "2.2"
+eq "and it did not overwrite the ts" "$(jq -r '.watches[1].last_checked_ts' "$WJ")" "2.200000"
 
 echo
 echo "── validation: a malformed watch is loud, not silently unchecked ──────────"
@@ -96,7 +98,7 @@ eq "no invalid watch made it in"     "$(jq '.watches | length' "$WJ")" "2"
 echo
 echo "── documented defaults and options ────────────────────────────────────────"
 W q1 '{"type":"slack_thread","channel_id":"C3","thread_ts":"5.5","reason":"draft, no send ts"}' >/dev/null
-eq "ts falls back to thread_ts for a draft" "$(jq -r '.watches[-1].last_checked_ts' "$WJ")" "5.5"
+eq "ts falls back to thread_ts for a draft" "$(jq -r '.watches[-1].last_checked_ts' "$WJ")" "5.500000"
 W q1 '{"type":"slack_thread","channel_id":"C2","thread_ts":"4.4","reason":"escalation","watch_mode":"read_only"}' >/dev/null
 eq "read_only is preserved"          "$(jq -r '.watches[-1].watch_mode' "$WJ")" "read_only"
 eq "every watch has a valid id"      "$(jq '[.watches[] | select(.watch_id | test("^watch-[0-9a-f]{16}"))] | length' "$WJ")" "4"

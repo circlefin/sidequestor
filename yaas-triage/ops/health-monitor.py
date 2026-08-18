@@ -20,16 +20,16 @@ health-monitor.py — the dead-man switch. Runs OUTSIDE triage.
 
 Why this exists
 ───────────────
-Twice now the whole system has been dead for hours while every surface said it was
-fine:
+The whole system can be dead for hours while every surface still says it is fine. Two
+ways that happens:
 
-  * 2026-06-30 — a stray `.pth` crashed every tick for 6.5 hours. `triage-loop.sh`
-    swallows the orchestrator's exit code behind `|| true`, so launchd happily reported a
-    healthy long-running job the entire time.
-  * 2026-06 — launchd's StartInterval delivery silently stopped firing after a macOS
-    update. Same outcome: nothing looked wrong.
+  * A crashing tick. `triage-loop.sh` swallows the orchestrator's exit code behind
+    `|| true`, so if every tick crashes on import, launchd still reports a healthy
+    long-running job.
+  * launchd's StartInterval delivery silently stopping (a macOS update is enough to do
+    it). Same outcome: nothing looks wrong.
 
-The lesson is that a health check living inside triage cannot detect triage being
+Both share a property: a health check living inside triage cannot detect triage being
 dead. So this runs as its own launchd job (`com.yaas.heartbeat`), shares no code path
 with the triage loop, and is deliberately dependency-free: it reads state files and
 shells out to `osascript`. Nothing it does can be broken by the thing it watches.
@@ -114,6 +114,21 @@ def _read_json(path, default=None):
         return default
 
 
+def _setting(repo, key, default=""):
+    """Read an install setting from the environment, then the repo's .env file."""
+    value = os.environ.get(key)
+    if value not in (None, ""):
+        return str(value).strip()
+    try:
+        for raw in (Path(repo) / ".env").read_text().splitlines():
+            line = raw.strip()
+            if line.startswith(f"{key}="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return default
+
+
 class Health:
     def __init__(self, repo: Path):
         self.repo = repo
@@ -180,6 +195,18 @@ class Health:
     # ── work that has silently stopped moving ────────────────────────────────
     def check_checker_health(self):
         d = _read_json(self.state / "triage" / "checker-health.json", {}) or {}
+        if _setting(self.repo, "YAAS_SLACK_CHECKERS_ENABLED", "1") == "0":
+            disabled_ids = set()
+            active = self.state / "quests" / "active"
+            if active.is_dir():
+                for watch_file in active.glob("*/watch.json"):
+                    watch_data = _read_json(watch_file, {}) or {}
+                    for watch in watch_data.get("watches", []):
+                        if (isinstance(watch, dict)
+                                and str(watch.get("type", "")).startswith("slack_")
+                                and watch.get("watch_id")):
+                            disabled_ids.add(watch["watch_id"])
+            d = {wid: rec for wid, rec in d.items() if wid not in disabled_ids}
         stuck = {k: v for k, v in d.items()
                  if isinstance(v, dict) and int(v.get("consecutive_errors", 0)) >= CHECKER_PROMOTE}
         if stuck:
@@ -232,6 +259,9 @@ class Health:
                         continue
                     ev = e.get("event")
                     if ev not in WATCHED_EVENTS:
+                        continue
+                    if (_setting(self.repo, "YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                            and str(e.get("type", "")).startswith("slack_")):
                         continue
                     t = _parse(e.get("ts"))
                     if t is None or t < cutoff:

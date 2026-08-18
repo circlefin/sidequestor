@@ -56,13 +56,35 @@ Never read all four as a reflex. Each file read costs a model round-trip. After 
 
 **Slack watch types** (`slack_thread`, `slack_channel`, `slack_dm`): query with the appropriate MCP tool (`slack_read_thread`, `slack_read_channel`, `slack_search_public_and_private`).
 
+> **Truncate `last_checked_ts` to 6 decimals before using it as `oldest`/`latest`.** Slack returns
+> ZERO messages for a timestamp with more precision than that, and returns them normally with
+> exactly 6, so an over-precise watermark makes you blind to the very activity you were dispatched
+> for. `1786939623.4141629` → `1786939623.414162`. Truncate, never round up. The orchestrator now
+> stores watermarks already normalized, but entries written before 2026-08-17 can still carry the
+> old precision, so check the value you read rather than trusting it.
+>
+> This is not hypothetical: on 2026-08-17 a worker passed a 7-decimal watermark to
+> `slack_read_channel`, got an empty result, acked `nothing_to_do`, and the orchestrator advanced
+> the watermark past a real unanswered request. **If a channel reads as empty but the dispatch says
+> it is dirty, suspect this before concluding there is nothing to do** — and if the read still comes
+> back empty, ack `blocked`, not `nothing_to_do`, so the watermark is not burned.
+
 **Slack mention watch type** (`slack_mention`): fires on any new message that @mentions the entry's `user_id`, anywhere Slack search can see (global, not channel-scoped). The entry has no channel, so read `watch.json` for the entry's `last_checked_ts`, re-run `slack_search_public_and_private` with query `<@USER_ID> after:<date>`, keep only results newer than the watermark (skipping `[BOT]` authors and the watched user's own posts), then `slack_read_thread` on each hit before acting.
 
 **Email watch type** (`email`): read `watch.json` to get each entry's `query` and `last_checked_ts`. Then:
 1. `gws gmail users messages list --params '{"userId":"me","q":"<query> after:<YYYY/MM/DD>","maxResults":10}'`
 2. For each message ID, `gws gmail users messages get --params '{"userId":"me","id":"<id>","format":"full"}'`. Post-filter by `internalDate/1000 > last_checked_ts`.
 
-**Schedule watch type** (`watches[]` with `"type": "schedule"`): the cron fired. No content to fetch — act based on what the quest says to do at that scheduled time.
+**Schedule watch type** (`watches[]` with `"type": "schedule"`): the cron fired. Normally there
+is no content to fetch; act based on what the quest says to do at that scheduled time.
+
+One explicit exception supports installations with `YAAS_SLACK_CHECKERS_ENABLED=0`. If the quest
+context defines this schedule as a Slack sweep, read the same quest's `watch.json` and treat its
+`slack_*` entries as MCP query targets. Use the fired schedule entry's `last_checked_ts` as the
+shared lower bound, not the dormant Slack entries' frozen watermarks. Ack the schedule
+`handled|nothing_to_do` only after every required Slack target was read successfully. If any read
+fails, ack the schedule `blocked`, which holds the sweep window for retry. The Slack entries are
+coordinates in this interim mode; never edit or ack them because they were not dispatched.
 
 **Jira watch type** (`jira`): fires when an issue in the entry's `jql` set changed (status transition, new comment, any field edit — Jira bumps `updated` on all of them). An interactive Atlassian MCP is typically NOT exposed in headless dispatch, so do not reach for `searchJiraIssues`; it returns `tool_not_found` there. Use the REST bridge:
 1. `yaas-triage/surfaces/jira-call.sh GET '/rest/api/3/search/jql?jql=<url-encoded>&fields=status,summary,updated&maxResults=100'` — re-read the set and diff it against what the quest last recorded.
@@ -202,11 +224,13 @@ watch as `blocked`. The terminal cancellation prevents another paid dispatch; th
 submit a fresh instruction after checking the outcome.
 
 1. Claim it: `python3 yaas-triage/ledger/approval-helper.py start <id>`. If it prints `skip:<status>`, another worker beat you or it was cancelled — log a `note` and exit 0.
-2. Read `message_text` from the item (the user may have edited it in the dashboard). Read `review_note` if present — apply it as an instruction: rewrite tone, change format, adjust recipients, whatever it says. Use your full LLM judgment.
+2. Read `review_note` first, then `message_text`. **`review_note` is the governing instruction and `message_text` is only a draft.** The dashboard's Approve and Request change buttons are both prompts to you; Approve differs only in that the item closes when you are done. So a note that countermands the draft wins over the draft: "send this to the other reviewer instead" means retarget the send and drop the original target, and "show me the updated draft first" means do NOT send at all, revise the text, and report back. `message_text` is what to send only when no note was given. Use your full LLM judgment.
+
+   A single note can require several actions (a send, a file edit, an issue filed, a second message to someone else). Do all of them, then report **one line per action** in your reply, each naming the surface and the target, so the review conversation shows everything the prompt caused rather than just the headline action. If the note told you not to send, say plainly that nothing was sent.
 3. Execute the action through `slack-send.py`. **If the send fails because the channel is restricted (e.g., `mcp_externally_shared_channel_restricted`):** retry through `slack-send.py` with `"draft": true`, saving the draft to the actual target thread with `channel_id` + `thread_ts`; then DM the user only the permalink to that thread. Do not paste the draft text in the DM — they can open the thread, find the draft in the compose box, and send it themselves.
-4. Mark done: `python3 yaas-triage/ledger/approval-helper.py done <id> <response_ts>`.
+4. Mark done: `python3 yaas-triage/ledger/approval-helper.py done <id> <response_ts> "<report>"`. The third argument is your per-action report (one line per action) and lands in the review conversation, so pass it whenever the instruction produced anything beyond the obvious single send. An Approve is terminal, so this closes the item even when the instruction told you not to send.
 5. Append a `slack_thread` watch to `watch.json` with `last_checked_ts = response_ts` (per §3a).
-6. Log `executed` with `log-event.py`, including `approval_id`, `response_ts`, and a note on any changes applied from `review_note`.
+6. Log `executed` with `log-event.py`, including `approval_id`, `response_ts`, and a note listing every action the instruction produced. If `review_note` suppressed the send, log `executed` with an explicit "no send: <reason>" note rather than silently closing.
 
 **Executing item whose lease expired.** A previous dispatch claimed this item and never closed it, so the send may or may not have landed. Do NOT resend blind. Read the target thread and look for the message. Present → close it with `approval-helper.py done <id> <response_ts>` and log `executed`. Absent → execute normally. Can't tell → log `blocked` and surface under Attention needed.
 

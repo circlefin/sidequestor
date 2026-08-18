@@ -52,6 +52,7 @@ not been converted keeps working (as complete=true, advance_to unset).
 """
 
 import json
+import math
 import sys
 
 CLEAN       = "clean"
@@ -71,7 +72,16 @@ def emit(outcome, count=0, preview="", advance_to=None, complete=True, reason=""
     }
     if advance_to is not None:
         try:
-            obj["advance_to"] = f"{float(advance_to):.6f}"
+            # TRUNCATE to Slack's 6 decimals, never round. `:.6f` alone is
+            # round-half-even, which can move the claim FORWARD by up to half a
+            # microsecond — past a message sitting exactly on the rounded value,
+            # which then reads as already-seen forever. tick.py:slack_ts() runs
+            # after this and truncates too, but truncation cannot undo an upward
+            # round. Same rule as tick.slack_ts and ledger/add-watch.py.
+            v = float(advance_to)
+            if not math.isfinite(v):
+                raise ValueError("non-finite advance_to")   # omit the key, same as garbage
+            obj["advance_to"] = f"{math.floor(v * 1_000_000) / 1_000_000:.6f}"
         except (TypeError, ValueError):
             pass
     if reason:

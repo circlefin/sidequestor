@@ -17,10 +17,10 @@
 
 # tick_check.test.sh — the six-way verdict routing of the tick.py orchestrator's analyze phase.
 #
-# classify() decides, per watch: misconfig | backoff | skip | hold | dirty | clean. Two
-# production incidents lived in this routing: a ratelimited read that dispatched as dirty (the
-# compounding dispatch loop), and a clean-but-not-drained result that advanced past unseen items. Both
-# are pinned here. The dangerous verdict is `dirty` (it dispatches) and `clean` (it advances),
+# classify() decides, per watch: misconfig | backoff | skip | hold | dirty | clean. Two costly
+# failure modes live in this routing: a ratelimited read that dispatches as dirty (a compounding
+# dispatch loop), and a clean-but-not-drained result that advances past unseen items. Both are
+# pinned here. The dangerous verdict is `dirty` (it dispatches) and `clean` (it advances),
 # so most cases assert something HOLDS.
 
 set -u
@@ -79,7 +79,7 @@ eq "unacked below threshold → normal (dirty)" \
    "$(c '{"outcome":"dirty","count":1}' "$W" --unacked 2)" "dirty"
 eq "unacked at threshold, backoff window still open → backoff (not misconfig, not parked)" \
    "$(c '{"outcome":"dirty","count":1}' "$W" --unacked 3 --unacked-backoff)" "backoff"
-# The whole point of the 2026-08-12 change: past the threshold but DUE, the watch is checked
+# The whole point of the backoff rule: past the threshold but DUE, the watch is checked
 # and dispatched normally. It never stops retrying, so a transient failure self-heals.
 eq "unacked at threshold but due → checked normally (dirty)" \
    "$(c '{"outcome":"dirty","count":1}' "$W" --unacked 3)" "dirty"
@@ -137,6 +137,14 @@ echo "── dirty carries advance_to and complete through for the commit layer 
 OUT=$(python3 "$CHK" '{"outcome":"dirty","count":2,"complete":true,"advance_to":"1785920000.0"}' "$W")
 eq "advance_to preserved" "$(printf '%s' "$OUT" | python3 -c "import json,sys;print(json.load(sys.stdin)['advance_to'])")" "1785920000.0"
 eq "complete preserved" "$(printf '%s' "$OUT" | python3 -c "import json,sys;print(json.load(sys.stdin)['complete'])")" "True"
+# A numeric 0 is a legitimate claim and must survive. Falsiness (`or None`) would erase it,
+# and an erased claim is not "hold" — advance_watches() falls back to now - lag, which jumps
+# the watermark to NOW and buries everything between. An empty string still means absent.
+adv() { python3 "$CHK" "$1" "$W" | python3 -c "import json,sys;print(json.load(sys.stdin).get('advance_to','ABSENT'))"; }
+eq "a numeric 0 claim survives"  "$(adv '{"outcome":"dirty","count":1,"complete":true,"advance_to":0}')"   "0"
+eq "a 0.0 claim survives"        "$(adv '{"outcome":"dirty","count":1,"complete":true,"advance_to":0.0}')" "0.0"
+eq "a \"0.000000\" claim survives" "$(adv '{"outcome":"dirty","count":1,"complete":true,"advance_to":"0.000000"}')" "0.000000"
+eq "an empty claim reads as absent" "$(adv '{"outcome":"dirty","count":1,"complete":true,"advance_to":""}')" "None"
 
 echo
 echo "── priority: structural checks beat the checker result ────────────────────"
@@ -191,8 +199,8 @@ eq "empty string → treated as 0" "$(rot '["a","b","c"]' '')" "a,b,c|1"
 
 echo
 echo "── THE PROPERTY: no quest can starve forever ──────────────────────────────"
-# This is the whole point. With a fixed order the same tail lost every tick (measured
-# 2026-08-09: four quests rate-limited on 100% of ticks purely for sorting last). Assert
+# This is the whole point. With a fixed order the same tail loses every tick, and a quest can
+# be rate-limited on every single tick purely for sorting last. Assert
 # that over N ticks with N quests, EVERY quest occupies the front position at least once —
 # a guarantee rotation gives and random ordering does not.
 FRONTS=$(python3 - "$CHK" <<'PY'

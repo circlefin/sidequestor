@@ -259,7 +259,7 @@ Deterministic quest scaffolding. Takes a JSON spec on argv or stdin, creates the
 ```bash
 git clone <this repo>
 cd <repo>
-cp .env.example .env             # then fill in SLACK_*, YAAS_FROM_EMAIL, etc.
+cp .env.example .env             # configure the adapters you use
 cp CLAUDE.example.md CLAUDE.md   # customize as needed
 ./yaas-triage/setup/setup.sh
 ./yaas-triage/ops/doctor.sh          # is this machine configured (real creds, PATH, plist)
@@ -267,12 +267,23 @@ python3 yaas-triage/ops/health-monitor.py   # is it working right now
 yaas-triage/tests/run-all.sh     # is the code correct (fixtures, safe any time)
 ```
 
-`setup.sh` walks through Slack OAuth (PKCE flow, no client secret needed), stores the user `xoxp`
+With local Slack checking enabled, `setup.sh` walks through Slack OAuth (PKCE flow, no client secret needed), stores the user `xoxp`
 token in macOS Keychain at `(service=slack-xoxp-token, account=yaas)`, runs a connectivity check,
 and offers the triage, independent heartbeat, and dashboard launchd jobs. It can also initialize
 opt-in daily template tracking and run verification. Each user creates their own Slack app at
 https://api.slack.com/apps from the manifest printed by `setup.sh --manifest`; the manifest and
 OAuth flow share `setup/yaas-app-config.json`, so their scopes cannot drift.
+
+Set `YAAS_SLACK_CHECKERS_ENABLED=0` when no local Slack app is available. Setup and doctor then
+treat Slack app fields and the Keychain token as intentionally absent. The tick skips all
+`slack_*` checker entries and the global reaction sweep without advancing their watermarks;
+schedule and non-Slack checks continue, and paid workers retain their own MCP access.
+
+For the interim paid-sweep pattern, give the quest a recurring `schedule` watch and state in its
+`context.md` that the schedule must inspect the quest's dormant `slack_*` entries through Slack
+MCP. The schedule watch's watermark is the shared sweep cursor. The worker must block that
+schedule acknowledgement if any required Slack read fails, so the window is retried rather than
+skipped. This is intentionally quest-scoped; a dispatch never scans other quests' folders.
 
 ### Manual launchd control
 
@@ -301,6 +312,7 @@ come up while debugging:
 
 | Variable | Default | Effect |
 |---|---|---|
+| `YAAS_SLACK_CHECKERS_ENABLED` | 1 | `0` disables all local `slack_*` Python checks and the reaction sweep. Slack watermarks are held; schedules and worker MCP access are unaffected. |
 | `YAAS_MAX_SPEND_1H` | 40 | Hourly dollar ceiling. On breach, checks still run but the dispatch is withheld and `gate_budget_exceeded` is logged. This is the first thing to check when nothing is dispatching despite dirty quests. |
 | `YAAS_MAX_SPEND_24H` | 250 | Daily dollar ceiling. |
 | `YAAS_MAX_DISPATCH_6H` | 250 | Dispatch-count ceiling. The only ceiling that works under the codex/cursor backends, which report no cost. |

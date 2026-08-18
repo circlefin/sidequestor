@@ -150,10 +150,10 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
 
     # Inactivity watchdog threshold. A model/transport round-trip can hang after emitting
     # a tool_use with no further stream output, in which case the only thing that fires is
-    # the outer `timeout` watchdog — burning the whole slot (incident 2026-08-08: a worker
-    # stalled 29 min after one tool_use and was killed only at the 1800s ceiling). This
-    # catches that gap sooner AND timestamps it. Must exceed the longest LEGITIMATE silence
-    # between stream lines, which is a single tool call's runtime — the Bash tool's own cap
+    # the outer `timeout` watchdog, so a worker silent after one tool_use burns the whole
+    # slot up to the 1800s ceiling. This catches that gap sooner AND timestamps it. Must
+    # exceed the longest LEGITIMATE silence between stream lines, which is a single tool
+    # call's runtime — the Bash tool's own cap
     # is 600s — so the default (900s) sits safely above that and well under the 1800s ceiling.
     # 0 disables it (falls back to the outer watchdog only).
     try:

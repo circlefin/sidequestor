@@ -39,6 +39,7 @@ the original shell orchestrator has been retired to archive/.
 
 import errno
 import json
+import math
 import os
 import socket
 import subprocess
@@ -98,6 +99,7 @@ class Tick:
         self.error_promote = self.cfg.knob("YAAS_CHECKER_ERROR_PROMOTE")
         self.max_parallel = self.cfg.knob("YAAS_TRIAGE_MAX_PARALLEL")
         self.max_fanout = self.cfg.knob("YAAS_MAX_DISPATCH_FANOUT")
+        self.slack_checkers_enabled = self.cfg.enabled("YAAS_SLACK_CHECKERS_ENABLED")
         self.tick_budget = self.cfg.knob("YAAS_TICK_DISPATCH_BUDGET")
         self.min_slice = self.cfg.knob("YAAS_MIN_DISPATCH_SLICE")
         self.worker_timeout = int(self.env.get("YAAS_WORKER_TIMEOUT", "1800") or "1800")
@@ -196,6 +198,30 @@ class Tick:
             pass
 
 
+def slack_ts(value):
+    """Format a watermark the way Slack writes timestamps: exactly 6 decimals.
+
+    Not cosmetic. Slack's `oldest`/`latest` silently return ZERO messages when handed
+    more precision than that, so `str(time.time())` — 17 significant digits, e.g.
+    '1786939623.4141629' — makes any consumer that passes the watermark through
+    verbatim blind to every message after it. The checkers normalize on the way out
+    (checkers/slack_channel.py, slack_thread.py), but a dispatched worker reads this
+    field straight from watch.json, so the stored value has to be safe by itself.
+    That asymmetry drops messages silently: the checker sees them, the worker does
+    not, and the watermark advances past them.
+
+    Truncates rather than rounds. Rounding can move the watermark FORWARD by up to
+    half a microsecond, which is enough to step over a message sitting exactly on the
+    rounded value; truncating can only ever re-show a message, and re-showing is
+    cheap while skipping is silent data loss.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{math.floor(v * 1_000_000) / 1_000_000:.6f}"
+
+
 # ── The single place a watermark ever moves ──────────────────────────────────
 # Both the clean path and the post-dispatch commit call this. One writer, one rule: use the
 # checker's own advance_to when it gave one, else advance to now minus the type's lag. Mirrors
@@ -216,10 +242,10 @@ def advance_watches(t, qid, moves):
             continue
         adv = m.get("advance_to")
         if adv is not None and str(adv) != "":
-            w["last_checked_ts"] = str(adv)
+            w["last_checked_ts"] = slack_ts(adv)
         else:
             lag = t.lag_map.get(w.get("type"), 0)
-            w["last_checked_ts"] = str(t.now_ts - lag)
+            w["last_checked_ts"] = slack_ts(t.now_ts - lag)
     try:
         tmp = watch.parent / f".watch.{os.getpid()}.tmp"
         tmp.write_text(json.dumps(data, indent=2) + "\n")
@@ -251,6 +277,12 @@ def check_quest(t, qid):
         rows.append({"qid": qid, "status": "skip", "reason": "unreadable watch.json"})
         return rows
     watches = data.get("watches", []) or []
+    # This switch disables the credential-bearing LOCAL Slack adapter, not Slack as a
+    # capability. Keep the entries and their watermarks intact so a scheduled paid worker
+    # may still use them as MCP sweep targets, and so re-enabling the adapter resumes from
+    # exactly the same point. Non-Slack watches remain live.
+    if not getattr(t, "slack_checkers_enabled", True):
+        watches = [w for w in watches if not str(w.get("type", "")).startswith("slack_")]
     # Grouping by slack_ prefix is intentional here: the manifest's upstream field is the
     # declaration, and checker-contract.test.sh asserts the prefix and upstream stay aligned.
     # local (non-slack) first, then slack_ — the ordering that stops a rate-limit skip from
@@ -515,8 +547,7 @@ def run_tick(t):
 
     # NOTE: zero active quests does NOT mean the tick is idle — the global reaction
     # sweep (below) is independent of quests. Returning here would silently stop the
-    # bot from ever answering an emoji-triggered message whenever no quest is active
-    # (bug: 2026-08-08, a process-reaction DM went unanswered while quest_count==0).
+    # bot from ever answering an emoji-triggered message whenever no quest is active.
     # With an empty quest_dirs the check block below is a natural no-op, so we fall
     # through to the reaction sweep and the normal dispatch decision.
 
@@ -543,8 +574,8 @@ def run_tick(t):
     # separately re-sorted anyway, so ordering here is about a stable log/diff, not correctness.
     checkable = [qd.name for qd in quest_dirs if qd.name not in unreadable]
     # Fairness rotation for the CHECK phase. The Slack budget runs out partway through a
-    # tick, and with a fixed (alphabetical) order the same tail lost every time: on
-    # 2026-08-09 four quests were rate-limited on 100% of ticks purely for sorting last.
+    # tick, and with a fixed (alphabetical) order the same tail loses every time: a quest
+    # can be rate-limited on every single tick purely for sorting last.
     # Rotating the START each tick spreads that loss, so a quest waits a few ticks instead
     # of forever. Execution order only — results are reassembled in quest_dirs order below,
     # so every log, diff and golden stays deterministic.
@@ -575,19 +606,23 @@ def run_tick(t):
     analyze(t)
 
     # ── Global reaction sweep ───────────────────────────────────────────────────
-    cutoff = time.strftime("%Y-%m-%d", time.gmtime(t.now_ts - 60 * 86400))
-    cp = t.run(t.py(t.helper("checkers", "reactions.py"), t.mcp_call, cutoff,
-                    str(t.repo_root), str(t.pending_reactions)))
-    react_out = (cp.stdout or "") + (cp.stderr or "")
-    if cp.returncode != 0:
-        t.log("REACTIONS checker failed to execute (non-fatal) — reaction sweep skipped this cycle")
-    if "REACTIONS_TRUNCATED=1" in react_out:
-        t.log("REACTIONS TRUNCATED — the emoji search hit its page cap; older reacted messages were not seen.")
-        t.event({"event": "gate_watch_backlog", "quest": "reactions",
-                 "reason": "reaction search truncated at page cap"})
-    if t.pending_reactions.exists():
-        t.reactions_dirty = True
-        t.log(f"DIRTY: reactions — pending in {t.pending_reactions}")
+    # Reactions use the same local Slack adapter as slack_* checkers. When that adapter
+    # is intentionally disabled, leave any existing pending file untouched and quiet; it
+    # can resume if the adapter is re-enabled.
+    if t.slack_checkers_enabled:
+        cutoff = time.strftime("%Y-%m-%d", time.gmtime(t.now_ts - 60 * 86400))
+        cp = t.run(t.py(t.helper("checkers", "reactions.py"), t.mcp_call, cutoff,
+                        str(t.repo_root), str(t.pending_reactions)))
+        react_out = (cp.stdout or "") + (cp.stderr or "")
+        if cp.returncode != 0:
+            t.log("REACTIONS checker failed to execute (non-fatal) — reaction sweep skipped this cycle")
+        if "REACTIONS_TRUNCATED=1" in react_out:
+            t.log("REACTIONS TRUNCATED — the emoji search hit its page cap; older reacted messages were not seen.")
+            t.event({"event": "gate_watch_backlog", "quest": "reactions",
+                     "reason": "reaction search truncated at page cap"})
+        if t.pending_reactions.exists():
+            t.reactions_dirty = True
+            t.log(f"DIRTY: reactions — pending in {t.pending_reactions}")
 
     # ── Advance clean watch watermarks ──────────────────────────────────────────
     clean_by_quest = {}
@@ -894,9 +929,9 @@ def dispatch_loop(t, dispatch_targets, targets_json):
     # Reactions jump the queue, AFTER the rotation so the cursor cannot push them back.
     # A reaction is the one target with a human watching: you add the emoji and wait for the
     # bot to acknowledge it. Everything else is background work nobody is staring at. Queued
-    # last (the previous behaviour) a reaction waited for every dirty quest to finish first —
-    # measured 2026-08-08, a trigger sat 4.5 minutes behind three quest dispatches before its
-    # worker even started, so the emoji showed nothing for minutes and looked broken.
+    # last (the previous behaviour) a reaction waits for every dirty quest to finish first: a
+    # few quest dispatches ahead of it push the worker minutes back, so the emoji shows nothing
+    # for minutes and looks broken.
     # Excluded from the rotation rather than merely sorted first: the rotation exists to stop
     # a quest starving, and there is only ever one reactions target, so rotating it buys
     # nothing and would just reintroduce the delay on some ticks.

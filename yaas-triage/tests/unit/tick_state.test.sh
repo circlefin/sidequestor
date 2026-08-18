@@ -65,6 +65,7 @@ if cmd == "quests":  print(json.dumps(m.gather_quests(c.quests_dir)))
 elif cmd == "lags":  print(json.dumps(c.lag_map, sort_keys=True))
 elif cmd == "root":  print(str(c.repo_root))
 elif cmd == "knob":  print(c.knob(knob_name))
+elif cmd == "enabled": print("yes" if c.enabled(sys.argv[4]) else "no")
 elif cmd == "manifests":
     print(json.dumps(m.load_watch_manifests(FIX + "/yaas-triage"), sort_keys=True))
 PY
@@ -233,6 +234,10 @@ eq "overridden fanout" "$(py "$FIX" knob YAAS_MAX_DISPATCH_FANOUT YAAS_MAX_DISPA
 eq "default checker concurrency" "$(py "$FIX" knob YAAS_TRIAGE_MAX_PARALLEL)" "3"
 eq "default tick dispatch budget" "$(py "$FIX" knob YAAS_TICK_DISPATCH_BUDGET)" "3600"
 eq "default minimum dispatch slice" "$(py "$FIX" knob YAAS_MIN_DISPATCH_SLICE)" "300"
+eq "local Slack checkers default enabled" \
+   "$(py "$FIX" enabled YAAS_SLACK_CHECKERS_ENABLED)" "yes"
+eq "local Slack checkers can be disabled" \
+   "$(py "$FIX" enabled YAAS_SLACK_CHECKERS_ENABLED YAAS_SLACK_CHECKERS_ENABLED=0)" "no"
 
 echo
 echo "── a garbage gate knob REFUSES (never silently reads as no-cap) ───────────"
@@ -242,8 +247,40 @@ printf '%s' "$(py "$FIX" quests YAAS_MAX_SPEND_6H=.)" | grep -q "BAD_ENV_KNOB" \
   && ok "a lone '.' is rejected (reads as zero in arithmetic otherwise)" || bad "'.' accepted"
 printf '%s' "$(py "$FIX" quests YAAS_MAX_SPEND_1H=40)" | grep -q "BAD_ENV_KNOB" \
   && bad "a valid spend cap was wrongly rejected" || ok "a valid spend cap passes"
+printf '%s' "$(py "$FIX" quests YAAS_SLACK_CHECKERS_ENABLED=off)" | grep -q "BAD_ENV_KNOB" \
+  && ok "a misspelled boolean switch is rejected" || bad "invalid Slack checker switch was accepted"
 printf '%s' "$(py "$FIX" quests YAAS_MAX_DISPATCH_FANOUT=)" | grep -q "BAD_ENV_KNOB" \
   && bad "an empty knob was rejected" || ok "an empty knob is fine (means default)"
+# A FRACTION is numeric but unhonourable: knob() returns int(float(v)), which floors, so
+# 0.5 would arrive as 0 and a cap the operator meant to tighten would read as disabled —
+# the exact silent-zero this validator exists to refuse. Count knobs reject it; spend caps
+# must still accept decimals, because money is fractional.
+printf '%s' "$(py "$FIX" quests YAAS_MAX_DISPATCH_FANOUT=0.5)" | grep -q "BAD_ENV_KNOB" \
+  && ok "a fractional count knob is rejected (would floor to 0)" || bad "0.5 fanout accepted — floors to 0"
+printf '%s' "$(py "$FIX" quests YAAS_UNACKED_PROMOTE=.9)" | grep -q "BAD_ENV_KNOB" \
+  && ok "a bare-decimal count knob is rejected" || bad ".9 promote accepted — floors to 0"
+printf '%s' "$(py "$FIX" quests YAAS_MAX_DISPATCH_FANOUT=4.0)" | grep -q "BAD_ENV_KNOB" \
+  && bad "a whole number written as 4.0 was rejected" || ok "a whole number with a decimal point passes"
+printf '%s' "$(py "$FIX" quests YAAS_MAX_SPEND_6H=12.50)" | grep -q "BAD_ENV_KNOB" \
+  && bad "a fractional SPEND cap was rejected — money is fractional" || ok "a fractional spend cap still passes"
+# The whole-number rule follows the READER, not the dict. YAAS_STALE_REPLY_HOURS is read by
+# slack-send.py as float() and never through Config.knob(), so 1.5 is a real 90-minute window
+# and must be accepted. YAAS_RETIRE_DEFAULT_DAYS is read by a bare int(), which raises on
+# "0.5", so a fraction there must still be refused before it can crash housekeep.
+printf '%s' "$(py "$FIX" quests YAAS_STALE_REPLY_HOURS=1.5)" | grep -q "BAD_ENV_KNOB" \
+  && bad "a fractional stale-reply window was rejected — its reader uses float()" \
+  || ok "a fractional stale-reply window is accepted (float reader)"
+printf '%s' "$(py "$FIX" quests YAAS_STALE_REPLY_HOURS=abc)" | grep -q "BAD_ENV_KNOB" \
+  && ok "...but a non-numeric stale-reply window is still rejected" || bad "abc accepted as hours"
+printf '%s' "$(py "$FIX" quests YAAS_RETIRE_DEFAULT_DAYS=0.5)" | grep -q "BAD_ENV_KNOB" \
+  && ok "a fractional retire window is rejected (int() reader would raise)" \
+  || bad "0.5 retire days accepted — housekeep raises on it"
+
+# A digits-only value long enough to overflow to inf: float() succeeds, int() raises. The
+# validator must name it as an offender, not blow up with OverflowError.
+printf '%s' "$(py "$FIX" quests YAAS_MAX_DISPATCH_FANOUT=$(python3 -c 'print("9"*400)'))" \
+  | grep -q "BAD_ENV_KNOB" \
+  && ok "an overflowing knob is an offender, not a crash" || bad "overflowing knob did not report BAD_ENV_KNOB"
 
 echo
 echo "── .env is merged without overriding the real environment ─────────────────"
