@@ -75,7 +75,16 @@ Never read all four as a reflex. Each file read costs a model round-trip. After 
 1. `gws gmail users messages list --params '{"userId":"me","q":"<query> after:<YYYY/MM/DD>","maxResults":10}'`
 2. For each message ID, `gws gmail users messages get --params '{"userId":"me","id":"<id>","format":"full"}'`. Post-filter by `internalDate/1000 > last_checked_ts`.
 
-**Schedule watch type** (`watches[]` with `"type": "schedule"`): the cron fired. No content to fetch — act based on what the quest says to do at that scheduled time.
+**Schedule watch type** (`watches[]` with `"type": "schedule"`): the cron fired. Normally there
+is no content to fetch; act based on what the quest says to do at that scheduled time.
+
+One explicit exception supports installations with `YAAS_SLACK_CHECKERS_ENABLED=0`. If the quest
+context defines this schedule as a Slack sweep, read the same quest's `watch.json` and treat its
+`slack_*` entries as MCP query targets. Use the fired schedule entry's `last_checked_ts` as the
+shared lower bound, not the dormant Slack entries' frozen watermarks. Ack the schedule
+`handled|nothing_to_do` only after every required Slack target was read successfully. If any read
+fails, ack the schedule `blocked`, which holds the sweep window for retry. The Slack entries are
+coordinates in this interim mode; never edit or ack them because they were not dispatched.
 
 **Jira watch type** (`jira`): fires when an issue in the entry's `jql` set changed (status transition, new comment, any field edit — Jira bumps `updated` on all of them). An interactive Atlassian MCP is typically NOT exposed in headless dispatch, so do not reach for `searchJiraIssues`; it returns `tool_not_found` there. Use the REST bridge:
 1. `yaas-triage/surfaces/jira-call.sh GET '/rest/api/3/search/jql?jql=<url-encoded>&fields=status,summary,updated&maxResults=100'` — re-read the set and diff it against what the quest last recorded.

@@ -289,6 +289,7 @@ config_items = {
     for item in group["items"]
 }
 expected_defaults = {
+    "YAAS_SLACK_CHECKERS_ENABLED": "1",
     "YAAS_TRIAGE_MAX_PARALLEL": "3",
     "YAAS_TICK_DISPATCH_BUDGET": "3600",
     "YAAS_MIN_DISPATCH_SLICE": "300",

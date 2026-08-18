@@ -784,6 +784,10 @@ def build_config() -> dict:
                 "default": str(default), "set": raw not in (None, ""), "desc": desc}
 
     groups = [
+        {"title": "Adapters", "items": [
+            knob("YAAS_SLACK_CHECKERS_ENABLED", 1,
+                 "Free local slack_* checkers and the reaction sweep. Set to 0 when Slack is available only through a paid worker's MCP."),
+        ]},
         {"title": "Concurrency", "items": [
             knob("YAAS_TRIAGE_MAX_PARALLEL", NUMERIC_KNOBS["YAAS_TRIAGE_MAX_PARALLEL"],
                  "Quests checked at once = peak simultaneous Slack calls. Low on purpose: "
@@ -978,6 +982,9 @@ def build_dashboard(include_briefs: bool = False) -> dict:
                 qid, _, wid = key.partition("|")
                 if not isinstance(entry, dict) or entry.get("count", 0) < promote:
                     continue
+                if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                        and str(entry.get("type", "")).startswith("slack_")):
+                    continue
                 backoff_by_quest.setdefault(qid, []).append({
                     "watch_id":      wid,
                     "type":          entry.get("type", ""),
@@ -1026,6 +1033,9 @@ def build_dashboard(include_briefs: bool = False) -> dict:
                 qid = owner.get(wid)
                 if not qid:
                     continue  # orphan: the watch or its quest is gone
+                if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                        and str(wtype_of.get(wid, "")).startswith("slack_")):
+                    continue
                 if tick_check.is_due(rec, now):
                     remaining = 0
                 else:
@@ -1053,6 +1063,9 @@ def build_dashboard(include_briefs: bool = False) -> dict:
     # Annotate quests with recent rate-limiting (transient; from the run-log, not a state file).
     rl_by_quest: dict[str, set] = {}
     for e in _recent_runlog_events("gate_watch_ratelimited", RATELIMIT_WINDOW_SEC):
+        if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                and str(e.get("type", "")).startswith("slack_")):
+            continue
         qid = e.get("quest")
         if qid and e.get("watch_id"):
             rl_by_quest.setdefault(qid, set()).add(e.get("watch_id"))
@@ -1481,6 +1494,9 @@ def build_quest_detail(quest_id: str) -> dict | None:
             for key, entry in uc.items():
                 qid, _, wid = key.partition("|")
                 if qid == quest_id and entry.get("count", 0) >= promote:
+                    if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                            and str(entry.get("type", "")).startswith("slack_")):
+                        continue
                     backoff_watches.append({
                         "watch_id":      wid,
                         "type":          entry.get("type", "unknown"),
@@ -1508,6 +1524,9 @@ def build_quest_detail(quest_id: str) -> dict | None:
         for wid, rec in (health or {}).items():
             if wid not in mine or not isinstance(rec, dict):
                 continue
+            if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                    and str(mine.get(wid, "")).startswith("slack_")):
+                continue
             if tick_check.is_due(rec, now):
                 remaining = 0
             else:
@@ -1532,6 +1551,9 @@ def build_quest_detail(quest_id: str) -> dict | None:
     ratelimited_watches = []
     _rl_seen = set()
     for e in _recent_runlog_events("gate_watch_ratelimited", RATELIMIT_WINDOW_SEC):
+        if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                and str(e.get("type", "")).startswith("slack_")):
+            continue
         if e.get("quest") == quest_id and e.get("watch_id") and e["watch_id"] not in _rl_seen:
             _rl_seen.add(e["watch_id"])
             ratelimited_watches.append({

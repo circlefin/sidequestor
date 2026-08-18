@@ -99,6 +99,7 @@ class Tick:
         self.error_promote = self.cfg.knob("YAAS_CHECKER_ERROR_PROMOTE")
         self.max_parallel = self.cfg.knob("YAAS_TRIAGE_MAX_PARALLEL")
         self.max_fanout = self.cfg.knob("YAAS_MAX_DISPATCH_FANOUT")
+        self.slack_checkers_enabled = self.cfg.enabled("YAAS_SLACK_CHECKERS_ENABLED")
         self.tick_budget = self.cfg.knob("YAAS_TICK_DISPATCH_BUDGET")
         self.min_slice = self.cfg.knob("YAAS_MIN_DISPATCH_SLICE")
         self.worker_timeout = int(self.env.get("YAAS_WORKER_TIMEOUT", "1800") or "1800")
@@ -276,6 +277,12 @@ def check_quest(t, qid):
         rows.append({"qid": qid, "status": "skip", "reason": "unreadable watch.json"})
         return rows
     watches = data.get("watches", []) or []
+    # This switch disables the credential-bearing LOCAL Slack adapter, not Slack as a
+    # capability. Keep the entries and their watermarks intact so a scheduled paid worker
+    # may still use them as MCP sweep targets, and so re-enabling the adapter resumes from
+    # exactly the same point. Non-Slack watches remain live.
+    if not getattr(t, "slack_checkers_enabled", True):
+        watches = [w for w in watches if not str(w.get("type", "")).startswith("slack_")]
     # Grouping by slack_ prefix is intentional here: the manifest's upstream field is the
     # declaration, and checker-contract.test.sh asserts the prefix and upstream stay aligned.
     # local (non-slack) first, then slack_ — the ordering that stops a rate-limit skip from
@@ -599,19 +606,23 @@ def run_tick(t):
     analyze(t)
 
     # ── Global reaction sweep ───────────────────────────────────────────────────
-    cutoff = time.strftime("%Y-%m-%d", time.gmtime(t.now_ts - 60 * 86400))
-    cp = t.run(t.py(t.helper("checkers", "reactions.py"), t.mcp_call, cutoff,
-                    str(t.repo_root), str(t.pending_reactions)))
-    react_out = (cp.stdout or "") + (cp.stderr or "")
-    if cp.returncode != 0:
-        t.log("REACTIONS checker failed to execute (non-fatal) — reaction sweep skipped this cycle")
-    if "REACTIONS_TRUNCATED=1" in react_out:
-        t.log("REACTIONS TRUNCATED — the emoji search hit its page cap; older reacted messages were not seen.")
-        t.event({"event": "gate_watch_backlog", "quest": "reactions",
-                 "reason": "reaction search truncated at page cap"})
-    if t.pending_reactions.exists():
-        t.reactions_dirty = True
-        t.log(f"DIRTY: reactions — pending in {t.pending_reactions}")
+    # Reactions use the same local Slack adapter as slack_* checkers. When that adapter
+    # is intentionally disabled, leave any existing pending file untouched and quiet; it
+    # can resume if the adapter is re-enabled.
+    if t.slack_checkers_enabled:
+        cutoff = time.strftime("%Y-%m-%d", time.gmtime(t.now_ts - 60 * 86400))
+        cp = t.run(t.py(t.helper("checkers", "reactions.py"), t.mcp_call, cutoff,
+                        str(t.repo_root), str(t.pending_reactions)))
+        react_out = (cp.stdout or "") + (cp.stderr or "")
+        if cp.returncode != 0:
+            t.log("REACTIONS checker failed to execute (non-fatal) — reaction sweep skipped this cycle")
+        if "REACTIONS_TRUNCATED=1" in react_out:
+            t.log("REACTIONS TRUNCATED — the emoji search hit its page cap; older reacted messages were not seen.")
+            t.event({"event": "gate_watch_backlog", "quest": "reactions",
+                     "reason": "reaction search truncated at page cap"})
+        if t.pending_reactions.exists():
+            t.reactions_dirty = True
+            t.log(f"DIRTY: reactions — pending in {t.pending_reactions}")
 
     # ── Advance clean watch watermarks ──────────────────────────────────────────
     clean_by_quest = {}

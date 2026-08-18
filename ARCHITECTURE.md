@@ -66,6 +66,13 @@ OAuth uses PKCE, stores the resulting user token in the operating-system Keychai
 Python checkers a supported credential they can use directly. The app is the workspace-approved
 identity; the token is the local key that lets the no-LLM polling plane act as that identity.
 
+An installation without that app can set `YAAS_SLACK_CHECKERS_ENABLED=0`. This disables the
+entire local Slack adapter: `slack_*` entries are not executed, their watermarks do not move, and
+the global reaction sweep does not run. Schedule and non-Slack checkers are unaffected. Agent
+workers keep their own connector configuration, so a scheduled paid sweep may still use Slack
+through Claude, Codex, or Cursor MCP. The switch lives at the adapter seam because all local Slack
+watch types share the same credential and failure mode.
+
 The alternative is one published Sidequestor Marketplace app shared by every workspace. That
 would reduce setup to an install-and-approve flow, but it would make every installation depend on
 a centrally owned app identity, its publication status, and its ongoing support. A hosted OAuth

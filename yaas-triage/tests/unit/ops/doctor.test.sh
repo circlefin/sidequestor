@@ -150,6 +150,23 @@ PY
 printf '%s' "$(D)" | grep -q "SLACK_APP_ID empty" \
   && ok "an empty required var is caught" || bad "an empty SLACK_APP_ID passed"
 
+reset_env
+cat >> "$REPO/.env" <<'ENV'
+YAAS_SLACK_CHECKERS_ENABLED=0
+SLACK_APP_ID=
+SLACK_CLIENT_ID=
+SLACK_WORKSPACE_NAME=
+SLACK_WORKSPACE_DOMAIN=
+ENV
+mk security 'exit 1'
+OUT=$(D); RC=$?
+printf '%s' "$OUT" | grep -q "local Slack checkers and reaction sweep disabled" \
+  && ok "disabled local Slack adapter is reported" || bad "disabled Slack adapter was not reported"
+printf '%s' "$OUT" | grep -q "Slack token not in Keychain" \
+  && bad "disabled Slack adapter still requires a token" || ok "disabled Slack adapter needs no token"
+[ "$RC" -eq 0 ] && ok "missing Slack app is healthy when the adapter is disabled" \
+                 || bad "disabled Slack adapter still failed doctor"
+
 echo
 echo "── the worker contract must be present and intact ─────────────────────────"
 reset_env; rm -f "$REPO/CLAUDE.md"

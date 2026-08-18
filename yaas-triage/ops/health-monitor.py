@@ -114,6 +114,21 @@ def _read_json(path, default=None):
         return default
 
 
+def _setting(repo, key, default=""):
+    """Read an install setting from the environment, then the repo's .env file."""
+    value = os.environ.get(key)
+    if value not in (None, ""):
+        return str(value).strip()
+    try:
+        for raw in (Path(repo) / ".env").read_text().splitlines():
+            line = raw.strip()
+            if line.startswith(f"{key}="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return default
+
+
 class Health:
     def __init__(self, repo: Path):
         self.repo = repo
@@ -180,6 +195,18 @@ class Health:
     # ── work that has silently stopped moving ────────────────────────────────
     def check_checker_health(self):
         d = _read_json(self.state / "triage" / "checker-health.json", {}) or {}
+        if _setting(self.repo, "YAAS_SLACK_CHECKERS_ENABLED", "1") == "0":
+            disabled_ids = set()
+            active = self.state / "quests" / "active"
+            if active.is_dir():
+                for watch_file in active.glob("*/watch.json"):
+                    watch_data = _read_json(watch_file, {}) or {}
+                    for watch in watch_data.get("watches", []):
+                        if (isinstance(watch, dict)
+                                and str(watch.get("type", "")).startswith("slack_")
+                                and watch.get("watch_id")):
+                            disabled_ids.add(watch["watch_id"])
+            d = {wid: rec for wid, rec in d.items() if wid not in disabled_ids}
         stuck = {k: v for k, v in d.items()
                  if isinstance(v, dict) and int(v.get("consecutive_errors", 0)) >= CHECKER_PROMOTE}
         if stuck:
@@ -232,6 +259,9 @@ class Health:
                         continue
                     ev = e.get("event")
                     if ev not in WATCHED_EVENTS:
+                        continue
+                    if (_setting(self.repo, "YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
+                            and str(e.get("type", "")).startswith("slack_")):
                         continue
                     t = _parse(e.get("ts"))
                     if t is None or t < cutoff:

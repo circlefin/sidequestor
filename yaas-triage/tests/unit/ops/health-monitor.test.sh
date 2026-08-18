@@ -121,6 +121,18 @@ printf '{"watch-abc":{"consecutive_errors":1,"last_error":"blip","last_error_utc
 has "$(MON)" "checker_stuck" && bad "a single transient blip was escalated" \
   || ok "a single transient error is not escalated"
 
+reset_state
+mkdir -p "$REPO/state/quests/active/q-slack"
+printf 'YAAS_SLACK_CHECKERS_ENABLED=0\n' > "$REPO/.env"
+printf '{"watches":[{"watch_id":"watch-slack","type":"slack_channel"}]}\n' \
+  > "$REPO/state/quests/active/q-slack/watch.json"
+printf '{"watch-slack":{"consecutive_errors":6,"last_error":"old auth failure"}}\n' \
+  > "$REPO/state/triage/checker-health.json"
+has "$(MON)" "checker_stuck" && bad "disabled Slack checker health stayed alarming" \
+  || ok "disabled Slack checker health is intentionally suppressed"
+rm -f "$REPO/.env"
+rm -rf "$REPO/state/quests/active/q-slack"
+
 echo
 echo "── an approved action stuck mid-execution ────────────────────────────────"
 reset_state

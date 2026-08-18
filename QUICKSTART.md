@@ -83,6 +83,11 @@ Behind the curtain, a tiny local Python loop checks for changes about once a
 minute. When nothing changed, no AI runs. When something did, it wakes one agent
 for one target, records the result, and goes back to sleep.
 
+Free Slack checking requires a workspace Slack app. If that is unavailable, set
+`YAAS_SLACK_CHECKERS_ENABLED=0` in `.env`. Slack watch entries stay recorded but dormant,
+the reaction sweep is disabled, and schedule, email, Jira, and GitHub watches continue.
+Scheduled agent runs can still access Slack through the agent's own MCP connector.
+
 That is the whole rhythm: **react for now, quest for later, review before send.**
 
 Want the technical tour? See the full [Sidequestor README](README.md).

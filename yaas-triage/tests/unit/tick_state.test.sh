@@ -65,6 +65,7 @@ if cmd == "quests":  print(json.dumps(m.gather_quests(c.quests_dir)))
 elif cmd == "lags":  print(json.dumps(c.lag_map, sort_keys=True))
 elif cmd == "root":  print(str(c.repo_root))
 elif cmd == "knob":  print(c.knob(knob_name))
+elif cmd == "enabled": print("yes" if c.enabled(sys.argv[4]) else "no")
 elif cmd == "manifests":
     print(json.dumps(m.load_watch_manifests(FIX + "/yaas-triage"), sort_keys=True))
 PY
@@ -233,6 +234,10 @@ eq "overridden fanout" "$(py "$FIX" knob YAAS_MAX_DISPATCH_FANOUT YAAS_MAX_DISPA
 eq "default checker concurrency" "$(py "$FIX" knob YAAS_TRIAGE_MAX_PARALLEL)" "3"
 eq "default tick dispatch budget" "$(py "$FIX" knob YAAS_TICK_DISPATCH_BUDGET)" "3600"
 eq "default minimum dispatch slice" "$(py "$FIX" knob YAAS_MIN_DISPATCH_SLICE)" "300"
+eq "local Slack checkers default enabled" \
+   "$(py "$FIX" enabled YAAS_SLACK_CHECKERS_ENABLED)" "yes"
+eq "local Slack checkers can be disabled" \
+   "$(py "$FIX" enabled YAAS_SLACK_CHECKERS_ENABLED YAAS_SLACK_CHECKERS_ENABLED=0)" "no"
 
 echo
 echo "── a garbage gate knob REFUSES (never silently reads as no-cap) ───────────"
@@ -242,6 +247,8 @@ printf '%s' "$(py "$FIX" quests YAAS_MAX_SPEND_6H=.)" | grep -q "BAD_ENV_KNOB" \
   && ok "a lone '.' is rejected (reads as zero in arithmetic otherwise)" || bad "'.' accepted"
 printf '%s' "$(py "$FIX" quests YAAS_MAX_SPEND_1H=40)" | grep -q "BAD_ENV_KNOB" \
   && bad "a valid spend cap was wrongly rejected" || ok "a valid spend cap passes"
+printf '%s' "$(py "$FIX" quests YAAS_SLACK_CHECKERS_ENABLED=off)" | grep -q "BAD_ENV_KNOB" \
+  && ok "a misspelled boolean switch is rejected" || bad "invalid Slack checker switch was accepted"
 printf '%s' "$(py "$FIX" quests YAAS_MAX_DISPATCH_FANOUT=)" | grep -q "BAD_ENV_KNOB" \
   && bad "an empty knob was rejected" || ok "an empty knob is fine (means default)"
 # A FRACTION is numeric but unhonourable: knob() returns int(float(v)), which floors, so

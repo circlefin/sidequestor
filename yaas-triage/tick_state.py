@@ -89,6 +89,14 @@ NUMERIC_KNOBS = {
 # through a bare int() (ledger/housekeep.py raises on "0.5"), so a fraction there is unhonourable.
 FRACTIONAL_KNOBS = {"YAAS_STALE_REPLY_HOURS"}
 
+# Boolean feature switches use an intentionally narrow 0/1 interface. Accepting the many
+# spellings Python considers truthy makes a typo such as "off" silently ENABLE a network
+# adapter, which is the dangerous direction for an install that deliberately has no
+# credentials for that adapter.
+BOOLEAN_KNOBS = {
+    "YAAS_SLACK_CHECKERS_ENABLED": "1",
+}
+
 
 class BadEnvKnob(Exception):
     """A gate knob has a non-numeric value. tick.py turns this into gate_bad_env_knob + exit 2."""
@@ -175,6 +183,9 @@ def validate_knobs(env):
     for k, v in env.items():
         if k.startswith("YAAS_MAX_SPEND_") and bad(v):
             offenders.append(f"{k}={v}")
+    for k in BOOLEAN_KNOBS:
+        if k in env and str(env[k]).strip() not in ("", "0", "1"):
+            offenders.append(f"{k}={env[k]}")
     if offenders:
         raise BadEnvKnob(" ".join(offenders))
 
@@ -322,6 +333,11 @@ class Config:
         """A validated numeric knob as an int, or its default if unset/empty."""
         v = str(self.env.get(name, "")).strip()
         return int(float(v)) if v else NUMERIC_KNOBS[name]
+
+    def enabled(self, name):
+        """A validated 0/1 feature switch, or its declared default when unset."""
+        v = str(self.env.get(name, "")).strip() or BOOLEAN_KNOBS[name]
+        return v == "1"
 
 
 def main():

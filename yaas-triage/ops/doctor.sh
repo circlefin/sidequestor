@@ -122,7 +122,18 @@ else
   fi
 
   set -a; source "$ENV_FILE" 2>/dev/null || true; set +a
-  for var in SLACK_APP_ID SLACK_CLIENT_ID SLACK_WORKSPACE_NAME SLACK_WORKSPACE_DOMAIN YAAS_FROM_EMAIL; do
+  SLACK_CHECKERS_ENABLED="${YAAS_SLACK_CHECKERS_ENABLED:-1}"
+  case "$SLACK_CHECKERS_ENABLED" in
+    0|1) ok "YAAS_SLACK_CHECKERS_ENABLED=$SLACK_CHECKERS_ENABLED" ;;
+    *) fail "YAAS_SLACK_CHECKERS_ENABLED=$SLACK_CHECKERS_ENABLED is invalid (expected 0 or 1)" ;;
+  esac
+  if [ "$SLACK_CHECKERS_ENABLED" = "0" ]; then
+    SLACK_REQUIRED_VARS=""
+    warn "local Slack checkers and reaction sweep disabled; slack_* watermarks are held"
+  else
+    SLACK_REQUIRED_VARS="SLACK_APP_ID SLACK_CLIENT_ID SLACK_WORKSPACE_NAME SLACK_WORKSPACE_DOMAIN"
+  fi
+  for var in $SLACK_REQUIRED_VARS YAAS_FROM_EMAIL; do
     if [ -n "${!var:-}" ]; then
       ok "$var set"
     else
@@ -177,7 +188,9 @@ fi
 
 # ── 4. Slack token in Keychain ──────────────────────────────────────────────
 section "Slack credentials"
-if security find-generic-password -s slack-xoxp-token -a yaas >/dev/null 2>&1; then
+if [ "${SLACK_CHECKERS_ENABLED:-1}" = "0" ]; then
+  ok "Slack OAuth token not required while local Slack checkers are disabled"
+elif security find-generic-password -s slack-xoxp-token -a yaas >/dev/null 2>&1; then
   ok "Slack OAuth token in Keychain (service=slack-xoxp-token, account=yaas)"
 else
   fail "Slack token not in Keychain — run ./setup/setup.sh"
