@@ -553,6 +553,8 @@ def build_live_run() -> dict:
             started_at = l.removeprefix("=== Worker dispatch").removesuffix("===").strip()
         elif l.startswith("Dirty targets:"):
             targets = [t.strip() for t in l.removeprefix("Dirty targets:").split(",") if t.strip()]
+        elif l.startswith("Target:"):
+            targets = [t.strip() for t in l.removeprefix("Target:").split(",") if t.strip()]
 
     body = [l for l in lines[3:] if l.strip() and not l.startswith("===")]
     return {
