@@ -476,9 +476,14 @@ YAAS_AGENT=cursor
 carries the decision rules, so low thinking is fast and cheap on the most capable model. Raise the
 effort if your quests need deeper reasoning.
 
-Exactly one file knows the difference (`dispatch/dispatch-agent.sh`); everything else is
-backend-agnostic. Each harness reads its own rules file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, or
-Cursor's project rules), so keep the Sidequestor addendum in whichever one your harness loads.
+The backend (`YAAS_AGENT`) is referenced in multiple places:
+
+- `dispatch/dispatch-agent.sh` - reads `YAAS_AGENT` and launches the appropriate agent with its flags
+- `dispatch/translate-stream.py` - accepts `backend` as a CLI argument and converts non-Claude event streams to a common cost shape
+- `tick.py` - uses `YAAS_AGENT` to select the network-probe host and token-accounting path
+- `ops/doctor.sh` - uses `YAAS_AGENT` to verify the correct binary is installed
+
+To change backend behavior, update the shared `YAAS_AGENT` environment variable.
 
 ---
 
