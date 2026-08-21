@@ -1,1 +1,0 @@
-{"type": "item.completed", "item": {"id": "item_0", "type": "command_execution", "command": "/bin/zsh -lc \"./yaas-triage/surfaces/mcp-call.sh slack_read_channel '{\\\"channel_id\\\":\\\"C0TESTCHAN\\\",\\\"limit\\\":1}'\"", "aggregated_output": "ERROR: example failure\n", "exit_code": 1, "status": "failed"}}

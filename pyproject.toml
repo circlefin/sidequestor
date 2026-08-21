@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sidequestor-yaas"
+version = "0.1.0.dev0"
+description = "YaaS workspace and triage command shell"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+yaas = "yaas_triage.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+yaas_triage = ["*.json", "*.md", "*.html", "*.png", "package_data/*.md", "package_data/*.example", "package_data/skills/*/*", "runtime/**/*"]
+
+[tool.setuptools.exclude-package-data]
+yaas_triage = ["**/__pycache__/*", "**/*.pyc"]

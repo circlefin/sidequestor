@@ -1,9 +1,0 @@
-{
-  "name": "no_active_quests",
-  "why": "The zero-active-quests early exit (gate_idle_no_quests) is its own code path \u2014 it returns before the check phase, counters, and dispatch. Every other scenario has >=1 quest, so without this the branch is never executed by either orchestrator.",
-  "quests": {},
-  "checkers": {},
-  "agent": {
-    "exit": 0
-  }
-}
