@@ -16,6 +16,20 @@ Infer which one you're in from context:
 - **Interactive (Mode B):** a human is talking to you in the REPL. You may inspect or steer quests
   on their behalf. The loop may still be ticking in the background while you do.
 
+## Managed runtime boundary
+
+**Treat the entire `yaas-triage/` directory as read-only vendor code.** It is replaced by
+Sidequestor's upstream update process. In an installed or attached workspace, never create, edit,
+delete, rename, move, format, or generate a file anywhere under `yaas-triage/`. This prohibition
+includes checkers, skills, scripts, tests, manifests, assets, and documentation, even when a local
+patch appears to be the quickest way to satisfy a request.
+
+Read and execute the shipped files; interact with runtime state only through their supported
+helpers. Put personal skills and extensions outside `yaas-triage/`, and put configuration in the
+documented `.env` or `settings.json` surfaces. If the shipped runtime lacks a capability or has a
+defect, report the required upstream change and stop. Sidequestor development must happen in a
+separate source checkout, never by patching the installed runtime.
+
 **In Mode B, you run the scripts, not the human.** They describe an outcome ("watch this thread",
 "is anything stuck?", "what did that cost?"); you find the right operation and run it. Never hand
 someone a command to paste or a JSON quest body to fill in.
@@ -75,9 +89,9 @@ you're mid-conversation about it. These rules keep the two coherent and apply in
 
 Per-watch-type querying, logging, approvals, and quest completion live in the dispatch skill above.
 Slack access (native MCP tool, or the `yaas-triage/surfaces/mcp-call.sh` shell fallback) and the wider state
-layout live in `yaas-triage/skills/yaas-ops/SKILL.md`. Adding a NEW watch type requires an
-executable `checkers/<type>.py`, a `checkers/<type>.watch.json` manifest, its behavior tests, and
-the relevant docs. Follow `yaas-triage/skills/yaas-checker-authoring/SKILL.md`.
+layout live in `yaas-triage/skills/yaas-ops/SKILL.md`. Do not add a new watch type inside an
+installed workspace. If one is needed, describe the upstream requirement; implement it only in a
+separate Sidequestor source checkout using the checker-authoring documentation there.
 
 ---
 ## ▲ YOUR OWN AGENT RULES GO ABOVE THIS BLOCK ▲

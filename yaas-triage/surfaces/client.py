@@ -59,6 +59,17 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+SURFACES_DIR = str(Path(__file__).resolve().parent)
+if SURFACES_DIR not in sys.path:
+    sys.path.insert(0, SURFACES_DIR)
+
+from slack_credentials import (  # noqa: E402
+    AuthenticationError as SlackAuthenticationError,
+    CredentialError as SlackCredentialError,
+    TransientCredentialError as SlackTransientCredentialError,
+    get_access_token as get_slack_access_token,
+)
+
 OK, AUTH, ERROR, BAD_ARGS, TRANSIENT = 0, 1, 2, 3, 4
 
 TIMEOUT = 30
@@ -221,6 +232,57 @@ def request(url, method="GET", headers=None, body=None, timeout=TIMEOUT):
         return e.code, e.read().decode("utf-8", "replace")
 
 
+def slack_auth_rejected(status, body):
+    """True only when Slack proves the bearer token was rejected before the operation."""
+    if status == 401:
+        return True
+    try:
+        payload = json.loads(unwrap_sse(body or ""))
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+
+    errors = []
+    error = payload.get("error")
+    if isinstance(error, dict):
+        errors.append(str(error.get("message", "")))
+    elif error is not None:
+        errors.append(str(error))
+
+    result = payload.get("result")
+    if isinstance(result, dict) and result.get("isError") is True:
+        for content in result.get("content") or []:
+            if isinstance(content, dict):
+                errors.append(str(content.get("text", "")))
+
+    markers = ("token_expired", "token_revoked", "invalid_auth", "not_authed",
+               "unauthenticated")
+    return any(marker in message.lower() for message in errors for marker in markers)
+
+
+def slack_request(url, method="GET", headers=None, body=None, timeout=TIMEOUT):
+    """Make one Slack request, refreshing and retrying once only on proven auth rejection."""
+    token = get_slack_access_token()
+    request_headers = dict(headers or {})
+    request_headers["Authorization"] = f"Bearer {token}"
+    status, text = request(url, method, request_headers, body, timeout)
+    if not slack_auth_rejected(status, text):
+        return status, text
+
+    replacement = get_slack_access_token(rejected_token=token)
+    request_headers["Authorization"] = f"Bearer {replacement}"
+    return request(url, method, request_headers, body, timeout)
+
+
+def classify_credential_exception(exc):
+    if isinstance(exc, SlackTransientCredentialError):
+        return TRANSIENT
+    if isinstance(exc, SlackAuthenticationError):
+        return AUTH
+    return ERROR
+
+
 def fail(msg, code):
     print(f"ERROR: {msg}", file=sys.stderr)
     return code
@@ -258,19 +320,16 @@ def cmd_mcp(argv):
     except Exception as exc:
         return fail(f"arguments_json is not valid JSON: {exc}", BAD_ARGS)
 
-    token = keychain("slack-xoxp-token")
-    if not token:
-        return fail("no xoxp token in keychain (service=slack-xoxp-token, account=yaas)", AUTH)
-
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                           "params": {"name": tool, "arguments": args}})
     try:
-        status, raw = request(SLACK_MCP_URL, "POST", {
+        status, raw = slack_request(SLACK_MCP_URL, "POST", {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
             "MCP-Protocol-Version": "2025-06-18",
-            "Authorization": f"Bearer {token}",
         }, payload)
+    except SlackCredentialError as exc:
+        return fail(str(exc), classify_credential_exception(exc))
     except Exception as exc:
         return fail(f"{type(exc).__name__}: {exc}", classify_exception(exc))
 
@@ -338,16 +397,13 @@ def cmd_slack_react(argv):
     if action not in ("add", "remove"):
         return fail(f"action must be 'add' or 'remove', got {action!r}", BAD_ARGS)
 
-    token = keychain("slack-xoxp-token")
-    if not token:
-        return fail("no xoxp token in keychain (service=slack-xoxp-token, account=yaas)", AUTH)
-
     form = urllib.parse.urlencode({"channel": channel, "timestamp": ts, "name": emoji})
     try:
-        status, text = request(f"{SLACK_WEB_URL}/reactions.{action}", "POST", {
+        status, text = slack_request(f"{SLACK_WEB_URL}/reactions.{action}", "POST", {
             "Content-Type": "application/x-www-form-urlencoded",
-            "Authorization": f"Bearer {token}",
         }, form)
+    except SlackCredentialError as exc:
+        return fail(str(exc), classify_credential_exception(exc))
     except Exception as exc:
         return fail(f"{type(exc).__name__}: {exc}", classify_exception(exc))
 
@@ -375,13 +431,8 @@ def cmd_slack_profile(argv):
     if action not in ("get", "set"):
         return fail(f"action must be 'get' or 'set', got {action!r}", BAD_ARGS)
 
-    token = keychain("slack-xoxp-token")
-    if not token:
-        return fail("no xoxp token in keychain (service=slack-xoxp-token, account=yaas)", AUTH)
-
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": f"Bearer {token}",
     }
 
     if action == "get":
@@ -410,7 +461,9 @@ def cmd_slack_profile(argv):
         form = urllib.parse.urlencode({"profile": json.dumps(profile)})
 
     try:
-        status, text = request(url, "POST", headers, form)
+        status, text = slack_request(url, "POST", headers, form)
+    except SlackCredentialError as exc:
+        return fail(str(exc), classify_credential_exception(exc))
     except Exception as exc:
         return fail(f"{type(exc).__name__}: {exc}", classify_exception(exc))
 

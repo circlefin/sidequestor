@@ -65,6 +65,7 @@ for f in meta.json watch.json context.md timeline.ndjson; do : > "$REPO/state/qu
 printf '{"id":"q-demo","title":"Demo","status":"active","allow_send":true}\n' \
   > "$REPO/state/quests/active/q-demo/meta.json"
 printf '{"watches":[]}\n' > "$REPO/state/quests/active/q-demo/watch.json"
+( cd "$REPO" && python3 yaas-triage/ledger/approval-helper.py ensure-inbox >/dev/null )
 
 # Stub Slack. `newest_ts` in the thread response is what the guard reads; the send/draft
 # calls return the shapes slack-send.py parses.

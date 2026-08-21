@@ -54,7 +54,7 @@ bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 eq()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 
 python3 - "$SCRIPT_DIR" <<'PYEOF'
-import sys, importlib.util
+import json, sys, importlib.util
 spec = importlib.util.spec_from_file_location("client", f"{sys.argv[1]}/surfaces/client.py")
 c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
 
@@ -152,6 +152,42 @@ for bad_path in ("https://evil.example.com/x", "rest/api/3/myself", "//evil.exam
         bad(f"path guard allowed {bad_path!r}")
     else:
         ok(f"path guard rejects {bad_path!r}")
+
+print()
+print("── a definitive token rejection refreshes and retries exactly once ─────────")
+ordinary_content = json.dumps({
+    "result": {"content": [{"type": "text", "text": "customer wrote token_expired"}]}
+})
+eq("ordinary MCP content cannot trigger refresh",
+   c.slack_auth_rejected(200, ordinary_content), False)
+tokens = []
+def fake_token(rejected_token=None):
+    tokens.append(rejected_token)
+    return "first-token" if rejected_token is None else "replacement-token"
+
+requests = []
+def rejected_then_ok(url, method="GET", headers=None, body=None, timeout=c.TIMEOUT):
+    requests.append(headers["Authorization"])
+    if len(requests) == 1:
+        return 401, '{"ok":false,"error":"token_expired"}'
+    return 200, '{"result":{"content":[{"type":"text","text":"refreshed"}]}}'
+
+c.get_slack_access_token = fake_token
+c.request = rejected_then_ok
+eq("MCP succeeds after refresh", c.cmd_mcp(["slack_search", "{}"]), c.OK)
+eq("rejected token is passed back", tokens, [None, "first-token"])
+eq("request uses replacement once", requests,
+   ["Bearer first-token", "Bearer replacement-token"])
+
+requests.clear()
+def ambiguous_timeout(*args, **kwargs):
+    requests.append("attempt")
+    raise TimeoutError("ambiguous")
+
+c.request = ambiguous_timeout
+eq("ambiguous operation failure stays transient",
+   c.cmd_slack_react(["add", "C1", "1.1", "eyes"]), c.TRANSIENT)
+eq("ambiguous operation is not retried", requests, ["attempt"])
 
 print()
 print(f"  ── module: {P} passed, {F} failed")

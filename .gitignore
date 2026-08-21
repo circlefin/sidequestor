@@ -54,6 +54,7 @@ state/quests/completed/*
 !state/quests/completed/.gitkeep
 state/quests/archived/*
 !state/quests/archived/.gitkeep
+state/bin/
 # gws export default output artifacts (do not commit)
 download.txt
 download.html

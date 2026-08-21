@@ -97,14 +97,11 @@ PY
 [ "$?" -eq 0 ] && ok "dashboard queues and can cancel instructions outside the review carousel" \
   || bad "dashboard queue/cancel projection failed"
 
-echo "-- arming failure is reported and terminal --"
-BAD=$(A enqueue-instruction '{"quest_id":"missing","instruction":"do work"}' 2>/dev/null)
-BAD_ID=$(printf '%s' "$BAD" | python3 -c 'import json,sys; print(json.load(sys.stdin)["approval_id"])')
-ARM_RESULT=$(A arm-pending-instructions 2>/dev/null)
-RC=$?
-eq "unarmed tick reports failure" "$RC" "3"
-eq "failed arm is counted" "$(printf '%s' "$ARM_RESULT" | jq -r '.cancelled')" "1"
-eq "unarmed item is retained as cancelled audit" "$(jq -r --arg id "$BAD_ID" '.items[] | select(.id==$id) | .status' state/pending-approvals.json)" "cancelled"
+echo "-- inactive quests are rejected before persistence --"
+BEFORE=$(jq '.items | length' state/pending-approvals.json)
+A enqueue-instruction '{"quest_id":"missing","instruction":"do work"}' >/dev/null 2>&1
+eq "inactive manual instruction fails synchronously" "$?" "2"
+eq "rejected instruction never enters the ledger" "$(jq '.items | length' state/pending-approvals.json)" "$BEFORE"
 
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

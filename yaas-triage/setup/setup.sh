@@ -19,7 +19,7 @@
 #
 # Walks a new user through:
 #   1. Reading adapter configuration
-#   2. Optionally running Slack OAuth with PKCE and storing the xoxp token
+#   2. Optionally running Slack OAuth with PKCE and storing a rotating token pair
 #   3. Running a smoke test when local Slack checking is enabled
 #   4. Optionally installing the launchd jobs
 #
@@ -68,7 +68,7 @@ print_manifest() {
     "settings:",
     "  org_deploy_enabled: false",
     "  socket_mode_enabled: false",
-    "  token_rotation_enabled: false"
+    "  token_rotation_enabled: true"
   ' "$CONFIG"
 }
 
@@ -84,6 +84,10 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 # shellcheck source=../../.env
 set -a; source "$ENV_FILE"; set +a
+
+# Every approval needs a real quest owner. Create the permanent Inbox before any
+# launchd job or dashboard can accept unlinked work.
+python3 "$TRIAGE_DIR/ledger/approval-helper.py" ensure-inbox >/dev/null
 
 SLACK_CHECKERS_ENABLED="${YAAS_SLACK_CHECKERS_ENABLED:-1}"
 case "$SLACK_CHECKERS_ENABLED" in
@@ -298,46 +302,44 @@ if [ "$OK" != "true" ]; then
   exit 1
 fi
 
-TOKEN=$(printf '%s' "$EXCHANGE" | jq -r '.authed_user.access_token')
 TEAM=$(printf '%s' "$EXCHANGE" | jq -r '.team.name // .team.id')
 USER_ID=$(printf '%s' "$EXCHANGE" | jq -r '.authed_user.id')
 
-if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-  echo "ERROR: no user token in response. Response had keys:" >&2
-  printf '%s' "$EXCHANGE" | jq 'keys' >&2
+if [ -z "$USER_ID" ] || [ "$USER_ID" = "null" ]; then
+  echo "ERROR: no user ID in OAuth response. Response had keys:" >&2
+  printf '%s' "$EXCHANGE" | jq 'del(.access_token, .refresh_token, .authed_user.access_token, .authed_user.refresh_token) | keys' >&2
   exit 1
 fi
 
-echo "✓ Token issued for user $USER_ID in workspace $TEAM (length ${#TOKEN})"
+echo "✓ Rotating credentials issued for user $USER_ID in workspace $TEAM"
 
 # ── Store in keychain ───────────────────────────────────────────────────────
-# Note: `security add-generic-password -w "$TOKEN"` puts the token on this
-# process's argv for the ~ms the `security` binary runs, briefly visible via
-# `ps` to other local users. The macOS `security` CLI has no argv-free way to
-# pass a generic-password value (no stdin mode), so this one-time, setup-moment
-# exposure is accepted. The recurring token use (mcp-call.sh) is argv-free.
-security delete-generic-password -s slack-xoxp-token -a yaas > /dev/null 2>&1 || true
-security add-generic-password \
-  -s slack-xoxp-token \
-  -a yaas \
-  -w "$TOKEN" \
-  -D "Slack user OAuth token for yaas bash triage" \
-  -j "Issued $(date -u +%Y-%m-%dT%H:%M:%SZ) for user $USER_ID in $TEAM via setup.sh"
+# The complete OAuth response travels over stdin. Neither token appears in a
+# subprocess argument, and the credential module validates the replacement pair
+# before changing Keychain.
+if ! printf '%s' "$EXCHANGE" \
+  | python3 "$TRIAGE_DIR/surfaces/slack_credentials.py" install "$CLIENT_ID" >/dev/null; then
+  echo "ERROR: rotating Slack credentials were not installed" >&2
+  exit 1
+fi
 
-unset TOKEN
 unset EXCHANGE
 unset CODE
 unset CODE_VERIFIER
 
-echo "✓ Token stored in macOS Keychain (service=slack-xoxp-token, account=yaas)"
+echo "✓ Rotating credential bundle stored in macOS Keychain"
 echo
 
 # ── Quick connectivity check ────────────────────────────────────────────────
 echo "Testing Slack MCP connectivity..."
 echo
-TEST_RESULT=$("$TRIAGE_DIR/surfaces/mcp-call.sh" slack_read_user_profile '{"user_id":"me"}' 2>&1 || true)
+TEST_RESULT=$("$TRIAGE_DIR/surfaces/mcp-call.sh" slack_read_user_profile \
+  "{\"user_id\":\"$USER_ID\"}" 2>&1 || true)
 if printf '%s' "$TEST_RESULT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); sys.exit(0 if d else 1)" 2>/dev/null; then
   echo "✓ Slack MCP connection OK."
+  # Keep the prior token available for rollback until the new bundle proves it
+  # can read Slack. Deletion itself carries no secret in argv.
+  security delete-generic-password -s slack-xoxp-token -a yaas >/dev/null 2>&1 || true
 else
   echo "⚠️  Slack MCP check returned unexpected output. Token may need rotation."
   echo "   Output: $(printf '%s' "$TEST_RESULT" | head -c 200)"
@@ -455,7 +457,7 @@ echo "║  Manual run:     python3 $TRIAGE_DIR/tick.py"
 echo "║  Dry run:        DRY_RUN=1 python3 $TRIAGE_DIR/tick.py"
 echo "║  Dashboard:      $TRIAGE_DIR/ops/dashboard-start.sh  (http://localhost:8877)"
 if [ "$SLACK_CHECKERS_ENABLED" = "1" ]; then
-  echo "║  Rotate token:   rerun setup.sh"
+  echo "║  Token refresh:  automatic (manual: slack_credentials.py refresh-now)"
   echo "║  Revoke:         Settings → Manage apps in your Slack workspace    ║"
 else
   echo "║  Slack adapter:  local Python checking disabled in .env            ║"

@@ -90,14 +90,14 @@ other request. Don't run them in a terminal.
 **Prompt 1, into a fresh folder** (start your agent anywhere, it makes the directory):
 
 ```text
-Install https://github.com/circlefin/sidequestor.git into ./sidequestor. Follow its README's
+Install <the git link of this repo> into ./sidequestor. Follow its README's
 fresh-installation path, and stop when human approval is required.
 ```
 
 **Prompt 2, into an existing repository** (start your agent *inside that repository* first):
 
 ```text
-Attach https://github.com/circlefin/sidequestor.git to this repository. Follow its README's
+Attach <the git link of this repo> to this repository. Follow its README's
 existing-repository contract exactly, preserve all existing work, and stop on any unsafe collision.
 ```
 
@@ -273,6 +273,8 @@ clobber an existing `CLAUDE.md`, `.env.example`, or README.
   genuinely incompatible.
 - Keep the existing `.git` as the only writable history. Template sync stays available, through
   the separate `.git-yaas-v2` git-dir described below, and must never write to the host `.git`.
+- Treat `yaas-triage/` as read-only vendor code. Never customize, patch, generate into, or delete
+  anything beneath it in the attached repository; upstream sync owns the entire directory.
 - Show the complete diff and run the tests and doctor before asking approval for OAuth,
   background jobs, sending, or a commit.
 
@@ -301,9 +303,9 @@ Four properties make it safe to leave on:
 
 - **Opt-in.** Gated on `settings.json` → `sync.yaas_v2_auto_pull`, off until you say yes.
 - **Fast-forward only.** A diverged history stops the sync instead of auto-merging.
-- **Your edits win.** If any template-shipped file has uncommitted local changes, the pull is
-  skipped for the day rather than clobbering them. Customize whatever you want; you just sync
-  those files manually when you're ready.
+- **Local drift fails closed.** If any template-shipped file has uncommitted local changes, the
+  pull is skipped rather than overwriting them. Treat that as an integrity warning: inspect the
+  drift and restore the upstream version. Never use it as a customization mechanism.
 - **It never checks out.** The setup uses `read-tree` to populate an index without writing to the
   worktree, so wiring it up cannot overwrite a file. Outcome lands in
   `state/yaas-v2-sync-status.json`, so you can check it without reading logs.
@@ -511,6 +513,10 @@ reading before you hand it anything sensitive.
 ---
 
 ## Cartographer's Notes
+
+This section is for Sidequestor contributors working in a separate source checkout. In an installed
+or attached workspace, `yaas-triage/` is read-only; request an upstream change instead of following
+these contributor steps locally.
 
 ```
 yaas-triage/

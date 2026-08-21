@@ -119,8 +119,9 @@ SLACK_HOST = _dotenv("SLACK_WORKSPACE_DOMAIN")            # e.g. acme.slack.com
 JIRA_HOST  = (_dotenv("JIRA_BASE_URL").replace("https://", "")
                                       .replace("http://", "").rstrip("/"))
 
-WORKER_TIMEOUT_S = 1800  # mirrors YAAS_WORKER_TIMEOUT in tick.py — a log older than
-                         # this with no footer means the worker was killed, not running
+WORKER_TIMEOUT_S = 1800  # compatibility fallback for pre-lifecycle-record worker logs
+WORKER_STATE_FILE = STATE_DIR / "triage" / "worker-current.json"
+WORKER_HEARTBEAT_GRACE_S = 60
 LIVE_TAIL_LINES  = 60   # panel wants the fuller transcript; pill only shows the target name
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 QUEST_CREATE_TIMEOUT_S = 10
@@ -518,16 +519,68 @@ def _approval_draft_record(i: dict) -> dict:
 
 
 # ── Live run detector ──────────────────────────────────────────────────────
-# the worker dispatch writes logs/worker-latest.log at dispatch time: a header line with
-# the dirty targets, then a live-appended human-readable tool-call transcript
-# (tee'd through format-stream.py as the worker runs), ending with a
-# "=== Tokens: ..." footer once the worker exits. So "still running" = the
-# footer hasn't been written yet and the file is fresh enough that it isn't
-# just a killed/crashed run that never got to write one.
+# run-agent.py owns the subprocess, so its atomic heartbeat record is lifecycle truth.
+# Transcript parsing remains only for a run already in flight during an upgrade.
+
+def _worker_log_lines(log_name):
+    if not isinstance(log_name, str) or Path(log_name).name != log_name:
+        return []
+    try:
+        return (LOG_DIR / log_name).read_text().splitlines()
+    except OSError:
+        return []
+
+
+def _worker_tail(lines):
+    return [l for l in lines[3:] if l.strip() and not l.startswith("===")][-LIVE_TAIL_LINES:]
+
+
+def _heartbeat_age(value):
+    try:
+        then = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc).timestamp() - then.timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _lifecycle_matches_latest(current):
+    """Reject a terminal record left behind when a newer lifecycle write failed."""
+    latest = LOG_DIR / "worker-latest.log"
+    try:
+        return not latest.exists() or latest.resolve().name == current.get("log")
+    except OSError:
+        return False
 
 def build_live_run() -> dict:
+    not_running = {"running": False, "stale": False, "state": "idle",
+                   "targets": [], "started_at": None, "tail": []}
+    try:
+        current = json.loads(WORKER_STATE_FILE.read_text())
+    except (OSError, ValueError):
+        current = None
+
+    if (isinstance(current, dict) and current.get("schema") == 1
+            and current.get("state") in ("running", "exited")
+            and _lifecycle_matches_latest(current)):
+        if current["state"] == "exited":
+            return {**not_running, "state": "exited", "exit": current.get("exit"),
+                    "ended_at": current.get("ended_at")}
+        targets = [str(t) for t in current.get("targets", []) if t]
+        age = _heartbeat_age(current.get("heartbeat_at"))
+        stale = age is None or age > WORKER_HEARTBEAT_GRACE_S
+        return {
+            "running": not stale,
+            "stale": stale,
+            "state": "stale" if stale else "running",
+            "targets": targets,
+            "started_at": current.get("started_at"),
+            "tail": _worker_tail(_worker_log_lines(current.get("log"))),
+        }
+
+    # Compatibility fallback for a pre-upgrade worker with no lifecycle record.
     log_path = LOG_DIR / "worker-latest.log"
-    not_running = {"running": False, "targets": [], "started_at": None, "tail": []}
     if not log_path.exists():
         return not_running
 
@@ -541,7 +594,12 @@ def build_live_run() -> dict:
     if not lines:
         return not_running
 
-    finished = any(l.startswith("=== Tokens") for l in lines[-3:])
+    # Some agent backends emit the terminal stream event but do not append the
+    # token footer. Treat that event as terminal too, otherwise a completed
+    # worker remains visibly "running" until the stale timeout expires.
+    finished = any(l.startswith("=== Tokens") for l in lines[-3:]) or any(
+        l.startswith("[turn.completed]") for l in lines[-5:]
+    )
     age_s = datetime.now(timezone.utc).timestamp() - st.st_mtime
     if finished or age_s > WORKER_TIMEOUT_S:
         return not_running
@@ -556,12 +614,13 @@ def build_live_run() -> dict:
         elif l.startswith("Target:"):
             targets = [t.strip() for t in l.removeprefix("Target:").split(",") if t.strip()]
 
-    body = [l for l in lines[3:] if l.strip() and not l.startswith("===")]
     return {
         "running":    True,
+        "stale":      False,
+        "state":      "running",
         "targets":    targets,
         "started_at": started_at,
-        "tail":       body[-LIVE_TAIL_LINES:],
+        "tail":       _worker_tail(lines),
     }
 
 
@@ -898,7 +957,6 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             meta = json.loads((quest_dir / "meta.json").read_text())
         except Exception:
             continue
-
         last_action  = None
         last_blocked = None
         # True once ANY event other than `created` exists, i.e. a worker has actually
@@ -965,6 +1023,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             "backoff_watches": [],  # filled in below
             "ratelimited": False,   # filled in below (transient, from run-log)
             "ratelimited_count": 0,
+            "ratelimited_watches": [],
         })
 
     # Annotate quests with their backing-off watches from unacked-counts.json.
@@ -1063,18 +1122,23 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             pass
 
     # Annotate quests with recent rate-limiting (transient; from the run-log, not a state file).
-    rl_by_quest: dict[str, set] = {}
+    rl_by_quest: dict[str, dict] = {}
     for e in _recent_runlog_events("gate_watch_ratelimited", RATELIMIT_WINDOW_SEC):
         if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
                 and str(e.get("type", "")).startswith("slack_")):
             continue
         qid = e.get("quest")
         if qid and e.get("watch_id"):
-            rl_by_quest.setdefault(qid, set()).add(e.get("watch_id"))
+            rl_by_quest.setdefault(qid, {})[e["watch_id"]] = {
+                "watch_id": e["watch_id"],
+                "type": e.get("type", "unknown"),
+                "reason": e.get("reason", ""),
+            }
     for q in quests:
-        wl = rl_by_quest.get(q["id"], set())
+        wl = list(rl_by_quest.get(q["id"], {}).values())
         q["ratelimited"] = bool(wl)
         q["ratelimited_count"] = len(wl)
+        q["ratelimited_watches"] = wl
 
     recent_activity.sort(key=lambda x: x.get("ts") or "", reverse=True)
     recent_activity = recent_activity[:20]
@@ -1252,6 +1316,52 @@ def _control_activity(rec: dict) -> dict:
         "link_kind": rec.get("link_kind"),
     }
 
+def _retry_wait_text(next_retry_ts, now: float | None = None) -> str:
+    """Return a short, decision-oriented description of a scheduled retry."""
+    try:
+        remaining = max(0, float(next_retry_ts) - (time.time() if now is None else now))
+    except (TypeError, ValueError):
+        return "soon"
+    if remaining < 60:
+        return "in under a minute"
+    if remaining < 3600:
+        return f"in about {int(remaining // 60)}m"
+    if remaining < 86400:
+        return f"in about {int(remaining // 3600)}h"
+    return f"in about {int(remaining // 86400)}d"
+
+
+def _quest_health_detail(quest: dict, now: float | None = None) -> str:
+    """Explain whether a quest's watch state needs action or will self-recover."""
+    parts = []
+    blocked = quest.get("last_blocked") or {}
+    if blocked:
+        parts.append(f"Blocked: {blocked.get('reason') or 'no reason was recorded'}.")
+
+    backoffs = list(quest.get("backoff_watches") or [])
+    if backoffs:
+        watch = backoffs[0]
+        watch_type = watch.get("type") or "unknown watch"
+        reason = watch.get("last_error") or watch.get("last_status") or "no progress"
+        retry = _retry_wait_text(watch.get("next_retry_ts"), now)
+        suffix = f" {len(backoffs) - 1} other watch(es) are also backing off." if len(backoffs) > 1 else ""
+        parts.append(
+            f"{watch_type} is backing off after {reason}. "
+            f"Automatic retries continue; next attempt {retry}.{suffix}"
+        )
+
+    ratelimited = list(quest.get("ratelimited_watches") or [])
+    if ratelimited:
+        watch = ratelimited[0]
+        watch_type = watch.get("type") or "watch"
+        reason = watch.get("reason") or "the upstream service limited requests"
+        parts.append(f"{watch_type} was rate limited ({reason}). The loop will retry on a later tick.")
+
+    if not backoffs and not ratelimited:
+        parts.append("No automatic retry is scheduled, so this needs your intervention.")
+    return " ".join(parts)
+
+
 def build_control() -> dict:
     dashboard = build_dashboard()
     messages = build_messages()
@@ -1278,7 +1388,7 @@ def build_control() -> dict:
             attention.append({
                 "id": f"quest:{quest['id']}:health", "kind": "quest_health",
                 "priority": "high", "label": "Quest needs attention",
-                "detail": (quest.get("last_blocked") or {}).get("reason") or "Watch needs recovery",
+                "detail": _quest_health_detail(quest),
                 "quest_id": quest["id"], "quest_title": quest["title"],
             })
 
@@ -1675,23 +1785,13 @@ def _ensure_approval_watch(item: dict) -> bool:
     worse than an unwatched item, which the stranded-watch sweep still
     catches. Returns whether a watch is known to be in place.
     """
-    status = item.get("status")
-    quest_id = item.get("quest_id") or ""
     approval_id = item.get("id") or ""
-    if status in TERMINAL_APPROVAL_STATUSES or not quest_id or not approval_id:
+    if item.get("status") in TERMINAL_APPROVAL_STATUSES or not approval_id:
         return False
-    if not (STATE_DIR / "quests" / "active" / quest_id).is_dir():
-        return False
-    entry = {
-        "type": "approval",
-        "approval_id": approval_id,
-        "last_checked_ts": str(int(datetime.now(timezone.utc).timestamp())),
-        "reason": f"execute reviewed approval {approval_id}",
-    }
     try:
         cp = subprocess.run(
-            ["python3", str(SCRIPT_DIR.parent / "ledger" / "add-watch.py"),
-             quest_id, json.dumps(entry)],
+            ["python3", str(SCRIPT_DIR.parent / "ledger" / "approval-helper.py"),
+             "arm", approval_id],
             capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=20,
         )
     except Exception as exc:

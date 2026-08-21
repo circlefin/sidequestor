@@ -180,6 +180,7 @@ def _queue_for_review(p, reason):
     payload = {
         "quest_id": quest_id,
         "quest_title": p.get("quest_title", quest_id),
+        "source": "stale_reply_guard",
         "action_type": "slack_message",
         "target": {"channel_id": p.get("channel_id"), "thread_ts": p.get("thread_ts")},
         "message_text": p.get("message"),

@@ -190,10 +190,33 @@ fi
 section "Slack credentials"
 if [ "${SLACK_CHECKERS_ENABLED:-1}" = "0" ]; then
   ok "Slack OAuth token not required while local Slack checkers are disabled"
+elif security find-generic-password -s slack-oauth-token-bundle -a yaas >/dev/null 2>&1; then
+  CREDENTIAL_STATUS=$(python3 "$REPO_ROOT/yaas-triage/surfaces/slack_credentials.py" status 2>/dev/null || true)
+  CREDENTIAL_MODE=$(printf '%s' "$CREDENTIAL_STATUS" | jq -r '.mode // "error"' 2>/dev/null)
+  CREDENTIAL_COMPLETE=$(printf '%s' "$CREDENTIAL_STATUS" | jq -r '.complete // false' 2>/dev/null)
+  if [ "$CREDENTIAL_MODE" = "rotating" ] && [ "$CREDENTIAL_COMPLETE" = "true" ]; then
+    ACCESS_REMAINING=$(printf '%s' "$CREDENTIAL_STATUS" | jq -r '.access_expires_in // 0')
+    REFRESH_REMAINING=$(printf '%s' "$CREDENTIAL_STATUS" | jq -r '.refresh_expires_in // 0')
+    if [ "$REFRESH_REMAINING" -le 0 ]; then
+      fail "rotating Slack credential's refresh token has also expired — rerun ./yaas-triage/setup/setup.sh"
+    elif [ "$ACCESS_REMAINING" -le 0 ]; then
+      ok "rotating Slack credential bundle is complete (access token expired, will refresh on next use; refresh valid for about $(( REFRESH_REMAINING / 3600 ))h)"
+    else
+      ok "rotating Slack credential bundle is complete (access expires in about $(( ACCESS_REMAINING / 60 ))m)"
+    fi
+  else
+    fail "Slack credential bundle is incomplete or unreadable — rerun ./yaas-triage/setup/setup.sh"
+  fi
 elif security find-generic-password -s slack-xoxp-token -a yaas >/dev/null 2>&1; then
-  ok "Slack OAuth token in Keychain (service=slack-xoxp-token, account=yaas)"
+  LEGACY_TOKEN=$(security find-generic-password -s slack-xoxp-token -a yaas -w 2>/dev/null || true)
+  case "$LEGACY_TOKEN" in
+    xoxp-*) ok "legacy long-lived Slack credential is installed" ;;
+    xoxe.xoxp-*) fail "rotating Slack credential has no refresh token — rerun ./yaas-triage/setup/setup.sh" ;;
+    *) fail "Slack credential has an unsupported format — rerun ./yaas-triage/setup/setup.sh" ;;
+  esac
+  unset LEGACY_TOKEN
 else
-  fail "Slack token not in Keychain — run ./setup/setup.sh"
+  fail "Slack token not in Keychain — run ./yaas-triage/setup/setup.sh"
 fi
 
 # ── 5. State directory ──────────────────────────────────────────────────────

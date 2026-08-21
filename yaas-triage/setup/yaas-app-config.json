@@ -15,7 +15,6 @@
     "search:read.private",
     "search:read.mpim",
     "search:read.im",
-    "search:read.users",
     "users:read",
     "users:read.email",
     "chat:write",

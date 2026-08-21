@@ -76,6 +76,31 @@ def _repo_root(start):
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = _repo_root(__file__)
 DEFAULT_TIMEOUT = 1800
+WORKER_STATE_FILE = REPO_ROOT / "state" / "triage" / "worker-current.json"
+DEFAULT_HEARTBEAT_SECONDS = 15
+
+
+def utc_now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def write_json_atomic(path, value):
+    """Publish one complete lifecycle observation or leave the old one intact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w") as f:
+            json.dump(value, f, separators=(",", ":"))
+            f.write("\n")
+        os.replace(tmp, path)
+    except OSError as exc:
+        print(f"worker lifecycle write failed: {exc}", file=sys.stderr)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def slugify(label):
@@ -119,8 +144,8 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
     human = log_dir / f"worker-{stamp}-{slug}.log"
     ndjson = log_dir / f"worker-{stamp}-{slug}.ndjson"
 
-    # worker-latest.* points at the invocation in flight; the dashboard's live panel
-    # follows these, so they must be updated before the agent starts, not after.
+    # Keep the operator-facing aliases on the invocation in flight. The dashboard uses
+    # the lifecycle record below, but pre-upgrade readers still follow these symlinks.
     for link, target in ((log_dir / "worker-latest.log", human),
                          (log_dir / "worker-latest.ndjson", ndjson)):
         try:
@@ -130,8 +155,9 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
         except OSError:
             pass
 
+    started_at = utc_now()
     with open(human, "w") as f:
-        f.write(f"=== Worker dispatch {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} ===\n")
+        f.write(f"=== Worker dispatch {started_at} ===\n")
         for line in (header or []):
             f.write(line + "\n")
         f.write("=" * 56 + "\n")
@@ -148,6 +174,32 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
     # (below) compares against it; the read loop stamps it on every line.
     state = {"timed_out": False, "stalled": False, "last_line": started}
 
+    lifecycle_lock = threading.Lock()
+    lifecycle = {
+        "schema": 1,
+        "run_ref": f"{stamp}-{slug}",
+        "state": "running",
+        "targets": [label],
+        "agent": os.environ.get("YAAS_AGENT", "claude"),
+        "supervisor_pid": os.getpid(),
+        "started_at": started_at,
+        "heartbeat_at": started_at,
+        "ended_at": None,
+        "exit": None,
+        "timed_out": False,
+        "stalled": False,
+        "log": human.name,
+        "ndjson": ndjson.name,
+    }
+
+    def publish_lifecycle(**changes):
+        with lifecycle_lock:
+            lifecycle.update(changes)
+            write_json_atomic(WORKER_STATE_FILE, lifecycle)
+
+    # This record, not the transcript format, is the dashboard's lifecycle truth.
+    publish_lifecycle()
+
     # Inactivity watchdog threshold. A model/transport round-trip can hang after emitting
     # a tool_use with no further stream output, in which case the only thing that fires is
     # the outer `timeout` watchdog, so a worker silent after one tool_use burns the whole
@@ -161,11 +213,30 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
     except ValueError:
         stall_seconds = 900
 
-    agent = subprocess.Popen(
-        ["bash", str(SCRIPT_DIR / "dispatch-agent.sh"), prompt],
-        stdout=subprocess.PIPE,
-        stderr=open(str(ndjson) + ".err", "w"),
-        env=env, start_new_session=True)
+    try:
+        agent = subprocess.Popen(
+            ["bash", str(SCRIPT_DIR / "dispatch-agent.sh"), prompt],
+            stdout=subprocess.PIPE,
+            stderr=open(str(ndjson) + ".err", "w"),
+            env=env, start_new_session=True)
+    except Exception:
+        publish_lifecycle(state="exited", heartbeat_at=utc_now(), ended_at=utc_now(), exit=1)
+        raise
+
+    try:
+        heartbeat_seconds = max(
+            0.1, float(os.environ.get("YAAS_WORKER_HEARTBEAT_SECONDS",
+                                      DEFAULT_HEARTBEAT_SECONDS)))
+    except (TypeError, ValueError):
+        heartbeat_seconds = DEFAULT_HEARTBEAT_SECONDS
+    heartbeat_stop = threading.Event()
+
+    def heartbeat_loop():
+        while not heartbeat_stop.wait(heartbeat_seconds):
+            publish_lifecycle(heartbeat_at=utc_now())
+
+    heartbeat = threading.Thread(target=heartbeat_loop, daemon=True)
+    heartbeat.start()
 
     fmt = subprocess.Popen(
         ["python3", str(SCRIPT_DIR / "format-stream.py")],
@@ -261,6 +332,11 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
     # its item's work completed, so acks banked before the kill still commit. A stall kill
     # uses the same code/path — the STALL marker in the human log is what distinguishes it.
     code = 124 if state["timed_out"] else (agent.returncode if agent.returncode is not None else 1)
+    heartbeat_stop.set()
+    heartbeat.join(timeout=max(1, heartbeat_seconds + 1))
+    ended_at = utc_now()
+    publish_lifecycle(state="exited", heartbeat_at=ended_at, ended_at=ended_at,
+                      exit=code, timed_out=state["timed_out"], stalled=state["stalled"])
     return {"exit": code, "wall_sec": int(time.time() - started),
             "log": str(human), "ndjson": str(ndjson),
             "timed_out": state["timed_out"], "stalled": state["stalled"]}

@@ -50,6 +50,7 @@ yaas-triage/
 state/
 ├── triage/
 │   ├── last-run.json         ← triage run counters + last completion time
+│   ├── worker-current.json   ← atomic worker lifecycle + heartbeat for the dashboard
 │   └── pending_reactions.json  ← transient: reactions awaiting worker (deleted on success)
 ├── quests/
 │   ├── active/               ← ongoing quests (4-file folders)
@@ -267,12 +268,16 @@ python3 yaas-triage/ops/health-monitor.py   # is it working right now
 yaas-triage/tests/run-all.sh     # is the code correct (fixtures, safe any time)
 ```
 
-With local Slack checking enabled, `setup.sh` walks through Slack OAuth (PKCE flow, no client secret needed), stores the user `xoxp`
-token in macOS Keychain at `(service=slack-xoxp-token, account=yaas)`, runs a connectivity check,
+With local Slack checking enabled, `setup.sh` walks through Slack OAuth (PKCE flow, no client secret needed), stores the complete rotating user-token bundle
+in macOS Keychain at `(service=slack-oauth-token-bundle, account=yaas)`, runs a connectivity check,
 and offers the triage, independent heartbeat, and dashboard launchd jobs. It can also initialize
 opt-in daily template tracking and run verification. Each user creates their own Slack app at
 https://api.slack.com/apps from the manifest printed by `setup.sh --manifest`; the manifest and
 OAuth flow share `setup/yaas-app-config.json`, so their scopes cannot drift.
+
+The deterministic Slack adapter refreshes within five minutes of access-token expiry. It also
+refreshes and retries once after a definitive token rejection. `python3 yaas-triage/surfaces/slack_credentials.py status`
+reports redacted credential health; `refresh-now` performs an immediate manual rotation.
 
 Set `YAAS_SLACK_CHECKERS_ENABLED=0` when no local Slack app is available. Setup and doctor then
 treat Slack app fields and the Keychain token as intentionally absent. The tick skips all

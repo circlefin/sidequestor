@@ -157,6 +157,30 @@ route_actions = sorted(set(module.approval_state.HTTP_ACTIONS) | {"prompt"})
 assert module.build_dashboard()["briefs"] == [], "build_dashboard() builds briefings by default"
 assert module.build_dashboard(include_briefs=True)["briefs"], "opt-in briefings are missing"
 
+# A recovery warning must answer the operator's actual question: wait for a retry or intervene.
+retrying = module._quest_health_detail({
+    "backoff_watches": [{
+        "type": "github_issue", "last_error": "GitHub is unavailable",
+        "next_retry_ts": "4600",
+    }],
+}, now=1000)
+assert retrying == (
+    "github_issue is backing off after GitHub is unavailable. "
+    "Automatic retries continue; next attempt in about 1h."
+), retrying
+blocked = module._quest_health_detail({"last_blocked": {"reason": "Slack permission was revoked"}}, now=1000)
+assert blocked == (
+    "Blocked: Slack permission was revoked. "
+    "No automatic retry is scheduled, so this needs your intervention."
+), blocked
+ratelimited = module._quest_health_detail({
+    "ratelimited_watches": [{"type": "slack_thread", "reason": "retry after 60 seconds"}],
+}, now=1000)
+assert ratelimited == (
+    "slack_thread was rate limited (retry after 60 seconds). "
+    "The loop will retry on a later tick."
+), ratelimited
+
 html = open("dashboard.html").read()
 assert 'data-mode="briefings"' in html, "Briefings desktop mode is missing"
 assert 'id="mode-menu-trigger"' in html, "compact mode menu is missing"

@@ -25,9 +25,8 @@ writes new items and "executing"/"executed").
 Sub-commands
 ────────────
 write <json>
-    Add a new pending_review item. <json> must be a JSON object with at least:
-      quest_id, quest_title, action_type, target (object), message_text,
-      context, risk_reason
+    Add a new pending_review item. Missing quest_id and the reserved reactions
+    source are normalized to quest-inbox; an unknown explicit quest is rejected.
     Prints the generated approval ID on success.
     Prints nothing (exit 0) if an identical pending entry already exists
     (same quest_id + target.channel_id + target.thread_ts).
@@ -42,8 +41,14 @@ enqueue-instruction <json>
     The next locked tick arms its approval watch. Prints a JSON result.
 
 arm-pending-instructions
-    Arm every queued manual instruction. Called by tick.py only after it has
-    acquired the global triage lock.
+    Arm queued manual instructions and retry explicitly unarmed approvals.
+    Called by tick.py only after it has acquired the global triage lock.
+
+ensure-inbox
+    Idempotently create the permanent Inbox quest. Called by setup.sh.
+
+migrate-inbox
+    One-time migration of legacy blank/reaction approvals into Inbox.
 
 start <id>
     Transition status pending_review|reviewed → executing.
@@ -72,6 +77,7 @@ abandon <id> <reason>
 from __future__ import annotations  # PEP 604 unions below must not be
 # evaluated at def time: this file has to import on Python < 3.10.
 
+import fcntl
 import json
 import os
 import random
@@ -167,83 +173,81 @@ def _new_id(data: dict) -> str:
             return approval_id
 
 
-# Reaction-sourced drafts arrive with quest_id "reactions", which is the fast-path target and
-# has no quest folder — so the approval watch could never arm and the item stranded at
-# "reviewed" forever. They are routed to a durable executor-only host quest
-# instead. This is a SPECIFIC map for the one known non-quest target, NOT a generic
-# "missing quest -> fallback" (that would hide typos and funnel unrelated broken approvals
-# into the host, per review).
+# Every approval has one dispatch owner. Unlinked work is filed into the permanent Inbox quest;
+# `source` records where it came from without creating a second routing identity.
 REACTIONS_TARGET = "reactions"
-HOST_QUEST = "quest-reactions-approvals"
+INBOX_QUEST = "quest-inbox"
+LEGACY_HOST_QUEST = "quest-reactions-approvals"
 
-_HOST_CONTEXT = """# Reaction approval executor
+_INBOX_CONTEXT = """# Inbox
 
-This quest exists for ONE job: hold the `approval` watches for drafts that originated from a
-Slack `draft` reaction, which has no quest of its own, and let the normal
-reviewed-approval execution path (CLAUDE.md §3d) send them once a human approves.
+This permanent quest owns one-off work that did not originate in another quest. Each approval
+is independent and must be processed from the exact `approval` watch named in the dispatch.
 
 Rules for the worker dispatched here:
 - Execute the reviewed approval item(s) per §3d (`approval-helper.py start` -> send -> `done`).
-  That is the whole task.
-- Do NOT append a `slack_thread` watch afterward. The conversation lives in its original
-  thread, not here; this quest must stay an executor and never accrue follow-up watches.
-- Never mark this quest completed or archived. It is permanent and usually empty.
+  Process every fired approval watch separately; one failure must not block its siblings.
+- Reactions still use their fast path unless they require review. Only reviewed reaction work
+  lands here.
+- If an item becomes ongoing work, create or adopt a dedicated quest rather than growing Inbox
+  into a project.
+- Never mark Inbox completed or archived. It is permanent and usually empty.
 """
 
 
-def _ensure_host_quest():
-    """Create the durable executor-only host quest if absent. Returns its watch.json path.
-
-    Self-bootstrapping so a fresh install and this machine both work with no manual step. The
-    quest starts with an empty watches[] (so it is dispatch-inert until an approval arms one)
-    and allow_send:false (executing a reviewed approval is already the human-authorized action;
-    the quest itself opens no new sends).
-    """
-    qdir = QUESTS_DIR / "active" / HOST_QUEST
+def _ensure_inbox():
+    """Create the permanent Inbox quest. Setup and explicit migrations call this."""
+    qdir = QUESTS_DIR / "active" / INBOX_QUEST
     watch = qdir / "watch.json"
-    if watch.exists():
-        return watch
     qdir.mkdir(parents=True, exist_ok=True)
-    (qdir / "meta.json").write_text(json.dumps({
-        "id": HOST_QUEST,
-        "title": "Reaction approval executor",
-        "status": "active",
-        "priority": "normal",
-        "allow_send": False,
-        "retire_slack_threads_after_days": "never",
-    }, indent=2) + "\n")
-    watch.write_text('{"watches": []}\n')
-    (qdir / "context.md").write_text(_HOST_CONTEXT)
-    (qdir / "timeline.ndjson").touch()
+    with open(QUESTS_DIR / ".quest-inbox.lock", "a+") as lockf:
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        meta_path = qdir / "meta.json"
+        if watch.exists():
+            return watch
+        meta_path.write_text(json.dumps({
+            "id": INBOX_QUEST,
+            "title": "Inbox",
+            "status": "active",
+            "priority": "normal",
+            "allow_send": False,
+            "system_role": "inbox",
+            "retire_slack_threads_after_days": "never",
+        }, indent=2) + "\n")
+        (qdir / "context.md").write_text(_INBOX_CONTEXT)
+        (qdir / "timeline.ndjson").touch()
+        # Publish watch.json last so tick.py cannot dispatch a half-built quest.
+        watch.write_text('{"watches": []}\n')
     return watch
 
 
 def cmd_write(payload_json: str):
     payload = json.loads(payload_json)
 
-    quest_id   = payload["quest_id"]
-    source     = None
-    if quest_id == REACTIONS_TARGET:
-        # Route to the durable host quest; keep the origin in `source` for provenance.
-        _ensure_host_quest()
-        source = REACTIONS_TARGET
-        quest_id = HOST_QUEST
+    requested_quest_id = str(payload.get("quest_id") or "").strip()
+    source = str(payload.get("source") or "").strip() or None
+    if not requested_quest_id or requested_quest_id == REACTIONS_TARGET:
+        source = source or (requested_quest_id or "unlinked")
+        quest_id = INBOX_QUEST
+    else:
+        quest_id = requested_quest_id
+    active_watch = QUESTS_DIR / "active" / quest_id / "watch.json"
+    if not active_watch.exists():
+        print(f"error:approval quest is not active:{quest_id}", file=sys.stderr)
+        raise SystemExit(2)
     target     = payload.get("target", {})
     channel_id = target.get("channel_id")
     thread_ts  = target.get("thread_ts")
 
     def _write(data):
-        nonlocal quest_id
-        if source and quest_id == HOST_QUEST:
-            pass
-        if source:
-            active_quest_id = quest_id
-        else:
-            active_quest_id = quest_id
         data.setdefault("items", [])
+        # Inbox can receive distinct review requests for the same thread from different
+        # producers. Ordinary quest dedup remains unchanged.
+        origin = source if quest_id == INBOX_QUEST else quest_id
         duplicate = any(
             i for i in data.get("items", [])
-            if i.get("quest_id") == active_quest_id
+            if (i.get("quest_id") or "") == quest_id
+            and ((i.get("source") or "") if quest_id == INBOX_QUEST else quest_id) == (origin or "")
             and i.get("status") == "pending_review"
             and i.get("target", {}).get("channel_id") == channel_id
             and i.get("target", {}).get("thread_ts") == thread_ts
@@ -254,8 +258,8 @@ def cmd_write(payload_json: str):
         now = datetime.now(timezone.utc).isoformat()
         item = {
             "id":           _new_id(data),
-            "quest_id":     active_quest_id,
-            "quest_title":  payload.get("quest_title", active_quest_id),
+            "quest_id":     quest_id,
+            "quest_title":  "Inbox" if quest_id == INBOX_QUEST else (payload.get("quest_title") or quest_id),
             "created_at":   now,
             "status":       "pending_review",
             "action_type":  payload.get("action_type", "slack_message"),
@@ -276,8 +280,99 @@ def cmd_write(payload_json: str):
     # Arm the tracking watch OUTSIDE the approvals lock (different file, its own
     # flock). Coupled here so an approval can never be created without its watch.
     if new_id:
-        _arm_approval_watch(quest_id, new_id)
+        cmd_arm(new_id, emit=False)
         print(new_id)
+
+
+def cmd_arm(approval_id: str, emit: bool = True) -> int:
+    """Ensure a non-terminal approval has a dispatch watch.
+
+    This is the shared re-arm boundary for dashboard transitions.
+    """
+    item = next((i for i in approval_store.read_queue().get("items", [])
+                 if i.get("id") == approval_id), None)
+    if item is None:
+        print(f"error:not_found:{approval_id}", file=sys.stderr)
+        return 1
+    if item.get("status") in ("executed", "cancelled"):
+        if emit:
+            print("not-needed")
+        return 0
+
+    quest_id = str(item.get("quest_id") or "").strip()
+    active_watch = QUESTS_DIR / "active" / quest_id / "watch.json"
+    if not quest_id or not active_watch.exists():
+        _flag_unarmed(approval_id, "approval quest is not active")
+        print("error:approval_quest_not_active", file=sys.stderr)
+        return 3
+    if not _arm_approval_watch(quest_id, approval_id):
+        return 3
+    approval_store.mutate_item(approval_id, lambda _current: {
+        "watch_armed": True,
+        "watch_arm_error": None,
+    })
+    if emit:
+        print("armed")
+    return 0
+
+
+def cmd_ensure_inbox() -> int:
+    print(_ensure_inbox())
+    return 0
+
+
+def cmd_migrate_inbox() -> int:
+    """One-time migration from blank/reaction/legacy-host approvals into Inbox."""
+    _ensure_inbox()
+
+    def _migrate(data):
+        migrated = []
+        for item in data.get("items", []):
+            quest_id = str(item.get("quest_id") or "").strip()
+            legacy_executor = str(item.get("executor_quest_id") or "").strip()
+            if (quest_id not in ("", REACTIONS_TARGET, LEGACY_HOST_QUEST)
+                    and legacy_executor != LEGACY_HOST_QUEST):
+                continue
+            item["source"] = item.get("source") or (quest_id if quest_id == REACTIONS_TARGET else "unlinked")
+            item["quest_id"] = INBOX_QUEST
+            item["quest_title"] = "Inbox"
+            item.pop("executor_quest_id", None)
+            migrated.append(item.get("id"))
+        return [x for x in migrated if x]
+
+    migrated_ids = approval_store.mutate_queue(_migrate)
+    armed = failed = 0
+    for approval_id in migrated_ids:
+        item = next((i for i in approval_store.read_queue().get("items", [])
+                     if i.get("id") == approval_id), {})
+        if item.get("status") in ("executed", "cancelled"):
+            continue
+        if cmd_arm(approval_id, emit=False) == 0:
+            armed += 1
+        else:
+            failed += 1
+
+    legacy_dir = QUESTS_DIR / "active" / LEGACY_HOST_QUEST
+    archived = False
+    if legacy_dir.exists() and failed == 0:
+        archive_root = QUESTS_DIR / "archived"
+        archive_root.mkdir(parents=True, exist_ok=True)
+        destination = archive_root / LEGACY_HOST_QUEST
+        if destination.exists():
+            destination = archive_root / f"{LEGACY_HOST_QUEST}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        try:
+            meta_path = legacy_dir / "meta.json"
+            meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+            meta["status"] = "archived"
+            meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+            os.replace(legacy_dir, destination)
+            archived = True
+        except OSError as exc:
+            print(f"warn:legacy_host_archive_failed:{exc}", file=sys.stderr)
+
+    print(json.dumps({"migrated": len(migrated_ids), "armed": armed,
+                      "failed": failed, "legacy_host_archived": archived}))
+    return 0 if failed == 0 else 3
 
 
 def cmd_enqueue_instruction(payload_json: str) -> int:
@@ -292,6 +387,9 @@ def cmd_enqueue_instruction(payload_json: str) -> int:
     instruction = str(payload.get("instruction") or "").strip()
     if not quest_id or not instruction:
         print("error:quest_id and instruction are required", file=sys.stderr)
+        return 2
+    if not (QUESTS_DIR / "active" / quest_id / "watch.json").exists():
+        print(f"error:approval quest is not active:{quest_id}", file=sys.stderr)
         return 2
 
     now = datetime.now(timezone.utc).isoformat()
@@ -353,9 +451,28 @@ def cmd_arm_pending_instructions() -> int:
             }, datetime.now(timezone.utc))
 
         approval_store.mutate_item(approval_id, _update)
+    # Creation and dashboard review normally arm synchronously. Retry the explicit
+    # watch_armed=false cases here so a transient filesystem/subprocess failure cannot
+    # leave an approved action stranded forever. Missing flags are legacy successes,
+    # not evidence of failure, so they are deliberately excluded.
+    retry_ids = [
+        i.get("id") for i in approval_store.read_queue().get("items", [])
+        if i.get("action_type") != "manual_instruction"
+        and i.get("status") not in ("executed", "cancelled")
+        and i.get("watch_armed") is False
+        and i.get("id")
+    ]
+    rearmed_count = retry_failed_count = 0
+    for approval_id in retry_ids:
+        if cmd_arm(str(approval_id), emit=False) == 0:
+            rearmed_count += 1
+        else:
+            retry_failed_count += 1
+
     print(json.dumps({"pending": len(pending), "armed": armed_count,
-                      "cancelled": cancelled_count}))
-    return 0 if cancelled_count == 0 else 3
+                      "cancelled": cancelled_count, "rearmed": rearmed_count,
+                      "retry_failed": retry_failed_count}))
+    return 0 if cancelled_count == 0 and retry_failed_count == 0 else 3
 
 
 def cmd_start(approval_id: str):
@@ -442,6 +559,12 @@ def main():
     cmd = sys.argv[1]
     if cmd == "write":
         cmd_write(sys.argv[2])
+    elif cmd == "arm":
+        sys.exit(cmd_arm(sys.argv[2]))
+    elif cmd == "ensure-inbox":
+        sys.exit(cmd_ensure_inbox())
+    elif cmd == "migrate-inbox":
+        sys.exit(cmd_migrate_inbox())
     elif cmd == "enqueue-instruction":
         sys.exit(cmd_enqueue_instruction(sys.argv[2]))
     elif cmd == "arm-pending-instructions":

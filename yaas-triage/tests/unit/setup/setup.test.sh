@@ -11,8 +11,10 @@ TRIAGE="$(cd "$HERE/../../.." && pwd -P)"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 REPO="$TMP/repo"
 SETUP="$REPO/yaas-triage/setup"
-mkdir -p "$SETUP"
+mkdir -p "$SETUP" "$REPO/yaas-triage/ledger"
 cp "$TRIAGE/setup/setup.sh" "$TRIAGE/setup/yaas-app-config.json" "$SETUP/"
+cp "$TRIAGE/ledger/approval-helper.py" "$TRIAGE/ledger/add-watch.py" "$REPO/yaas-triage/ledger/"
+cp "$TRIAGE/approval_state.py" "$TRIAGE/approval_store.py" "$REPO/yaas-triage/"
 cat > "$REPO/.env" <<'ENV'
 YAAS_SLACK_CHECKERS_ENABLED=0
 SLACK_APP_ID=
@@ -38,6 +40,17 @@ grep -q "Slack onboarding" "$OUT" \
   && bad "setup entered Slack OAuth" || ok "setup never enters Slack OAuth"
 grep -q "setup complete" "$OUT" \
   && ok "ordinary setup flow still completes" || bad "setup did not complete"
+[ -f "$REPO/state/quests/active/quest-inbox/watch.json" ] \
+  && ok "setup creates the permanent Inbox quest" || bad "setup did not create Inbox"
+grep -Fq 'slack_credentials.py" install "$CLIENT_ID"' "$TRIAGE/setup/setup.sh" \
+  && ok "OAuth response is installed through the credential module" \
+  || bad "setup bypasses the credential module"
+grep -Fq -- '-w "$TOKEN"' "$TRIAGE/setup/setup.sh" \
+  && bad "setup exposes a Slack token in process arguments" \
+  || ok "setup does not put Slack tokens in process arguments"
+grep -Fq '{"user_id":"me"}' "$TRIAGE/setup/setup.sh" \
+  && bad "setup smoke test still uses the unsupported me placeholder" \
+  || ok "setup smoke test uses the OAuth user ID"
 
 echo "setup without Slack: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

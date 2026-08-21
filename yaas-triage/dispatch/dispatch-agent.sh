@@ -41,6 +41,7 @@
 #   YAAS_CLAUDE_MODEL            default: opus
 #   YAAS_CLAUDE_EFFORT           claude --effort (low|medium|high|...); unset → omit flag
 #   YAAS_CODEX_MODEL             default: "" → codex uses ~/.codex/config.toml model
+#   YAAS_CODEX_EFFORT            reasoning effort (none|low|medium|high|xhigh|max); unset → config default
 #   YAAS_CURSOR_MODEL            default: "" → cursor uses its default (auto)
 
 set -uo pipefail
@@ -131,6 +132,17 @@ case "$BACKEND" in
       -c 'plugins."slack@openai-curated".enabled=false' \
       -C "$REPO_ROOT"
     [ -n "${YAAS_CODEX_MODEL:-}" ] && set -- "$@" -m "$YAAS_CODEX_MODEL"
+    if [ -n "${YAAS_CODEX_EFFORT:-}" ]; then
+      case "$YAAS_CODEX_EFFORT" in
+        none|low|medium|high|xhigh|max)
+          set -- "$@" -c "model_reasoning_effort=$YAAS_CODEX_EFFORT"
+          ;;
+        *)
+          echo "dispatch-agent.sh: invalid YAAS_CODEX_EFFORT='$YAAS_CODEX_EFFORT' (expected none, low, medium, high, xhigh, or max)" >&2
+          exit 2
+          ;;
+      esac
+    fi
     exec "$@" "$PROMPT"
     ;;
   cursor)

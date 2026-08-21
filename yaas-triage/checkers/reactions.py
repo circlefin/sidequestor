@@ -31,8 +31,9 @@ Usage:
   repo_root    — absolute path to the repo root
   pending_path — path to write pending_reactions.json
 
-Exit code: always 0. Prints one line to stdout for the original shell orchestrator to parse:
-  "<SGT_timestamp>  REACTIONS_DIRTY=1"  or  "...REACTIONS_DIRTY=0"
+Exit code follows the shared surface taxonomy: 0 ok, 1 auth, 2 error, 3 bad args,
+4 transient. Prints one line to stdout for the original shell orchestrator to parse:
+  "<SGT_timestamp>  REACTIONS_DIRTY=1"  or  "...REACTIONS_DIRTY=0" on success.
 Dirty emoji details go to stderr.
 """
 import subprocess
@@ -98,12 +99,22 @@ def main():
                 [mcp_call, "slack_search_public_and_private", json.dumps(args)],
                 capture_output=True, text=True, timeout=30,
             )
-            if r.returncode != 0 or not r.stdout.strip():
-                break
+            if r.returncode != 0:
+                detail = (r.stderr or r.stdout or "Slack adapter failed").strip().splitlines()[0]
+                kind = {1: "AUTH", 3: "BAD_ARGS", 4: "TRANSIENT"}.get(r.returncode, "ERROR")
+                print(f"REACTIONS_{kind}_ERROR: {detail}", file=sys.stderr)
+                print(f"{sgtnow()}  REACTIONS_{kind}_ERROR=1")
+                return r.returncode
+            if not r.stdout.strip():
+                print("REACTIONS_ERROR: Slack adapter returned no payload", file=sys.stderr)
+                print(f"{sgtnow()}  REACTIONS_ERROR=1")
+                return 2
             try:
                 d = json.loads(r.stdout)
             except Exception:
-                break
+                print("REACTIONS_ERROR: Slack adapter returned malformed JSON", file=sys.stderr)
+                print(f"{sgtnow()}  REACTIONS_ERROR=1")
+                return 2
             text = d.get("results", "")
             blocks = re.split(r"### Result \d+ of \d+", text)
             page_ts = []

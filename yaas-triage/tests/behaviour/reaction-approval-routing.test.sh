@@ -1,36 +1,5 @@
 #!/bin/bash
-# Copyright 2026 Circle Internet Group, Inc. All rights reserved.
-#
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# reaction-approval-routing.test.sh — a reaction draft's approval can actually self-execute.
-#
-# THE BUG. A :writing_hand: draft went to the review queue with quest_id="reactions", which has
-# no quest folder, so the approval watch never armed (watch_armed=false). When the human marked
-# it reviewed, nothing fired and it stranded at "reviewed" forever. A real self-DM draft sat
-# stuck this way.
-#
-# THE FIX (reviewed as the safest option). approval-helper.py routes reaction-sourced approvals
-# to a durable executor-only host quest, quest-reactions-approvals, so the ORDINARY reviewed-
-# approval path (checkers/approval.py fires -> triage dispatches -> worker executes) works
-# unchanged. It is a SPECIFIC map for the one known non-quest target, not a generic
-# missing-quest fallback (which would hide typos), and it fails toward the visible
-# watch_armed=false state rather than silently orphaning.
-#
-# This spans approval-helper.py (routing + bootstrap) and checkers/approval.py (firing), hence
-# behaviour/. Lives entirely in a temp tree; touches no real state.
+# Unlinked approvals are ordinary, independently watched items in the permanent Inbox quest.
 
 set -u
 _find_triage() {
@@ -49,88 +18,111 @@ ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 eq()  { [ "$2" = "$3" ] && ok "$1" || bad "$1 (want $3, got $2)"; }
 
-# Isolated repo tree with the real ledger + checkers.
-REPO="$TMP/repo"; mkdir -p "$REPO/yaas-triage/ledger" "$REPO/yaas-triage/checkers" "$REPO/state/quests/active"
-cp "$SCRIPT_DIR/ledger/approval-helper.py" "$REPO/yaas-triage/ledger/"
-cp "$SCRIPT_DIR/ledger/add-watch.py" "$REPO/yaas-triage/ledger/"
-[ -f "$SCRIPT_DIR/ledger/approval.py" ] && cp "$SCRIPT_DIR/ledger/approval.py" "$REPO/yaas-triage/ledger/" 2>/dev/null
-cp "$SCRIPT_DIR/tick_state.py" "$REPO/yaas-triage/"
+REPO="$TMP/repo"
+mkdir -p "$REPO/yaas-triage/ledger" "$REPO/yaas-triage/checkers" \
+  "$REPO/yaas-triage/ops" "$REPO/state/quests/active"
+cp "$SCRIPT_DIR/ledger/approval-helper.py" "$SCRIPT_DIR/ledger/add-watch.py" "$REPO/yaas-triage/ledger/"
+cp "$SCRIPT_DIR/tick_state.py" "$SCRIPT_DIR/tick_check.py" "$SCRIPT_DIR/reaction_config.py" "$REPO/yaas-triage/"
 cp "$SCRIPT_DIR"/checkers/*.py "$SCRIPT_DIR"/checkers/*.watch.json "$REPO/yaas-triage/checkers/"
 cp "$SCRIPT_DIR/approval_state.py" "$SCRIPT_DIR/approval_store.py" "$REPO/yaas-triage/"
+cp "$SCRIPT_DIR/ops/dashboard-server.py" "$REPO/yaas-triage/ops/"
+cp "$SCRIPT_DIR/../dashboard.html" "$REPO/dashboard.html"
 
 AH() { ( cd "$REPO" && python3 yaas-triage/ledger/approval-helper.py "$@" ); }
-HOST="$REPO/state/quests/active/quest-reactions-approvals"
+INBOX="$REPO/state/quests/active/quest-inbox"
 APPROVALS="$REPO/state/pending-approvals.json"
-
-echo "── a reaction approval is routed to the durable host quest ────────────────"
-ID=$(AH write '{"quest_id":"reactions","quest_title":"react","action_type":"slack_message","target":{"channel_id":"D1","thread_ts":"1.0"},"message_text":"hi","context":"c","risk_reason":"r"}')
-[ -n "$ID" ] && ok "write returned an id ($ID)" || bad "write returned nothing"
-[ -d "$HOST" ] && ok "the host quest was bootstrapped" || bad "host quest not created"
-eq "the item is re-homed to the host quest" \
-   "$(python3 -c "import json;print([i['quest_id'] for i in json.load(open('$APPROVALS'))['items'] if i['id']=='$ID'][0])")" \
-   "quest-reactions-approvals"
-eq "...with source=reactions kept for provenance" \
-   "$(python3 -c "import json;print([i.get('source') for i in json.load(open('$APPROVALS'))['items'] if i['id']=='$ID'][0])")" \
-   "reactions"
-
-echo
-echo "── the approval watch armed IN THE HOST (this is what was broken) ──────────"
-eq "the host watch.json carries the approval watch" \
-   "$(python3 -c "import json;print([w['approval_id'] for w in json.load(open('$HOST/watch.json'))['watches'] if w.get('type')=='approval'])")" \
-   "['$ID']"
-eq "...and the item is NOT flagged unarmed" \
-   "$(python3 -c "import json;i=[x for x in json.load(open('$APPROVALS'))['items'] if x['id']=='$ID'][0];print(i.get('watch_armed','armed'))")" \
-   "armed"
-
-echo
-echo "── the host quest is an executor-only, permanent quest ────────────────────"
-grep -q "executor" "$HOST/context.md" && ok "context.md marks it an executor" || bad "context not executor-only"
-grep -q "Do NOT append" "$HOST/context.md" && ok "...and forbids accruing follow-up watches" || bad "no no-follow-up rule"
-eq "never retires its threads" \
-   "$(python3 -c "import json;print(json.load(open('$HOST/meta.json')).get('retire_slack_threads_after_days'))")" "never"
-eq "opens no sends of its own (allow_send false)" \
-   "$(python3 -c "import json;print(json.load(open('$HOST/meta.json')).get('allow_send'))")" "False"
-
-echo
-echo "── the normal reviewed-approval path now fires (the fix's whole point) ─────"
 CHK() { ( cd "$REPO" && python3 yaas-triage/checkers/approval.py "$1" ); }
-WATCH=$(python3 -c "import json;print(json.dumps([w for w in json.load(open('$HOST/watch.json'))['watches'] if w.get('type')=='approval'][0]))")
-# pending_review → not dirty (still waiting on the human)
-eq "pending_review does not dispatch" "$(CHK "$WATCH" | python3 -c "import json,sys;print(json.load(sys.stdin)['outcome'])")" "clean"
-# mark reviewed → the checker must report dirty so triage dispatches the host to execute it
-AH start "$ID" >/dev/null 2>&1 || true   # noop; just ensure helper is callable
-python3 -c "
-import json
-d=json.load(open('$APPROVALS'))
-for i in d['items']:
-    if i['id']=='$ID': i['status']='reviewed'
-json.dump(d,open('$APPROVALS','w'))"
-eq "reviewed DOES dispatch (was orphaned before)" \
-   "$(CHK "$WATCH" | python3 -c "import json,sys;print(json.load(sys.stdin)['outcome'])")" "dirty"
+
+echo "── setup creates one visible permanent Inbox quest ───────────────────────"
+AH ensure-inbox >/dev/null
+[ -d "$INBOX" ] && ok "Inbox was created" || bad "Inbox was not created"
+eq "Inbox has the fixed ID" "$(python3 -c "import json;print(json.load(open('$INBOX/meta.json'))['id'])")" "quest-inbox"
+eq "Inbox is visible" "$(python3 -c "import json;print(json.load(open('$INBOX/meta.json')).get('dashboard_hidden','visible'))")" "visible"
+eq "Inbox opens no sends of its own" "$(python3 -c "import json;print(json.load(open('$INBOX/meta.json'))['allow_send'])")" "False"
 
 echo
-echo "── once executed, it does not re-dispatch (no double-send) ────────────────"
-python3 -c "
-import json
-d=json.load(open('$APPROVALS'))
-for i in d['items']:
-    if i['id']=='$ID': i['status']='executed'
-json.dump(d,open('$APPROVALS','w'))"
-eq "executed is clean (no second dispatch)" \
-   "$(CHK "$WATCH" | python3 -c "import json,sys;print(json.load(sys.stdin)['outcome'])")" "clean"
+echo "── reaction and blank approvals normalize to Inbox ───────────────────────"
+RID=$(AH write '{"quest_id":"reactions","quest_title":"reaction","action_type":"slack_message","target":{"channel_id":"D1","thread_ts":"1.0"},"message_text":"reaction","context":"c","risk_reason":"r"}')
+BID=$(AH write '{"quest_id":"","source":"stale_reply_guard","action_type":"slack_message","target":{"channel_id":"D1","thread_ts":"2.0"},"message_text":"held","context":"c","risk_reason":"r"}')
+eq "reaction review is owned by Inbox" "$(jq -r --arg id "$RID" '.items[]|select(.id==$id)|.quest_id' "$APPROVALS")" "quest-inbox"
+eq "reaction provenance is retained" "$(jq -r --arg id "$RID" '.items[]|select(.id==$id)|.source' "$APPROVALS")" "reactions"
+eq "blank review is owned by Inbox" "$(jq -r --arg id "$BID" '.items[]|select(.id==$id)|.quest_id' "$APPROVALS")" "quest-inbox"
+eq "stale-guard provenance is retained" "$(jq -r --arg id "$BID" '.items[]|select(.id==$id)|.source' "$APPROVALS")" "stale_reply_guard"
+eq "routing has one identity" "$(jq --arg id "$BID" '[.items[]|select(.id==$id)|has("executor_quest_id")]|any' "$APPROVALS")" "false"
+eq "each approval has its own Inbox watch" "$(jq '[.watches[]|select(.type=="approval")]|length' "$INBOX/watch.json")" "2"
 
 echo
-echo "── a real quest is NOT rerouted (routing is specific to 'reactions') ──────"
-mkdir -p "$REPO/state/quests/active/q-real"; echo '{"watches":[]}' > "$REPO/state/quests/active/q-real/watch.json"
-RID=$(AH write '{"quest_id":"q-real","quest_title":"real","action_type":"slack_message","target":{"channel_id":"C9","thread_ts":"2.0"},"message_text":"x","context":"c","risk_reason":"r"}')
-eq "a real quest keeps its own quest_id" \
-   "$(python3 -c "import json;print([i['quest_id'] for i in json.load(open('$APPROVALS'))['items'] if i['id']=='$RID'][0])")" \
-   "q-real"
-eq "...and is not given a source tag" \
-   "$(python3 -c "import json;print([i.get('source','none') for i in json.load(open('$APPROVALS'))['items'] if i['id']=='$RID'][0])")" \
-   "none"
+echo "── frontend approval dispatches the Inbox backend watch ──────────────────"
+REVIEW=$(cd "$REPO" && python3 - "$BID" <<'PY'
+import importlib.util, sys
+approval_id = sys.argv[1]
+sys.argv = ["dashboard-server.py"]
+spec = importlib.util.spec_from_file_location("dashboard_server", "yaas-triage/ops/dashboard-server.py")
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+handler = object.__new__(module.Handler); response = {}
+handler._send_json = lambda body, code=200: response.update(code=code, body=body)
+module.Handler._handle_review(handler, approval_id, "review", {})
+inbox = next(q for q in module.build_dashboard()["quests"] if q["id"] == "quest-inbox")
+attention = next(x for x in module.build_control()["queued"] if x["id"] == approval_id)
+print(f"{response['code']}:{response['body']['status']}:{response['body']['watch_armed']}:{inbox['title']}:{attention['quest_id']}")
+PY
+)
+eq "review remains grouped and armed under Inbox" "$REVIEW" "200:reviewed:True:Inbox:quest-inbox"
+BWATCH=$(jq -c --arg id "$BID" '.watches[]|select(.approval_id==$id)' "$INBOX/watch.json")
+eq "reviewed Inbox approval is dirty" "$(CHK "$BWATCH" | jq -r .outcome)" "dirty"
+
+echo
+echo "── invalid explicit quests fail before ledger mutation ───────────────────"
+BEFORE=$(jq '.items|length' "$APPROVALS")
+AH write '{"quest_id":"typo-quest","action_type":"slack_message","target":{"channel_id":"C9","thread_ts":"9.0"},"message_text":"x"}' >/dev/null 2>&1
+RC=$?
+eq "invalid explicit quest is rejected" "$RC" "2"
+eq "rejected approval is not persisted" "$(jq '.items|length' "$APPROVALS")" "$BEFORE"
+
+echo
+echo "── transient watch failures retry independently ──────────────────────────"
+python3 - "$APPROVALS" "$INBOX/watch.json" "$RID" <<'PY'
+import json, sys
+approvals_path, watch_path, approval_id = sys.argv[1:]
+data = json.load(open(approvals_path))
+for item in data["items"]:
+    if item["id"] == approval_id: item["watch_armed"] = False
+json.dump(data, open(approvals_path, "w"))
+watches = json.load(open(watch_path))
+watches["watches"] = [w for w in watches["watches"] if w.get("approval_id") != approval_id]
+json.dump(watches, open(watch_path, "w"))
+PY
+RETRY=$(AH arm-pending-instructions)
+eq "tick arming retries the failed item" "$(printf '%s' "$RETRY" | jq -r .rearmed)" "1"
+eq "retry restores exactly one watch" "$(jq --arg id "$RID" '[.watches[]|select(.approval_id==$id)]|length' "$INBOX/watch.json")" "1"
+
+echo
+echo "── real quest ownership remains unchanged ────────────────────────────────"
+mkdir -p "$REPO/state/quests/active/q-real"
+printf '%s\n' '{"watches":[]}' > "$REPO/state/quests/active/q-real/watch.json"
+QID=$(AH write '{"quest_id":"q-real","quest_title":"Real","source":"stale_reply_guard","action_type":"slack_message","target":{"channel_id":"C1","thread_ts":"3.0"},"message_text":"x","context":"c","risk_reason":"r"}')
+eq "quest-backed stale hold stays with its quest" "$(jq -r --arg id "$QID" '.items[]|select(.id==$id)|.quest_id' "$APPROVALS")" "q-real"
+
+echo
+echo "── one-time migration rewrites legacy rows and archives the old host ─────"
+LEGACY="$REPO/state/quests/active/quest-reactions-approvals"
+mkdir -p "$LEGACY"
+printf '%s\n' '{"id":"quest-reactions-approvals","status":"active"}' > "$LEGACY/meta.json"
+printf '%s\n' '{"watches":[]}' > "$LEGACY/watch.json"
+: > "$LEGACY/context.md"; : > "$LEGACY/timeline.ndjson"
+python3 - "$APPROVALS" <<'PY'
+import json, sys
+p = sys.argv[1]; data = json.load(open(p))
+data["items"].append({"id":"legacy-blank","quest_id":"","quest_title":"","executor_quest_id":"quest-reactions-approvals","status":"pending_review","action_type":"slack_message","target":{"channel_id":"D9","thread_ts":"9.0"},"message_text":"legacy"})
+json.dump(data, open(p, "w"))
+PY
+MIGRATE=$(AH migrate-inbox)
+eq "legacy approval moves to Inbox" "$(jq -r '.items[]|select(.id=="legacy-blank")|.quest_id' "$APPROVALS")" "quest-inbox"
+eq "legacy executor field is removed" "$(jq '[.items[]|select(.id=="legacy-blank")|has("executor_quest_id")]|any' "$APPROVALS")" "false"
+eq "legacy live approval is armed in Inbox" "$(jq '[.watches[]|select(.approval_id=="legacy-blank")]|length' "$INBOX/watch.json")" "1"
+eq "legacy host is archived" "$(printf '%s' "$MIGRATE" | jq -r .legacy_host_archived)" "true"
 
 echo
 echo "────────────────────────────────────────────────────────────────────────────"
-echo "reaction approval routing: $PASS passed, $FAIL failed"
+echo "Inbox approval routing: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

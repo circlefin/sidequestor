@@ -64,6 +64,10 @@ echo
 echo "── every poll-path DOM write goes through a guard ─────────────────────────"
 has "the html write guard exists" "Object.defineProperty(Element.prototype,'htmlOnce'"
 has "the text write guard exists" "Object.defineProperty(Element.prototype,'textOnce'"
+has "quest list has no standalone routing branch" "function renderQuestList(){const groups="
+grep -qF "Standalone reviews" "$HTML" \
+  && bad "dashboard still carries the removed standalone review section" \
+  || ok "dashboard relies on quest grouping for every approval"
 for target in "\$('#quest-list')" "\$('#quest-focus')" "\$('#trail')" "\$('#approval-history')" "\$('#run-history')"; do
   if grep -qF -- "${target}.innerHTML=" "$HTML"; then
     bad "${target} still writes innerHTML unconditionally on every poll"
@@ -81,6 +85,11 @@ done
 grep -qF -- "instruction.value=ui.instruction" "$HTML" \
   && bad "the prompt box value is still assigned directly, resetting its scroll" \
   || ok "the prompt box is restored through setValue"
+has "a successful control poll establishes connection state before rendering" "setConnection(connectionStatus(state.control))"
+has "detail polling errors do not become a dashboard disconnect" "Dashboard detail poll failed"
+has "render errors do not become a dashboard disconnect" "Dashboard render failed"
+has "quest grouping requires authoritative worker liveness" "function isRunning(q){return!!state.control.live?.running"
+has "a stale heartbeat is visible instead of looking idle" "Worker heartbeat stale"
 
 echo
 echo "── the renderer, executed ────────────────────────────────────────────────"
@@ -121,6 +130,7 @@ def grab_arrow(name):
 # Shim it with the dashboard's own origin so the extracted function behaves as it does
 # when shipped, instead of throwing and refusing every link.
 out = ["globalThis.location = { href: 'http://localhost:8877/' };",
+       "const STALE_MS = 5*60*1000;",
        # the guards are installed on Element.prototype, which node has no notion of
        "globalThis.Element = class Element {};",
        "const state = { control: { attention: [], queued: [], live: { targets: [] }, quests: [] } };",
@@ -134,6 +144,7 @@ out = ["globalThis.location = { href: 'http://localhost:8877/' };",
        grab("briefDate"), grab("briefBucket"), grab("briefDateText"),
        grab("queuedFor"), grab("attentionFor"), grab("isRunning"),
        grab("isInitialising"), grab("questGroup"), grab("renderQuestList"),
+       grab("connectionStatus"),
        grab_stmt("Object.defineProperty(Element.prototype,'htmlOnce'"),
        grab_stmt("Object.defineProperty(Element.prototype,'textOnce'"),
        grab("setValue")]
@@ -179,6 +190,8 @@ if (mode === 'render') {
   state.control = JSON.parse(arg);
   renderQuestList();
   console.log(questListHtml);
+} else if (mode === 'connection') {
+  console.log(JSON.stringify(connectionStatus(JSON.parse(arg), Date.parse('2026-08-21T01:00:00Z'))));
 }
 """)
 PY
@@ -282,6 +295,16 @@ PY
   eq "...while writing the new value" "$(gfield changedValue)" "draft revised"
 
   echo
+  echo "── connection state comes from the successful control poll ───────────────"
+  cs() { node "$TMP/render.js" connection "$1" 2>&1; }
+  eq "a recent triage completion is live" \
+    "$(cs '{"triage":{"last_triage_completed_utc":"2026-08-21T00:59:00Z"}}')" \
+    '{"className":"connection","label":"Live"}'
+  eq "an old triage completion is stale" \
+    "$(cs '{"triage":{"last_triage_completed_utc":"2026-08-20T23:00:00Z"}}')" \
+    '{"className":"connection stale","label":"Triage stale"}'
+
+  echo
   echo "── the client renders a briefing date from the canonical field only ───────"
   # briefDate() must read `at`. A payload whose mtime (`ts`) is years away from `at` proves
   # which field won: if the client ever goes back to mtime or to parsing the filename, the
@@ -330,6 +353,11 @@ PY
   case "$OUT" in
     *quest-review-count*) bad "a single review message rendered a redundant count pill: $OUT" ;;
     *) ok "a single review message keeps the quest row uncluttered" ;;
+  esac
+  OUT="$(ql '{"quests":[{"id":"quest-inbox","title":"Inbox","has_run":true}],"attention":[{"quest_id":"quest-inbox","kind":"review","detail":"held","approval":{"id":"a1","quest_id":"quest-inbox","quest_title":"Inbox","action_type":"slack_message"}}],"queued":[],"live":{"targets":[]}}')"
+  case "$OUT" in
+    *'data-quest="quest-inbox"'*'Inbox'*'held'*) ok "Inbox approvals render through the ordinary quest row" ;;
+    *) bad "Inbox approval did not render as an ordinary quest: $OUT" ;;
   esac
 fi
 

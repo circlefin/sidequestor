@@ -49,7 +49,7 @@ bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 eq()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 
 # A throwaway copy so the fake dispatch-agent.sh never shadows the real one.
-RIG="$TMP/yaas-triage"; LOGS="$TMP/logs"
+RIG="$TMP/yaas-triage"; LOGS="$TMP/logs"; WORKER_STATE="$TMP/state/triage/worker-current.json"
 mkdir -p "$RIG" "$LOGS"
 cp "$SCRIPT_DIR/dispatch/run-agent.py" "$SCRIPT_DIR/dispatch/format-stream.py" "$RIG/"
 
@@ -65,6 +65,12 @@ OUT=$(R --prompt "hello" --label quest-a); RC=$?
 eq "exit 0 passes through"        "$RC" "0"
 eq "...and is reported in json"   "$(printf '%s' "$OUT" | jq -r .exit)" "0"
 eq "...not flagged as timed out"  "$(printf '%s' "$OUT" | jq -r .timed_out)" "false"
+eq "...and publishes a terminal lifecycle record" "$(jq -r .state "$WORKER_STATE")" "exited"
+eq "...with the same exit code" "$(jq -r .exit "$WORKER_STATE")" "0"
+eq "...for the log selected by worker-latest" "$(jq -r .log "$WORKER_STATE")" \
+  "$(basename "$(readlink "$LOGS/worker-latest.log")")"
+[ "$(jq -r .ended_at "$WORKER_STATE")" != "null" ] && ok "...and a completion time" \
+  || bad "terminal lifecycle record has no completion time"
 
 fake_agent 'exit 7'
 OUT=$(R --prompt "x" --label quest-b); RC=$?
@@ -108,6 +114,8 @@ OUT=$(R --prompt "x" --label quest-hang --timeout 2); RC=$?
 ELAPSED=$(( $(date +%s) - START ))
 eq "exit 124 on timeout"        "$RC" "124"
 eq "...flagged as timed out"    "$(printf '%s' "$OUT" | jq -r .timed_out)" "true"
+eq "...and lifecycle records the timeout" "$(jq -r .exit "$WORKER_STATE")" "124"
+eq "...with the timeout flag" "$(jq -r .timed_out "$WORKER_STATE")" "true"
 [ "$ELAPSED" -lt 30 ] && ok "...and it actually stopped (${ELAPSED}s, not 60)" \
   || bad "the watchdog did not fire (${ELAPSED}s)"
 sleep 1
@@ -123,6 +131,25 @@ echo "── partial output before a timeout is still kept ───────
 NDJSON=$(printf '%s' "$OUT" | jq -r .ndjson)
 [ -s "$NDJSON" ] && ok "work streamed before the kill is preserved" \
   || bad "the raw stream was lost when the agent was killed"
+
+echo
+echo "── lifecycle heartbeat advances while the worker is actually running ────"
+fake_agent 'printf "%s\n" "{\"a\":1}"; sleep 3; exit 0'
+YAAS_WORKER_HEARTBEAT_SECONDS=0.2 python3 "$RIG/run-agent.py" \
+  --log-dir "$LOGS" --prompt "x" --label quest-heartbeat >"$TMP/heartbeat.out" 2>/dev/null &
+SUPERVISOR=$!
+for _ in $(seq 1 50); do
+  [ -f "$WORKER_STATE" ] && [ "$(jq -r '.targets[0] // ""' "$WORKER_STATE" 2>/dev/null)" = "quest-heartbeat" ] && break
+  sleep 0.1
+done
+eq "a live worker publishes running" "$(jq -r .state "$WORKER_STATE")" "running"
+HEARTBEAT_1=$(jq -r .heartbeat_at "$WORKER_STATE")
+sleep 1.2
+HEARTBEAT_2=$(jq -r .heartbeat_at "$WORKER_STATE")
+[ "$HEARTBEAT_1" != "$HEARTBEAT_2" ] && ok "heartbeat advances independently of stream output" \
+  || bad "heartbeat did not advance ($HEARTBEAT_1)"
+wait "$SUPERVISOR"
+eq "the same record becomes terminal after process exit" "$(jq -r .state "$WORKER_STATE")" "exited"
 
 echo
 echo "── argument validation ────────────────────────────────────────────────────"

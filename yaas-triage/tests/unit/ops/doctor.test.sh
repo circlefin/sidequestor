@@ -76,9 +76,20 @@ EOF
 for real in jq python3 perl; do
   ln -sf "$(command -v "$real")" "$BIN/$real" 2>/dev/null || true
 done
+REAL_PYTHON="$(command -v python3)"
 
 reset_env() {
-  mk security 'echo "xoxp-fake-token"'
+  rm -f "$BIN/python3"
+  ln -s "$REAL_PYTHON" "$BIN/python3"
+  cat > "$BIN/security" <<'SECURITY'
+#!/bin/bash
+case "$*" in
+  *slack-oauth-token-bundle*) exit 44 ;;
+  *slack-xoxp-token*) echo "xoxp-fake-token"; exit 0 ;;
+  *) exit 44 ;;
+esac
+SECURITY
+  chmod +x "$BIN/security"
   mklaunchctl 0 123
   mk gws 'exit 0'
   mk node 'exit 0'
@@ -199,6 +210,20 @@ echo "── credentials ──────────────────�
 reset_env; mk security 'exit 1'
 printf '%s' "$(D)" | grep -q "Slack token not in Keychain" \
   && ok "a missing Keychain token fails" || bad "missing Slack token not reported"
+
+reset_env; mk security 'exit 0'
+rm -f "$BIN/python3"
+cat > "$BIN/python3" <<EOF
+#!/bin/bash
+if [ "\${2:-}" = status ]; then
+  echo '{"mode":"rotating","complete":true,"access_expires_in":43100,"refresh_expires_in":2591900}'
+  exit 0
+fi
+exec "$REAL_PYTHON" "\$@"
+EOF
+chmod +x "$BIN/python3"
+printf '%s' "$(D)" | grep -q "rotating Slack credential bundle is complete" \
+  && ok "a complete rotating bundle is reported" || bad "rotating bundle was not recognized"
 
 echo
 echo "── launchd exit codes are interpreted, not just printed ───────────────────"

@@ -169,19 +169,12 @@ eq "every filter site uses the shared constant" \
    "$(grep -c 'TERMINAL_APPROVAL_STATUSES' "$SCRIPT_DIR/ops/dashboard-server.py")" "6"
 
 echo
-echo "── an approval whose watch could not be armed is not silent ───────────────"
-# triage cannot see an unarmed approval at all, so the item itself must carry the flag.
+echo "── an explicit inactive quest is rejected before persistence ─────────────"
 rm -rf state/quests/active/q1
-ID3=$(A write '{"quest_id":"q1","quest_title":"Q","action_type":"slack_message","target":{"channel_id":"C3","thread_ts":null},"message_text":"y","context":"c","risk_reason":"r"}' 2>/dev/null)
-if [ -n "$ID3" ]; then
-  ok "the approval is still written when arming is impossible (losing it would be worse)"
-  # NOT `.watch_armed // "absent"` — jq's `//` treats false as empty, so a correctly
-  # flagged item would read as absent and this assertion would pass on broken code.
-  ARMED=$(jq -r --arg id "$ID3" '.items[] | select(.id==$id) | if has("watch_armed") then (.watch_armed | tostring) else "absent" end' "$APPROVALS")
-  eq "and it is flagged watch_armed=false for the dashboard" "$ARMED" "false"
-else
-  bad "the approval was dropped when its watch could not be armed"
-fi
+BEFORE=$(jq '.items | length' "$APPROVALS")
+A write '{"quest_id":"q1","quest_title":"Q","action_type":"slack_message","target":{"channel_id":"C3","thread_ts":null},"message_text":"y","context":"c","risk_reason":"r"}' >/dev/null 2>&1
+eq "an inactive explicit quest fails synchronously" "$?" "2"
+eq "the rejected approval never enters the ledger" "$(jq '.items | length' "$APPROVALS")" "$BEFORE"
 
 echo
 echo "────────────────────────────────────────────────────────────────────────────"
