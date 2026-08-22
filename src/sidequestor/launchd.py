@@ -152,7 +152,7 @@ def _production_jobs(workspace: Workspace, executable: Path) -> dict:
     commands = {
             "triage": [str(python), "-m", "sidequestor", "--workspace", str(workspace.root), "loop"],
         "heartbeat": ["/bin/bash", str(runtime / "yaas-triage" / "ops" / "heartbeat-loop.sh")],
-            "dashboard": [str(python), "-m", "sidequestor", "--workspace", str(workspace.root), "dashboard", "serve", "8877"],
+            "dashboard": [str(python), "-m", "sidequestor", "--workspace", str(workspace.root), "dashboard", "serve", "0"],
     }
     jobs = {}
     for name, arguments in commands.items():

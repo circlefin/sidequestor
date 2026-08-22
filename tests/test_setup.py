@@ -54,6 +54,7 @@ class SetupTests(unittest.TestCase):
             jobs = _production_jobs(workspace, venv_python)
             for name in ("triage", "dashboard"):
                 self.assertEqual(jobs[name]["arguments"][0], str(venv_python))
+            self.assertEqual(jobs["dashboard"]["arguments"][-1], "0")
 
 
 if __name__ == "__main__":
