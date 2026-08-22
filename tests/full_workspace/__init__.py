@@ -1,0 +1,1 @@
+"""Full workspace integration tests."""
