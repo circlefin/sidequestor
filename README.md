@@ -28,7 +28,6 @@ set `YAAS_WORKSPACE` for a shell-wide default. For example:
 ```bash
 sidequestor --workspace ~/sidequestor-install/workspace doctor
 ```
-
 The `sq` and `yaas` commands remain compatibility aliases. Existing workspace
 state continues to live under `.yaas`, and existing `YAAS_*` environment names
 remain accepted. New configuration should use the canonical `SIDEQUESTOR_*`
