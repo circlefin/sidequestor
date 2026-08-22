@@ -29,8 +29,13 @@ def _manifest_path(workspace: Workspace) -> Path:
     return _install_root(workspace) / "installed" / "manifest.json"
 
 
+def _preserve_executable_path(executable: Path) -> Path:
+    """Make the interpreter absolute without collapsing a venv symlink."""
+    return Path(os.path.abspath(executable))
+
+
 def _write_jobs(workspace: Workspace, executable: Path, destination: Path) -> dict:
-    python = executable.resolve()
+    python = _preserve_executable_path(executable)
     jobs = {
         "triage": ["loop", "--isolated"],
         "dashboard": ["dashboard", "serve", "0"],
@@ -81,7 +86,7 @@ def install(workspace: Workspace, executable: Path) -> dict:
             "backend": "workspace-shadow",
             "instance_id": workspace.instance_id,
             "workspace": str(workspace.root),
-            "python": str(executable.resolve()),
+            "python": str(_preserve_executable_path(executable)),
             "jobs": jobs,
         }
         (temporary / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -130,7 +135,7 @@ def _production_manifest_path(workspace: Workspace) -> Path:
 
 
 def _production_jobs(workspace: Workspace, executable: Path) -> dict:
-    python = executable.resolve()
+    python = _preserve_executable_path(executable)
     runtime = Path(__file__).resolve().parent / "runtime"
     common = {
         "EnvironmentVariables": {
@@ -225,7 +230,7 @@ def install_production(workspace: Workspace, executable: Path) -> dict:
         for _, destination in written:
             destination.unlink(missing_ok=True)
         raise
-    manifest = {"schema": 1, "backend": "production", "workspace": str(workspace.root), "python": str(executable.resolve()), "jobs": rendered}
+    manifest = {"schema": 1, "backend": "production", "workspace": str(workspace.root), "python": str(_preserve_executable_path(executable)), "jobs": rendered}
     temporary_manifest = manifest_path.with_name(manifest_path.name + ".tmp")
     temporary_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
     os.replace(temporary_manifest, manifest_path)
