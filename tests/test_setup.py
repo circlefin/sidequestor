@@ -45,6 +45,16 @@ class SetupTests(unittest.TestCase):
             for job in jobs.values():
                 self.assertIn(workspace.instance_id, job["label"])
 
+    def test_launchd_jobs_preserve_venv_interpreter_path(self):
+        with tempfile.TemporaryDirectory() as raw, tempfile.TemporaryDirectory() as tools:
+            workspace = init_workspace(Path(raw))
+            real_python = Path("/usr/bin/python3").resolve()
+            venv_python = Path(tools) / "python"
+            venv_python.symlink_to(real_python)
+            jobs = _production_jobs(workspace, venv_python)
+            for name in ("triage", "dashboard"):
+                self.assertEqual(jobs[name]["arguments"][0], str(venv_python))
+
 
 if __name__ == "__main__":
     unittest.main()
