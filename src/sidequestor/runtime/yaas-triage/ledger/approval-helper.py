@@ -113,7 +113,12 @@ def _repo_root(start):
 
 
 REPO_ROOT      = _repo_root(__file__)
-sys.path.insert(0, str(REPO_ROOT / "yaas-triage"))
+# Workspace state and packaged runtime are separate roots after installation.
+# Resolve imports from this file so direct helper execution works without PYTHONPATH.
+RUNTIME_ROOT   = Path(os.environ.get("YAAS_RUNTIME_ROOT", Path(__file__).resolve().parents[1]))
+if (RUNTIME_ROOT / "yaas-triage").is_dir():
+    RUNTIME_ROOT = RUNTIME_ROOT / "yaas-triage"
+sys.path.insert(0, str(RUNTIME_ROOT))
 import approval_state
 import approval_store
 
@@ -135,7 +140,7 @@ def _arm_approval_watch(quest_id: str, approval_id: str):
         "last_checked_ts": str(int(datetime.now(timezone.utc).timestamp())),
         "reason": f"execute reviewed approval {approval_id}",
     }
-    helper = Path(os.environ.get("YAAS_RUNTIME_ROOT", REPO_ROOT)) / "yaas-triage" / "ledger" / "add-watch.py"
+    helper = RUNTIME_ROOT / "ledger" / "add-watch.py"
     cp = subprocess.run(
         ["python3", str(helper), quest_id, json.dumps(entry)],
         capture_output=True, text=True, cwd=str(REPO_ROOT),

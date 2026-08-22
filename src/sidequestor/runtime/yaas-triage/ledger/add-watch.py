@@ -82,9 +82,11 @@ QUESTS_DIR = REPO_ROOT / "state" / "quests"
 
 
 def _load_watch_manifests():
-    sys.path.insert(0, str(Path(os.environ.get("YAAS_RUNTIME_ROOT", REPO_ROOT)) / "yaas-triage"))
+    runtime_root = Path(os.environ.get("YAAS_RUNTIME_ROOT", Path(__file__).resolve().parents[1]))
+    triage_root = runtime_root / "yaas-triage" if (runtime_root / "yaas-triage").is_dir() else runtime_root
+    sys.path.insert(0, str(triage_root))
     from tick_state import load_watch_manifests
-    return load_watch_manifests(Path(os.environ.get("YAAS_RUNTIME_ROOT", REPO_ROOT)) / "yaas-triage")
+    return load_watch_manifests(triage_root)
 
 
 def _watch_shapes():

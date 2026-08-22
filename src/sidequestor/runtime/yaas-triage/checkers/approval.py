@@ -61,7 +61,11 @@ CHECKERS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = _repo_root(__file__)
 APPROVALS = os.path.join(REPO_ROOT, "state", "pending-approvals.json")
 
-sys.path.insert(0, str(REPO_ROOT / "yaas-triage"))
+# Resolve runtime imports from the installed package, not from the workspace.
+RUNTIME_ROOT = Path(os.environ.get("YAAS_RUNTIME_ROOT", Path(__file__).resolve().parents[1]))
+if (RUNTIME_ROOT / "yaas-triage").is_dir():
+    RUNTIME_ROOT = RUNTIME_ROOT / "yaas-triage"
+sys.path.insert(0, str(RUNTIME_ROOT))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import approval_state
 import approval_store

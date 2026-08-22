@@ -1,6 +1,8 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sidequestor.launchd import _production_jobs
 from sidequestor.resources import sync_resources
@@ -9,6 +11,15 @@ from sidequestor.workspace import init_workspace
 
 
 class SetupTests(unittest.TestCase):
+    def setUp(self):
+        self.config_home = tempfile.TemporaryDirectory(prefix="sidequestor-config-")
+        self.config_patch = patch.dict(os.environ, {"YAAS_CONFIG_HOME": self.config_home.name})
+        self.config_patch.start()
+
+    def tearDown(self):
+        self.config_patch.stop()
+        self.config_home.cleanup()
+
     def test_provisioning_preserves_real_values(self):
         with tempfile.TemporaryDirectory() as raw:
             workspace = init_workspace(raw)

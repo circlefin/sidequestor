@@ -76,7 +76,7 @@ def _command_help(command: str) -> str:
         "instances": "sidequestor instances list|doctor|register PATH|rekey PATH",
         "setup": "sidequestor [--workspace PATH] setup [--non-interactive|--render-only|install|status|uninstall]",
         "start": "sidequestor [--workspace PATH] start",
-        "stop": "sidequestor stop INSTANCE_ID",
+        "stop": "sidequestor [--workspace PATH] stop [INSTANCE_ID]",
         "tick": "sidequestor [--workspace PATH] tick [--dry-run|--isolated [--fake-worker]]",
         "loop": "sidequestor [--workspace PATH] loop [--max-ticks N]",
         "dashboard": "sidequestor [--workspace PATH] dashboard serve|url",
@@ -128,11 +128,14 @@ def _workspace(workspace_path: str | None, instance: str | None) -> Workspace:
     if inherited:
         return load_workspace(inherited)
     try:
-        current = Path.cwd()
+        current = Path.cwd().resolve()
     except OSError as exc:
         raise SystemExit(
             "the current directory is unavailable; change to a live directory or use --workspace PATH"
         ) from exc
+    for candidate in (current, *current.parents):
+        if (candidate / ".yaas" / "instance.json").exists():
+            return load_workspace(candidate)
     return load_workspace(current)
 
 

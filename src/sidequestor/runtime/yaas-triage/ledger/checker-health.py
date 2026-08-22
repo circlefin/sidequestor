@@ -101,7 +101,10 @@ REPO_ROOT   = _repo_root(__file__)
 STATE_DIR   = REPO_ROOT / "state" / "triage"
 HEALTH_FILE = STATE_DIR / "checker-health.json"
 LOCK_FILE   = STATE_DIR / "checker-health.lock"
-sys.path.insert(0, str(REPO_ROOT / "yaas-triage"))
+RUNTIME_ROOT = Path(os.environ.get("YAAS_RUNTIME_ROOT", Path(__file__).resolve().parents[1]))
+if (RUNTIME_ROOT / "yaas-triage").is_dir():
+    RUNTIME_ROOT = RUNTIME_ROOT / "yaas-triage"
+sys.path.insert(0, str(RUNTIME_ROOT))
 import tick_check
 
 BASE_BACKOFF = 60

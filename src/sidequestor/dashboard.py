@@ -28,7 +28,6 @@ def serve(workspace: Workspace, port: int = 8877) -> int:
     actual_port = port or _ephemeral_port()
     url = f"http://127.0.0.1:{actual_port}"
     url_file = workspace.state / "dashboard-url.txt"
-    url_file.write_text(url + "\n")
     environment = _environment(workspace)
     process = subprocess.Popen(
         [sys.executable, str(server), str(actual_port)],
@@ -48,7 +47,8 @@ def serve(workspace: Workspace, port: int = 8877) -> int:
         else:
             process.terminate()
             return 1
-        # Announce only after the unchanged server has actually bound its socket.
+        # Publish readiness only after the unchanged server has actually bound its socket.
+        url_file.write_text(url + "\n")
         print(f"Sidequestor dashboard -> {url} (loopback only)", flush=True)
         return process.wait()
     finally:

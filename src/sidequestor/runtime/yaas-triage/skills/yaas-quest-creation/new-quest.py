@@ -121,7 +121,9 @@ def _repo_root(start):
 
 
 REPO_ROOT = _repo_root(__file__)
-RUNTIME_ROOT = Path(os.environ.get("YAAS_RUNTIME_ROOT", REPO_ROOT))
+# The workspace owns quests; the installed package owns checker manifests.
+# This keeps direct execution correct when YAAS_RUNTIME_ROOT is not exported.
+RUNTIME_ROOT = Path(os.environ.get("YAAS_RUNTIME_ROOT", Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(RUNTIME_ROOT / "yaas-triage"))
 from tick_state import load_watch_manifests
 

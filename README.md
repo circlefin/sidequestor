@@ -52,6 +52,27 @@ state continues to live under `.yaas`, and existing `YAAS_*` environment names
 remain accepted. New configuration should use the canonical `SIDEQUESTOR_*`
 names shown in `.env.example`.
 
+## Test
+
+From a checkout with its development virtualenv activated:
+
+```bash
+python -m unittest discover -s tests -p 'test_*.py'
+```
+
+This runs setup, installed-runtime imports, behavior, public command-surface,
+and full-workspace lifecycle tests. The dashboard tests require localhost socket
+binding; they are skipped only in restricted sandboxes that prohibit it.
+
+For a disposable branch-install test, read the local ignored runbook at
+`.agents/skills/sidequestor-e2e/SKILL.md`. It requires explicit opt-in before
+performing any live Slack reaction.
+
+Before publishing package changes, run the local ignored
+`.agents/skills/regression-check/SKILL.md`, then use
+`.agents/skills/publish-yaas-to-circlefin/SKILL.md` for the signed branch
+publication. Neither skill modifies `.git-yaas-v2`.
+
 ## License
 
 Apache License 2.0. See `LICENSE`.
