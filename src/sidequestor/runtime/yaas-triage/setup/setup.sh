@@ -29,9 +29,9 @@ set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TRIAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$TRIAGE_DIR/.." && pwd)"
+WORKSPACE_ROOT=""
+OAUTH_ONLY=0
 CONFIG="$SCRIPT_DIR/yaas-app-config.json"
-ENV_FILE="$REPO_ROOT/.env"
 PORT=3118
 STATE_SERVER_LOG=$(mktemp)
 trap 'rm -f "$STATE_SERVER_LOG"' EXIT
@@ -72,10 +72,17 @@ print_manifest() {
   ' "$CONFIG"
 }
 
-if [ "${1:-}" = "--manifest" ]; then
-  print_manifest
-  exit 0
-fi
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --manifest) print_manifest; exit 0 ;;
+    --workspace) WORKSPACE_ROOT="${2:?--workspace requires a path}"; shift 2 ;;
+    --oauth-only) OAUTH_ONLY=1; shift ;;
+    *) echo "ERROR: unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+REPO_ROOT="${WORKSPACE_ROOT:-$(cd "$TRIAGE_DIR/.." && pwd)}"
+export YAAS_WORKSPACE="$REPO_ROOT"
+ENV_FILE="$REPO_ROOT/.env"
 
 # Load per-install values from .env
 if [ ! -f "$ENV_FILE" ]; then
@@ -345,6 +352,13 @@ else
   echo "   Output: $(printf '%s' "$TEST_RESULT" | head -c 200)"
   echo "   You can proceed — run 'python3 yaas-triage/tick.py' manually to test further."
 fi
+fi
+
+# The package orchestrator owns launchd installation. This mode performs only
+# the OAuth and credential work against the selected workspace.
+if [ "$OAUTH_ONLY" = "1" ]; then
+  echo "OAuth setup complete. Launchd installation is managed by 'sq start'."
+  exit 0
 fi
 
 # ── Offer launchd install ───────────────────────────────────────────────────

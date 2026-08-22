@@ -15,7 +15,10 @@ from .workspace import Workspace
 
 JOB_NAMES = ("triage", "dashboard")
 PRODUCTION_JOB_NAMES = ("triage", "heartbeat", "dashboard")
-PRODUCTION_PREFIX = "com.sidequestor.production"
+
+
+def _production_prefix(workspace: Workspace) -> str:
+    return f"com.sidequestor.{workspace.instance_id}"
 
 
 def _install_root(workspace: Workspace) -> Path:
@@ -148,7 +151,7 @@ def _production_jobs(workspace: Workspace, executable: Path) -> dict:
     }
     jobs = {}
     for name, arguments in commands.items():
-        label = f"{PRODUCTION_PREFIX}.{name}"
+        label = f"{_production_prefix(workspace)}.{name}"
         values = dict(common)
         values.update({
             "Label": label,
@@ -189,9 +192,10 @@ def _plist(values: dict) -> str:
 
 
 def install_production(workspace: Workspace, executable: Path) -> dict:
-    """Install and load the package jobs without touching legacy labels."""
+    """Install package jobs, replacing this workspace's previous package labels."""
     launch_agents = _production_root()
     launch_agents.mkdir(parents=True, exist_ok=True)
+    previous = production_status(workspace)
     jobs = _production_jobs(workspace, executable)
     manifest_path = _production_manifest_path(workspace)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,6 +204,11 @@ def install_production(workspace: Workspace, executable: Path) -> dict:
     written: list[tuple[str, Path]] = []
     loaded: list[str] = []
     try:
+        if previous:
+            for old_job in previous.get("jobs", {}).values():
+                old_label = old_job.get("label")
+                if old_label:
+                    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{old_label}"], check=False, capture_output=True)
         for name, job in jobs.items():
             destination = launch_agents / job["plist"]
             temporary = destination.with_name(destination.name + ".tmp")
@@ -245,3 +254,23 @@ def uninstall_production(workspace: Workspace) -> bool:
             plist.unlink()
     _production_manifest_path(workspace).unlink(missing_ok=True)
     return True
+
+
+def stop_production(workspace: Workspace) -> bool:
+    """Stop this workspace's production jobs while retaining their manifest."""
+    manifest = production_status(workspace)
+    if not manifest:
+        return False
+    uid = str(os.getuid())
+    stopped = False
+    for job in manifest.get("jobs", {}).values():
+        label = job.get("label")
+        if label:
+            subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], check=False, capture_output=True)
+            stopped = True
+    manifest["running"] = False
+    path = _production_manifest_path(workspace)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(manifest, indent=2) + "\n")
+    os.replace(temporary, path)
+    return stopped

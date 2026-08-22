@@ -17,6 +17,7 @@ from .launchd import install_production, production_status, uninstall_production
 from .launchd import render, status as launchd_status, uninstall as uninstall_jobs
 from .migrations import migrate_workspace
 from .resources import sync_resources
+from .setup import run_setup
 from .workspace import (
     Workspace,
     init_workspace,
@@ -31,7 +32,9 @@ from .workspace import (
 COMMANDS = {
     "init": "create a workspace",
     "instances": "list and validate workspace instances",
-    "setup": "render or manage workspace launchd jobs",
+    "setup": "run the interactive workspace onboarding wizard",
+    "start": "start all jobs for a workspace",
+    "stop": "stop all jobs for an instance",
     "tick": "run one triage tick",
     "loop": "run the paced triage loop",
     "dashboard": "serve or inspect the dashboard",
@@ -71,7 +74,9 @@ def _command_help(command: str) -> str:
     examples = {
         "init": "sidequestor init PATH [--name NAME]",
         "instances": "sidequestor instances list|doctor|register PATH|rekey PATH",
-        "setup": "sidequestor [--workspace PATH] setup --render-only|install|status|uninstall",
+        "setup": "sidequestor [--workspace PATH] setup [--non-interactive|--render-only|install|status|uninstall]",
+        "start": "sidequestor [--workspace PATH] start",
+        "stop": "sidequestor stop INSTANCE_ID",
         "tick": "sidequestor [--workspace PATH] tick [--dry-run|--isolated [--fake-worker]]",
         "loop": "sidequestor [--workspace PATH] loop [--max-ticks N]",
         "dashboard": "sidequestor [--workspace PATH] dashboard serve|url",
@@ -183,6 +188,8 @@ def _cmd_doctor(workspace: Workspace) -> int:
 
 
 def _cmd_setup(workspace: Workspace, args: list[str]) -> int:
+    if not args or args == ["--non-interactive"]:
+        return run_setup(workspace, Path(sys.executable), interactive="--non-interactive" not in args)
     production = "--production" in args
     args = [arg for arg in args if arg != "--production"]
     action = args[0] if args and not args[0].startswith("-") else "--render-only"
@@ -231,6 +238,24 @@ def _cmd_setup(workspace: Workspace, args: list[str]) -> int:
         print("uninstalled shadow jobs" if removed else "shadow jobs: not installed")
         return 0
     raise SystemExit(f"unknown setup action: {action}")
+
+
+def _cmd_start(workspace: Workspace) -> int:
+    manifest = install_production(workspace, Path(sys.executable))
+    print(f"started Sidequestor instance {workspace.instance_id}")
+    for name, job in manifest["jobs"].items():
+        print(f"{name}: {job['label']}")
+    return 0
+
+
+def _cmd_stop(workspace: Workspace) -> int:
+    from .launchd import stop_production
+
+    if not stop_production(workspace):
+        print(f"no production jobs installed for instance {workspace.instance_id}")
+        return 1
+    print(f"stopped Sidequestor instance {workspace.instance_id}")
+    return 0
 
 
 def _cmd_loop(workspace: Workspace, args: list[str]) -> int:
@@ -315,6 +340,13 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
         return _cmd_instances(args, workspace_path)
     if command == "migrate":
         return _cmd_migrate(workspace_path, args[0] if args else None)
+    if command == "stop" and (args or instance):
+        target = args[0] if args else instance
+        matches = [row for row in list_instances()
+                   if row.get("instance_id") == target or row.get("display_name") == target]
+        if len(matches) != 1:
+            raise SystemExit(f"instance not found: {target}")
+        return _cmd_stop(load_workspace(matches[0]["path"]))
     workspace = _workspace(workspace_path, instance)
     if command == "doctor":
         return _cmd_doctor(workspace)
@@ -323,6 +355,10 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
         return 0
     if command == "setup":
         return _cmd_setup(workspace, args)
+    if command == "start":
+        return _cmd_start(workspace)
+    if command == "stop":
+        return _cmd_stop(workspace)
     if command == "tick":
         return _cmd_tick(workspace, args)
     if command == "loop":
