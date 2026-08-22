@@ -61,7 +61,7 @@ ISOLATED_COMMANDS = {"slack-send", "react", "mcp-call", "jira-call"}
 def _usage() -> str:
     lines = ["usage: sidequestor [--workspace PATH] COMMAND [ARGS...]", "", "commands:"]
     lines.extend(f"  {name:15} {description}" for name, description in COMMANDS.items())
-    lines.extend(["", "global options:", "  --workspace PATH  select an initialized workspace",
+    lines.extend(["", "global options:", "  --workspace PATH  select an initialized workspace (default: current directory)",
                   "  --instance ID     select an instance from the advisory registry",
                   "  --version         print the engine version", "  --help            print this help"])
     return "\n".join(lines)
@@ -71,12 +71,12 @@ def _command_help(command: str) -> str:
     examples = {
         "init": "sidequestor init PATH [--name NAME]",
         "instances": "sidequestor instances list|doctor|register PATH|rekey PATH",
-        "setup": "sidequestor --workspace PATH setup --render-only|install|status|uninstall",
-        "tick": "sidequestor --workspace PATH tick [--dry-run|--isolated [--fake-worker]]",
-        "loop": "sidequestor --workspace PATH loop [--max-ticks N]",
-        "dashboard": "sidequestor --workspace PATH dashboard serve|url",
+        "setup": "sidequestor [--workspace PATH] setup --render-only|install|status|uninstall",
+        "tick": "sidequestor [--workspace PATH] tick [--dry-run|--isolated [--fake-worker]]",
+        "loop": "sidequestor [--workspace PATH] loop [--max-ticks N]",
+        "dashboard": "sidequestor [--workspace PATH] dashboard serve|url",
     }
-    usage = examples.get(command, f"sidequestor --workspace PATH {command} [ARGS...]")
+    usage = examples.get(command, f"sidequestor [--workspace PATH] {command} [ARGS...]")
     return f"usage: {usage}\n\n{COMMANDS[command]}"
 
 
@@ -122,7 +122,13 @@ def _workspace(workspace_path: str | None, instance: str | None) -> Workspace:
     inherited = os.environ.get("YAAS_WORKSPACE")
     if inherited:
         return load_workspace(inherited)
-    raise SystemExit("a workspace is required; use --workspace PATH")
+    try:
+        current = Path.cwd()
+    except OSError as exc:
+        raise SystemExit(
+            "the current directory is unavailable; change to a live directory or use --workspace PATH"
+        ) from exc
+    return load_workspace(current)
 
 
 def _cmd_init(args: list[str]) -> int:

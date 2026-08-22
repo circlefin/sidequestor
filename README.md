@@ -12,12 +12,22 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install 'git+https://github.com/circlefin/sidequestor.git@publish/sidequestor-package-0.1.0'
 sidequestor init ./workspace
-sidequestor --workspace ./workspace doctor
+cd ./workspace
+sidequestor doctor
+sidequestor dashboard serve
 ```
 
 The virtualenv supplies the `sidequestor` command in the current terminal. Run
 `deactivate` when finished. After this branch is merged or released, the
 `@publish/sidequestor-package-0.1.0` suffix can be omitted.
+
+Commands automatically use the current directory when it is an initialized
+workspace. You can run them from elsewhere by passing `--workspace PATH`, or
+set `YAAS_WORKSPACE` for a shell-wide default. For example:
+
+```bash
+sidequestor --workspace ~/sidequestor-install/workspace doctor
+```
 
 The `sq` and `yaas` commands remain compatibility aliases. Existing workspace
 state continues to live under `.yaas`, and existing `YAAS_*` environment names
