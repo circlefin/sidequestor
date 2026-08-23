@@ -35,6 +35,7 @@ Endpoints:
     POST /api/undo/<id>       → undo reviewed/cancelled back to pending_review
     POST /api/reclaim/<id>    → recover an expired executing lease
     POST /api/quests          → create a draft-only quest from an operator prompt
+    POST /api/workspace/open  → open this workspace in Cursor or the default app
 """
 
 from __future__ import annotations  # PEP 604 unions below must not be
@@ -2011,6 +2012,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json({"error": "request body must be a JSON object"}, 400)
             return
 
+        if path == "/api/workspace/open":
+            self._handle_open_workspace()
+            return
+
         parts = [p for p in path.strip("/").split("/") if p]
         # Expected: ["api", "<action>", "<id>"]
         if len(parts) == 3 and parts[0] == "api" and parts[1] in approval_state.HTTP_ACTIONS:
@@ -2035,6 +2040,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "reclaim": "only executing items with an expired lease can be reclaimed",
             "edit": "item is no longer in reviewed state",
         }.get(action, "already reviewed, executing, executed, or cancelled")
+
+    def _handle_open_workspace(self):
+        """Open the server's own workspace, never a browser-supplied path."""
+        preferred = os.environ.get("SIDEQUESTOR_IDE_APP", "Cursor").strip()
+        attempts = []
+        if preferred:
+            attempts.append((preferred, ["open", "-a", preferred, str(REPO_ROOT)]))
+        attempts.append(("default opener", ["open", str(REPO_ROOT)]))
+        errors = []
+        for opened_with, command in attempts:
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=str(REPO_ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                errors.append(str(exc))
+                continue
+            if result.returncode == 0:
+                self._send_json({
+                    "ok": True,
+                    "path": str(REPO_ROOT),
+                    "opened_with": opened_with,
+                })
+                return
+            detail = (result.stderr or result.stdout or "open failed").strip()
+            errors.append(detail[:200])
+        self._send_json({
+            "error": "could not open workspace in Cursor or the default application",
+            "detail": "; ".join(errors),
+        }, 500)
 
     def _handle_prompt(self, quest_id: str, payload: dict):
         """Durably queue one operator-authorized instruction for a quest."""

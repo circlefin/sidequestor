@@ -10,7 +10,7 @@ target and every listed dirty item. Do not scan other quests, channels, or watch
 Act first, then report. Close every listed item before exiting with:
 
 ```text
-python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/ledger/ack-watch.py" ack <run_id> <item_id> handled|nothing_to_do|blocked "<note>"
+python3 <runtime-root>/yaas-triage/ledger/ack-watch.py ack <run_id> <item_id> handled|nothing_to_do|blocked "<note>"
 ```
 
 Load the matching managed skill:
@@ -44,7 +44,11 @@ the packaged runtime directory. Put mutable data in the workspace through the su
 - Ack only items included in the current dispatch. Never ack unrelated work.
 - Write timeline events with `log-event.py`; send Slack through `slack-send.py`.
 - Use the approval helper for review-queue items.
-- Never send unless the quest allows it and the dispatch rules authorize it.
+- For an unreviewed action, `allow_send: false` requires queuing the action for
+  review instead of executing it.
+- A `reviewed` approval records the user's authorization for that specific action.
+  Execute it according to its action type and the dispatch rules; do not apply
+  `allow_send` again as a permanent veto.
 - If an action is blocked, log the blocker, ack the item `blocked`, and report it.
 
 The workspace `CLAUDE.md` may add user-specific instructions. Those instructions
