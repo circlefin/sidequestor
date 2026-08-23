@@ -258,6 +258,29 @@ runtime files. Their accepted behavior is:
   This prevents `launchctl bootout` from leaving an orphan listener or stale
   readiness URL.
 
+## Lifecycle and configuration consistency amendment (2026-08-23)
+
+The first disposable package E2E exposed two adapter gaps that were not
+behavioral changes to the legacy triage algorithm, but did make the standalone
+package report or manage its state incorrectly:
+
+- The dashboard configuration payload had its own `YAAS_*` dotenv reader. A
+  fresh package workspace writes canonical `SIDEQUESTOR_*` names, so the
+  dashboard showed Claude and Slack enabled defaults even though `tick.py`
+  resolved Codex and Slack disabled. The dashboard and health monitor now use
+  the same packaged runtime environment resolver as `tick.py`, including
+  canonical-name precedence, legacy aliases, and validation.
+- `sq stop` ignored every `launchctl bootout` result and marked the manifest
+  stopped without verifying that each UUID-scoped service had unloaded. The
+  package lifecycle adapter now unloads one exact label at a time, retries
+  transient unloads, verifies the label with `launchctl print`, and leaves the
+  manifest running when any job remains. Uninstall and replacement paths use
+  the same helper.
+
+These changes preserve the `.env` compatibility boundary and do not add
+workspace secrets to launchd plists. Regression tests cover both effective
+configuration parity and a dashboard label that remains loaded during stop.
+
 ## Tests, Fixtures, and Goldens
 
 All 122 of these tracked files are intentionally excluded from the wheel. They

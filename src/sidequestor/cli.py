@@ -268,10 +268,14 @@ def _cmd_start(workspace: Workspace) -> int:
 
 
 def _cmd_stop(workspace: Workspace) -> int:
-    from .launchd import stop_production
+    from .launchd import LaunchdLifecycleError, stop_production
 
-    if not stop_production(workspace):
-        print(f"no production jobs installed for instance {workspace.instance_id}")
+    try:
+        if not stop_production(workspace):
+            print(f"no production jobs installed for instance {workspace.instance_id}")
+            return 1
+    except LaunchdLifecycleError as exc:
+        print(f"could not stop Sidequestor instance {workspace.instance_id}: {exc}", file=sys.stderr)
         return 1
     print(f"stopped Sidequestor instance {workspace.instance_id}")
     return 0

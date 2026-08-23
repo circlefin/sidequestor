@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from sidequestor.launchd import (
+    LaunchdLifecycleError,
     install_production,
     production_status,
     stop_production,
@@ -28,6 +30,13 @@ class ProductionLaunchdLifecycleTest(unittest.TestCase):
         self.run_patch = patch("sidequestor.launchd.subprocess.run")
         self.root_patch.start()
         self.run = self.run_patch.start()
+        self.run.side_effect = self._launchctl_absent
+
+    @staticmethod
+    def _launchctl_absent(command, **kwargs):
+        if command[1] == "print":
+            return subprocess.CompletedProcess(command, 1, "", "service not found")
+        return subprocess.CompletedProcess(command, 0, "", "")
 
     def tearDown(self) -> None:
         self.run_patch.stop()
@@ -83,6 +92,19 @@ class ProductionLaunchdLifecycleTest(unittest.TestCase):
             "jobs": {},
         }) + "\n")
         self.assertIsNotNone(production_status(self.workspace))
+
+    def test_stop_fails_and_preserves_running_manifest_when_a_job_remains_loaded(self) -> None:
+        install_production(self.workspace, self.root / "venv" / "bin" / "python")
+
+        def dashboard_stays_loaded(command, **kwargs):
+            if command[1] == "print" and command[-1].endswith(".dashboard"):
+                return subprocess.CompletedProcess(command, 0, "loaded", "")
+            return self._launchctl_absent(command, **kwargs)
+
+        self.run.side_effect = dashboard_stays_loaded
+        with self.assertRaises(LaunchdLifecycleError):
+            stop_production(self.workspace)
+        self.assertTrue(production_status(self.workspace)["running"])
 
     def test_rekey_refuses_to_orphan_installed_launchd_labels(self) -> None:
         install_production(self.workspace, self.root / "venv" / "bin" / "python")

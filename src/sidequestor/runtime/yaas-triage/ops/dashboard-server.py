@@ -90,7 +90,7 @@ sys.path.insert(0, str(RUNTIME_ROOT / "yaas-triage"))
 import approval_state
 import approval_store
 import tick_check
-from tick_state import NUMERIC_KNOBS, load_watch_manifests
+from tick_state import Config, NUMERIC_KNOBS, load_environment, load_watch_manifests
 
 # Statuses that are genuinely finished. Everything else is shown, deliberately: the
 # queue used to ALLOWLIST pending_review/needs_reply, so `executing` and `reviewed`
@@ -120,18 +120,8 @@ def build_workspace_identity() -> dict:
 # sources). Without them, a reconstructed Slack/Jira link is simply omitted; a
 # stored permalink still works, because it carries its own host.
 def _dotenv(key: str, default: str = "") -> str:
-    v = os.environ.get(key)
-    if v:
-        return v.strip()
-    canonical = key.replace("YAAS_", "SIDEQUESTOR_", 1) if key.startswith("YAAS_") else key
-    try:
-        for line in (REPO_ROOT / ".env").read_text().splitlines():
-            line = line.strip()
-            if line.startswith(f"{key}=") or line.startswith(f"{canonical}="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return default
+    value = load_environment(REPO_ROOT).get(key)
+    return str(value).strip() if value not in (None, "") else default
 
 SLACK_HOST = _dotenv("SLACK_WORKSPACE_DOMAIN")            # e.g. acme.slack.com
 JIRA_HOST  = (_dotenv("JIRA_BASE_URL").replace("https://", "")
@@ -848,17 +838,10 @@ def _recent_runlog_events(event_name: str, window_sec: int) -> list:
 # Deterministic between state changes (it only moves when .env / env changes), so it does not
 # defeat the ETag/304 path.
 def build_config() -> dict:
+    resolved = Config(str(RUNTIME_ROOT / "yaas-triage"))
+
     def knob(key, default, desc):
-        raw = os.environ.get(key) or None
-        if raw is None:
-            try:
-                for line in (REPO_ROOT / ".env").read_text().splitlines():
-                    s = line.strip()
-                    if s.startswith(f"{key}="):
-                        raw = s.split("=", 1)[1].strip().strip('"').strip("'")
-                        break
-            except OSError:
-                pass
+        raw = resolved.env.get(key)
         return {"key": key, "value": raw if raw not in (None, "") else str(default),
                 "default": str(default), "set": raw not in (None, ""), "desc": desc}
 

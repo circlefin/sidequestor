@@ -1,6 +1,6 @@
 # Standalone Git Tree for the Sidequestor Package
 
-**Status:** Published for internal pip testing; final audit changes pending publication
+**Status:** Published for internal pip testing; lifecycle/configuration corrections committed locally and pending publication
 
 **Date:** 2026-08-23
 
@@ -94,6 +94,15 @@ and the compact mobile layout keeps the name while hiding the path.
 the manifest and plists so `sq start` can restart them. Full removal is
 explicit: `sq setup --production uninstall` unloads jobs and deletes only the
 plist paths recorded for that workspace under `~/Library/LaunchAgents`.
+
+Lifecycle and configuration parity are explicit package guarantees. The
+dashboard and health monitor consume the same resolved environment object as
+triage, so canonical `SIDEQUESTOR_*` settings and legacy `YAAS_*` aliases
+cannot diverge between what is displayed and what `tick.py` uses. `sq stop`
+checks the result of each exact-label `launchctl bootout`, retries transient
+unloads, verifies that the label is absent, and only then records the manifest
+as stopped. A remaining label is reported as an error and leaves the manifest
+running for diagnosis or retry.
 
 YaaS remains useful as the historical expansion, `Yourself as a Service`, and as a compatibility
 term. It is not the primary product or package brand after this migration.
@@ -205,6 +214,9 @@ the local package harness:
   without a source checkout or `PYTHONPATH` runtime override.
 - `tests/test_launchd_lifecycle.py` mocks `launchctl` while covering production install, stop,
   restart, status identity checks, venv retention, dynamic dashboard ports, and uninstall.
+- `tests/test_runtime_config.py` verifies that canonical package settings resolve to the same
+  effective `YAAS_*` values used by triage and the dashboard, and that launchd lifecycle failures
+  are not reported as successful stops.
 
 The local ignored skill `.agents/skills/sidequestor-e2e/SKILL.md` provides a guarded live runbook:
 it clones a selected branch into a disposable `e2e/` run, installs it, stops only prior E2E
@@ -213,14 +225,14 @@ reaction to an explicitly supplied self-DM. Live Slack activity requires an expl
 Cleanup uses each run's own installed `sq` and the explicit production-uninstall
 mode, so it neither depends on a global CLI nor leaves package plists behind.
 
-The 2026-08-23 final audit built and installed `sidequestor-0.1.1.dev0`, ran all
-31 package tests without skips on the developer machine, and completed a real
-disposable launchd install/stop/restart/uninstall cycle. The dashboard's old
-listener was unreachable after stop and restart selected a new free loopback
-port. The normalized legacy comparison found all runtime files and exactly the
-24 differences accepted by ADR 0004. The legacy runner passed 53 of 54 shell
-suites plus all 29 differential goldens; its one stale source-document check is
-classified in ADR 0004 and is not an installed-package behavior regression.
+The 2026-08-23 final audit built and installed `sidequestor-0.1.1.dev0` and
+completed the normalized legacy comparison, finding exactly the 24 differences
+accepted by ADR 0004. The legacy runner passed 53 of 54 shell suites plus all
+29 differential goldens; its one stale source-document check is classified in
+ADR 0004 and is not an installed-package behavior regression. A subsequent
+disposable E2E run exposed the dashboard configuration-display and unchecked
+launchd-stop gaps described above; those corrections are now covered by
+focused tests and await republishing.
 An independent Claude review found and prompted fixes for explicit-instance
 precedence over an exported workspace and positional `migrate NAME`
 compatibility. Its final tracked-diff review reported no findings and validated
