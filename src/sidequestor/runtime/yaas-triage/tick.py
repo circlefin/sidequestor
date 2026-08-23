@@ -1200,6 +1200,31 @@ def _apply_unacked_backoff(t, rec):
     rec["backoff_sec"] = wait
 
 
+def _approval_ids_by_watch(t, quest_id):
+    watch_data = t._read_json(t.quests_dir / quest_id / "watch.json", {}) or {}
+    return {
+        str(watch.get("watch_id")): str(watch.get("approval_id"))
+        for watch in watch_data.get("watches", [])
+        if isinstance(watch, dict)
+        and watch.get("type") == "approval"
+        and watch.get("watch_id")
+        and watch.get("approval_id")
+    }
+
+
+def _return_approval_for_review(t, approval_id, reason):
+    cp = t.run(t.py(
+        t.helper("ledger", "approval-helper.py"), "fail", approval_id, reason,
+    ))
+    if cp.returncode != 0:
+        t.log(f"APPROVAL RETURN FAILED [{approval_id}] — {(cp.stderr or cp.stdout).strip()[:200]}")
+        return False
+    t.log(f"APPROVAL RETURNED FOR REVIEW [{approval_id}] — {reason}")
+    t.event({"event": "gate_approval_failed", "approval_id": approval_id,
+             "run_id": t.dispatch_run_id, "reason": reason})
+    return True
+
+
 def _record_progress(t, scope, committed_ids):
     """Bump the no-progress counter for every manifest item NOT in committed_ids; clear it for
     those that were. Mirrors the original shell orchestrator _record_progress."""
@@ -1208,6 +1233,7 @@ def _record_progress(t, scope, committed_ids):
     if not isinstance(counts, dict):
         counts = {}
     manifest = t._read_json(manifest_path, None)
+    approval_ids = _approval_ids_by_watch(t, scope) if scope != "reactions" else {}
 
     def bump(key, itype="", status=""):
         rec = counts.get(key) or {}
@@ -1228,7 +1254,13 @@ def _record_progress(t, scope, committed_ids):
         counts[key] = rec
 
     if manifest is None:
-        bump(f"{scope}|<unreadable-manifest>")
+        if approval_ids:
+            for approval_id in sorted(set(approval_ids.values())):
+                _return_approval_for_review(t, approval_id, "worker result manifest was unreadable")
+            for watch_id in approval_ids:
+                counts.pop(f"{scope}|{watch_id}", None)
+        else:
+            bump(f"{scope}|<unreadable-manifest>")
     else:
         committed = set(committed_ids or [])
         for item in manifest.get("items", []):
@@ -1237,6 +1269,15 @@ def _record_progress(t, scope, committed_ids):
             if iid in committed:
                 counts.pop(key, None)
             else:
+                approval_id = approval_ids.get(str(iid))
+                if approval_id:
+                    reason = str(
+                        item.get("note") or t.dispatch_last_error
+                        or "worker did not complete the reviewed action"
+                    )[:1000]
+                    _return_approval_for_review(t, approval_id, reason)
+                    counts.pop(key, None)
+                    continue
                 bump(key, item.get("type", ""), item.get("status", "pending"))
     try:
         tmp = str(t.unacked_file) + ".tmp"

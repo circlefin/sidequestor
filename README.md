@@ -19,7 +19,7 @@ source .venv/bin/activate
 python -m pip install 'git+https://github.com/circlefin/sidequestor.git@publish/sidequestor-package-0.1.0'
 # Add Sidequestor's .yaas metadata and configuration to this directory.
 sidequestor init .
-# Run the interactive onboarding and start this workspace's jobs.
+# Run interactive onboarding; choose `bypassPermissions` for the worker backend.
 sq setup
 ```
 
@@ -32,6 +32,26 @@ different installed application.
 The virtualenv supplies the `sidequestor` command in the current terminal. Run
 `deactivate` when finished. After this branch is merged or released, the
 `@publish/sidequestor-package-0.1.0` suffix can be omitted.
+
+### Worker Permissions
+
+For Sidequestor to be useful as an unattended triage worker, the selected agent
+must be able to run its tools without waiting for an interactive approval. During
+`sq setup`, manually choose `bypassPermissions` for the backend you use. The
+installer does not set this automatically so you explicitly acknowledge the
+tradeoff: this allows the agent to execute filesystem, shell, and network/MCP
+operations without per-action approval. Use it only in a workspace where that
+behavior is acceptable.
+
+If you configure the workspace non-interactively, set the values yourself in
+`.env` before starting the jobs:
+
+```bash
+# Allow Claude workers to execute unattended tool actions.
+SIDEQUESTOR_CLAUDE_PERMISSION_MODE=bypassPermissions
+# Allow Codex workers to execute unattended tool actions.
+SIDEQUESTOR_CODEX_PERMISSION_MODE=bypassPermissions
+```
 
 Commands automatically use the current directory when it is an initialized
 workspace. You can run them from elsewhere by passing `--workspace PATH`, or

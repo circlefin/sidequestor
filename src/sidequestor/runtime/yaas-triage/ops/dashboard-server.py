@@ -504,6 +504,9 @@ def _approval_card(i: dict) -> dict:
         "review_history": i.get("review_history", []),
         "worker_reply":   i.get("worker_reply", ""),
         "stalled":        stalled,
+        "processing_error": i.get("processing_error", ""),
+        "processing_error_at": i.get("processing_error_at"),
+        "failed_from_status": i.get("failed_from_status"),
         "available_actions": approval_state.available_actions(i, now),
         **_approval_target_link(i),
     }
@@ -1380,7 +1383,8 @@ def build_control() -> dict:
         attention.append({
             "id": f"approval:{card.get('id')}", "kind": "review",
             "priority": "high", "label": "Review agent action",
-            "detail": card.get("risk_reason") or card.get("message_text", ""),
+            "detail": (card.get("processing_error") or card.get("risk_reason")
+                       or card.get("message_text", "")),
             "quest_id": card.get("quest_id"), "quest_title": card.get("quest_title"),
             "approval": card,
         })
@@ -1388,7 +1392,8 @@ def build_control() -> dict:
         attention.append({
             "id": f"approval:{card.get('id')}", "kind": "review",
             "priority": "high", "label": "Review agent action",
-            "detail": card.get("risk_reason") or card.get("message_text", ""),
+            "detail": (card.get("processing_error") or card.get("risk_reason")
+                       or card.get("message_text", "")),
             "quest_id": card.get("quest_id"), "quest_title": card.get("quest_title"),
             "approval": card,
         })
