@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -34,6 +35,14 @@ def serve(workspace: Workspace, port: int = 8877) -> int:
         cwd=workspace.root,
         env=environment,
     )
+    previous_handlers = {}
+
+    def terminate_child(signum: int, _frame: object) -> None:
+        if process.poll() is None:
+            process.terminate()
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        previous_handlers[signum] = signal.signal(signum, terminate_child)
     try:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -52,6 +61,8 @@ def serve(workspace: Workspace, port: int = 8877) -> int:
         print(f"Sidequestor dashboard -> {url} (loopback only)", flush=True)
         return process.wait()
     finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
         if process.poll() is None:
             process.terminate()
         try:

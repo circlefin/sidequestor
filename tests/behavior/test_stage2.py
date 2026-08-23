@@ -131,8 +131,13 @@ class Stage2BehaviorTest(unittest.TestCase):
         self.assertTrue(skill.exists())
         self.assertIn("SIDEQUESTOR", skill.read_text())
         operating = self.workspace / ".yaas" / "engine" / "current" / "OPERATING.md"
-        self.assertIn("Sidequestor Worker Operating Instructions", operating.read_text())
-        self.assertIn("absolute packaged runtime root", operating.read_text())
+        operating_text = operating.read_text()
+        self.assertIn("Sidequestor Worker Operating Instructions", operating_text)
+        self.assertIn("absolute packaged runtime root", operating_text)
+        self.assertIn("A `reviewed` approval records the user's authorization", operating_text)
+        self.assertIn("do not apply\n  `allow_send` again as a permanent veto", operating_text)
+        self.assertNotIn("$SIDEQUESTOR_RUNTIME_ROOT", operating_text)
+        self.assertNotIn("Never send unless the quest allows it", operating_text)
         self.assertIn("SIDEQUESTOR_CLAUDE_PERMISSION_MODE=acceptEdits", (self.workspace / ".env.example").read_text())
         self.assertIn("yaas_v2_auto_pull", (self.workspace / "settings.json.example").read_text())
         watermark = self.workspace / "state" / "triage" / "reaction-watermark.json"
@@ -200,6 +205,8 @@ class Stage2BehaviorTest(unittest.TestCase):
             with browser.open(url + "/api/dashboard", timeout=3) as response:
                 payload = json.loads(response.read())
             self.assertIn("quests", payload)
+            self.assertEqual(payload["workspace"]["path"], str(self.workspace.resolve()))
+            self.assertEqual(payload["workspace"]["display_name"], "behavior")
             self.assertEqual(self.invoke("dashboard", "url").stdout.strip(), url)
         finally:
             process.terminate()

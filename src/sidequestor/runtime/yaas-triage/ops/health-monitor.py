@@ -66,6 +66,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+_RUNTIME_ROOT = Path(os.environ.get("YAAS_RUNTIME_ROOT", Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(_RUNTIME_ROOT / "yaas-triage"))
+from tick_state import load_environment
+
 # Thresholds. Defaults are deliberately loose enough not to cry wolf; every one is
 # overridable so a slower install can tune it.
 STALL_MIN     = float(os.environ.get("YAAS_HEALTH_STALL_MIN", "10"))
@@ -115,18 +119,9 @@ def _read_json(path, default=None):
 
 
 def _setting(repo, key, default=""):
-    """Read an install setting from the environment, then the repo's .env file."""
-    value = os.environ.get(key)
-    if value not in (None, ""):
-        return str(value).strip()
-    try:
-        for raw in (Path(repo) / ".env").read_text().splitlines():
-            line = raw.strip()
-            if line.startswith(f"{key}="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return default
+    """Read an install setting using the same resolver as the triage loop."""
+    value = load_environment(repo).get(key)
+    return str(value).strip() if value not in (None, "") else default
 
 
 class Health:

@@ -147,6 +147,15 @@ def _load_env_file(repo_root, environ):
     return apply_namespace_aliases(env)
 
 
+def load_environment(repo_root, environ=None):
+    """Return the effective runtime environment for a workspace.
+
+    This is public because non-triage surfaces, such as the dashboard and health
+    monitor, must use exactly the same dotenv and namespace-alias rules as tick.py.
+    """
+    return _load_env_file(repo_root, os.environ if environ is None else environ)
+
+
 def validate_knobs(env):
     """Raise BadEnvKnob if any gate knob (or a YAAS_MAX_SPEND_* window) is set but non-numeric.
 
@@ -328,7 +337,7 @@ class Config:
         environ = os.environ if environ is None else environ
         self.triage_dir = Path(triage_dir).resolve()
         self.repo_root = _repo_root(self.triage_dir)
-        self.env = _load_env_file(self.repo_root, environ)
+        self.env = load_environment(self.repo_root, environ)
         validate_knobs(self.env)
 
         r = self.repo_root

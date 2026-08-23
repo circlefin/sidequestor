@@ -106,6 +106,66 @@ class Stage2CommandSurfaceTest(unittest.TestCase):
             self.assertEqual(stopped.returncode, 0, stopped.stderr)
             self.assertIn(marker["instance_id"], stopped.stdout)
 
+    def test_workspace_commands_resolve_from_nested_directory(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-cwd-") as temp, tempfile.TemporaryDirectory(prefix="sidequestor-cwd-home-") as home:
+            workspace = Path(temp) / "workspace"
+            nested = workspace / "state" / "nested"
+            home_path = Path(home)
+            initialized = run("init", str(workspace), home=home_path)
+            self.assertEqual(initialized.returncode, 0, initialized.stderr)
+            nested.mkdir(parents=True)
+            env = {**os.environ, "HOME": str(home_path)}
+
+            for args in (
+                ("doctor",),
+                ("instances", "doctor"),
+                ("instances", "register"),
+                ("sync-resources",),
+                ("setup", "--render-only"),
+                ("dashboard", "url"),
+                ("migrate",),
+            ):
+                result = subprocess.run(
+                    [str(YAAS), *args], cwd=nested, text=True, capture_output=True, env=env,
+                )
+                expected = 1 if args == ("dashboard", "url") else 0
+                self.assertEqual(result.returncode, expected, f"{args}: {result.stderr}\n{result.stdout}")
+
+            explicit_nested = run("--workspace", str(nested), "doctor", home=home_path)
+            self.assertEqual(explicit_nested.returncode, 0, explicit_nested.stderr)
+
+            marker = json.loads((workspace / ".yaas" / "instance.json").read_text())
+            selected = run("--instance", marker["instance_id"], "instances", "doctor", home=home_path)
+            self.assertEqual(selected.returncode, 0, selected.stderr)
+
+            canonical_env = {**env, "SIDEQUESTOR_WORKSPACE": str(nested)}
+            canonical = subprocess.run(
+                [str(YAAS), "instances", "doctor"], cwd=Path(temp), text=True,
+                capture_output=True, env=canonical_env,
+            )
+            self.assertEqual(canonical.returncode, 0, canonical.stderr)
+
+            other = Path(temp) / "other"
+            other_init = run("init", str(other), home=home_path)
+            self.assertEqual(other_init.returncode, 0, other_init.stderr)
+            selected_with_env = subprocess.run(
+                [str(YAAS), "--instance", marker["instance_id"], "instances", "doctor"],
+                cwd=Path(temp), text=True, capture_output=True,
+                env={**canonical_env, "SIDEQUESTOR_WORKSPACE": str(other)},
+            )
+            self.assertEqual(selected_with_env.returncode, 0, selected_with_env.stderr)
+            self.assertIn(marker["instance_id"], selected_with_env.stdout)
+
+            legacy_migrate_name = run(
+                "--workspace", str(workspace), "migrate", "legacy-name", home=home_path,
+            )
+            self.assertEqual(legacy_migrate_name.returncode, 0, legacy_migrate_name.stderr)
+
+    def test_stop_rejects_ambiguous_target_selection(self) -> None:
+        result = run("--workspace", "/tmp/workspace", "stop", "some-instance")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("choose one", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

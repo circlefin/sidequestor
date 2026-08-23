@@ -6,15 +6,28 @@ It packages the battle-tested YAAS v2 runtime behind the `sidequestor` command.
 ## Install
 
 ```bash
-mkdir -p ~/sidequestor-install
-cd ~/sidequestor-install
+# Most users: change to an existing project/workspace directory.
+cd ~/path/to/existing-workspace
+# Optional instead: create a new directory and enter it.
+# mkdir -p ~/new-sidequestor-workspace
+# cd ~/new-sidequestor-workspace
+# Create an isolated Python environment inside that workspace.
 python3 -m venv .venv
+# Make the Sidequestor commands available in this terminal.
 source .venv/bin/activate
+# Install the package from the internal testing publication branch.
 python -m pip install 'git+https://github.com/circlefin/sidequestor.git@publish/sidequestor-package-0.1.0'
-sidequestor init ./workspace
-cd ./workspace
+# Add Sidequestor's .yaas metadata and configuration to this directory.
+sidequestor init .
+# Run the interactive onboarding and start this workspace's jobs.
 sq setup
 ```
+
+The existing directory does not need Sidequestor metadata beforehand;
+`sidequestor init .` adds it in place and preserves existing files. The
+dashboard workspace label opens the current workspace in Cursor when available,
+or in macOS's default IDE/file opener; set `SIDEQUESTOR_IDE_APP` to prefer a
+different installed application.
 
 The virtualenv supplies the `sidequestor` command in the current terminal. Run
 `deactivate` when finished. After this branch is merged or released, the
@@ -22,10 +35,12 @@ The virtualenv supplies the `sidequestor` command in the current terminal. Run
 
 Commands automatically use the current directory when it is an initialized
 workspace. You can run them from elsewhere by passing `--workspace PATH`, or
-set `YAAS_WORKSPACE` for a shell-wide default. For example:
+set `SIDEQUESTOR_WORKSPACE` for a shell-wide default. The legacy
+`YAAS_WORKSPACE` name remains accepted. For example:
 
 ```bash
-sidequestor --workspace ~/sidequestor-install/workspace doctor
+# Validate the workspace selected by an explicit path.
+sidequestor --workspace ~/path/to/existing-workspace doctor
 ```
 
 `sq setup` is the complete onboarding wizard. It asks whether to enable the
@@ -38,10 +53,16 @@ starts the workspace's launchd jobs.
 The lifecycle commands are:
 
 ```bash
-sq start                         # start jobs for the current workspace
-sq stop INSTANCE_ID              # stop every job for one instance
-sq instances list                # find registered instance IDs
-sq --workspace ./workspace doctor
+# Start triage, heartbeat, and dashboard jobs for the current workspace.
+sq start
+# Stop every job for the current workspace; the instance ID is optional here.
+sq stop
+# List registered workspaces and their instance IDs.
+sq instances list
+# Validate the current workspace from inside it.
+sq doctor
+# From another directory, stop one registered workspace explicitly.
+sq stop INSTANCE_ID
 ```
 
 Use `sq setup --non-interactive` for defaults without OAuth, or use
@@ -57,6 +78,7 @@ names shown in `.env.example`.
 From a checkout with its development virtualenv activated:
 
 ```bash
+# Run the complete unittest suite from the repository checkout.
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 

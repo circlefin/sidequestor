@@ -1,8 +1,8 @@
 # Standalone Git Tree for the Sidequestor Package
 
-**Status:** Implemented locally; corrected package publication pending
+**Status:** Published for internal pip testing; lifecycle/configuration corrections committed locally and pending publication
 
-**Date:** 2026-08-22
+**Date:** 2026-08-23
 
 ## Decision
 
@@ -54,7 +54,7 @@ replace against `.git-yaas-v2`.
 | CLI | `sidequestor` | `sq` is a short convenience alias; `yaas` remains an alias |
 | Python namespace | `sidequestor` | `yaas_triage` remains a thin import/entrypoint shim during transition |
 | Packaged runtime paths | `sidequestor` | Existing `yaas-triage` paths remain readable for old workspaces |
-| Environment variables | `SIDEQUESTOR_*` | `YAAS_*` is translated as a fallback with a one-time deprecation warning |
+| Environment variables | `SIDEQUESTOR_*` | `YAAS_*` remains an accepted runtime fallback |
 | Workspace state directory | `.yaas` | Stable YAAS v2 storage contract; no automatic rename or porting |
 | New launchd labels | `com.sidequestor.*` | Existing `com.yaas.*` labels are managed only for old installations |
 | User-facing docs, logs, and dashboard | Sidequestor | Mention YaaS only as the legacy/runtime alias where needed |
@@ -73,6 +73,36 @@ file-level list and rationale live in [ADR 0004](0004-STAGE5-FILE-PORT-INVENTORY
 `sq stop` defaults to the initialized workspace containing the current
 directory, including descendant directories, when no instance identifier is
 provided. Explicit `--workspace` and `--instance` selection remains supported.
+The same ancestor discovery is used consistently by every workspace-aware
+command, including instance maintenance and migration.
+
+### Installed launchd lifecycle
+
+`sq setup` and `sq start` install three persistent production jobs: triage,
+heartbeat, and dashboard. The generated labels are UUID-scoped, the manifest
+is bound to both the UUID and canonical workspace path, and Python jobs retain
+the venv interpreter path instead of resolving through its symlink to a global
+Python. This keeps a persistent installation independent of the invoking
+shell and source checkout.
+
+The production dashboard does not assume port 8877. It requests a free
+loopback port and publishes the selected URL only after successful bind.
+Its header identifies the selected workspace by configured display name and
+canonical path; the path truncates visually but remains available as a tooltip,
+and the compact mobile layout keeps the name while hiding the path.
+`sq stop` unloads the containing workspace's jobs but intentionally retains
+the manifest and plists so `sq start` can restart them. Full removal is
+explicit: `sq setup --production uninstall` unloads jobs and deletes only the
+plist paths recorded for that workspace under `~/Library/LaunchAgents`.
+
+Lifecycle and configuration parity are explicit package guarantees. The
+dashboard and health monitor consume the same resolved environment object as
+triage, so canonical `SIDEQUESTOR_*` settings and legacy `YAAS_*` aliases
+cannot diverge between what is displayed and what `tick.py` uses. `sq stop`
+checks the result of each exact-label `launchctl bootout`, retries transient
+unloads, verifies that the label is absent, and only then records the manifest
+as stopped. A remaining label is reported as an error and leaves the manifest
+running for diagnosis or retry.
 
 YaaS remains useful as the historical expansion, `Yourself as a Service`, and as a compatibility
 term. It is not the primary product or package brand after this migration.
@@ -182,15 +212,35 @@ the local package harness:
   dashboard, loop, reinstall/uninstall, and instance isolation.
 - `tests/test_runtime_imports.py` verifies installed helper imports and approval-watch arming
   without a source checkout or `PYTHONPATH` runtime override.
+- `tests/test_launchd_lifecycle.py` mocks `launchctl` while covering production install, stop,
+  restart, status identity checks, venv retention, dynamic dashboard ports, and uninstall.
+- `tests/test_runtime_config.py` verifies that canonical package settings resolve to the same
+  effective `YAAS_*` values used by triage and the dashboard, and that launchd lifecycle failures
+  are not reported as successful stops.
 
 The local ignored skill `.agents/skills/sidequestor-e2e/SKILL.md` provides a guarded live runbook:
 it clones a selected branch into a disposable `e2e/` run, installs it, stops only prior E2E
 instances, initializes and starts a workspace, creates a quest, and optionally adds a trigger
 reaction to an explicitly supplied self-DM. Live Slack activity requires an explicit opt-in.
+Cleanup uses each run's own installed `sq` and the explicit production-uninstall
+mode, so it neither depends on a global CLI nor leaves package plists behind.
+
+The 2026-08-23 final audit built and installed `sidequestor-0.1.1.dev0` and
+completed the normalized legacy comparison, finding exactly the 24 differences
+accepted by ADR 0004. The legacy runner passed 53 of 54 shell suites plus all
+29 differential goldens; its one stale source-document check is classified in
+ADR 0004 and is not an installed-package behavior regression. A subsequent
+disposable E2E run exposed the dashboard configuration-display and unchecked
+launchd-stop gaps described above; those corrections are now covered by
+focused tests and await republishing.
+An independent Claude review found and prompted fixes for explicit-instance
+precedence over an exported workspace and positional `migrate NAME`
+compatibility. Its final tracked-diff review reported no findings and validated
+the dashboard workspace identity API and responsive top-bar treatment.
 
 ## Git History
 
-The local package source snapshot currently originates from:
+The legacy runtime baseline currently originates from:
 
 ```text
 .git-yaas-v2
@@ -212,8 +262,10 @@ publish/yaas-v2-20260822-013157
   Source-SHA: 50b3e91
 ```
 
-The next package publication should use a clearer branch name, for example:
-`publish/sidequestor-package-0.1.0`.
+The signed internal pip-testing publication is
+`publish/sidequestor-pip-internal-testing` at `f28377a`. Final-audit changes in
+the standalone source require a subsequent publication before that branch can
+represent this decision in full.
 
 ## Publication Tooling
 
@@ -287,18 +339,20 @@ fails, the old legacy source and the existing published branch remain usable ind
 
 ## Expected End State
 
-There will be three intentionally separate boundaries:
+There are two intentionally separate source boundaries plus disposable validation workspaces:
 
 ```text
 yourself-as-a-service/
   .git-yaas-v2/                 legacy source and production mirror
-  .local/yaas-package/          local package development and validation
 
-~/sidequestor-package-publish/
+/Users/guangmian.kung/sidequestor-pip-package/
   .git/                         standalone package Git database
   pyproject.toml
   src/sidequestor/
   src/yaas_triage/              compatibility shim only
+
+sidequestor-pip-package/e2e/
+  run-*/                        disposable branch-install validation only
 ```
 
 Both publication paths may target `circlefin/sidequestor`, but neither local Git database will

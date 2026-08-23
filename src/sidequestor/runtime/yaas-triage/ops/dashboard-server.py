@@ -35,6 +35,7 @@ Endpoints:
     POST /api/undo/<id>       → undo reviewed/cancelled back to pending_review
     POST /api/reclaim/<id>    → recover an expired executing lease
     POST /api/quests          → create a draft-only quest from an operator prompt
+    POST /api/workspace/open  → open this workspace in Cursor or the default app
 """
 
 from __future__ import annotations  # PEP 604 unions below must not be
@@ -90,7 +91,7 @@ sys.path.insert(0, str(RUNTIME_ROOT / "yaas-triage"))
 import approval_state
 import approval_store
 import tick_check
-from tick_state import NUMERIC_KNOBS, load_watch_manifests
+from tick_state import Config, NUMERIC_KNOBS, load_environment, load_watch_manifests
 
 # Statuses that are genuinely finished. Everything else is shown, deliberately: the
 # queue used to ALLOWLIST pending_review/needs_reply, so `executing` and `reviewed`
@@ -102,23 +103,26 @@ DASHBOARD_HTML = RUNTIME_ROOT / "dashboard.html"
 DASHBOARD_LOGO = RUNTIME_ROOT / "yaas-triage" / "assets" / "sidequestor-mark.png"
 PORT           = int(sys.argv[1]) if len(sys.argv) > 1 else 8877
 
+
+def build_workspace_identity() -> dict:
+    marker = REPO_ROOT / ".yaas" / "instance.json"
+    try:
+        data = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        data = {}
+    return {
+        "display_name": str(data.get("display_name") or REPO_ROOT.name),
+        "path": str(REPO_ROOT),
+        "instance_id": str(data.get("instance_id") or ""),
+    }
+
 # Workspace-specific hosts. No hardcoded defaults: they belong to whoever runs
 # this, so they come from the gitignored repo-root .env (the same file the orchestrator
 # sources). Without them, a reconstructed Slack/Jira link is simply omitted; a
 # stored permalink still works, because it carries its own host.
 def _dotenv(key: str, default: str = "") -> str:
-    v = os.environ.get(key)
-    if v:
-        return v.strip()
-    canonical = key.replace("YAAS_", "SIDEQUESTOR_", 1) if key.startswith("YAAS_") else key
-    try:
-        for line in (REPO_ROOT / ".env").read_text().splitlines():
-            line = line.strip()
-            if line.startswith(f"{key}=") or line.startswith(f"{canonical}="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return default
+    value = load_environment(REPO_ROOT).get(key)
+    return str(value).strip() if value not in (None, "") else default
 
 SLACK_HOST = _dotenv("SLACK_WORKSPACE_DOMAIN")            # e.g. acme.slack.com
 JIRA_HOST  = (_dotenv("JIRA_BASE_URL").replace("https://", "")
@@ -835,17 +839,10 @@ def _recent_runlog_events(event_name: str, window_sec: int) -> list:
 # Deterministic between state changes (it only moves when .env / env changes), so it does not
 # defeat the ETag/304 path.
 def build_config() -> dict:
+    resolved = Config(str(RUNTIME_ROOT / "yaas-triage"))
+
     def knob(key, default, desc):
-        raw = os.environ.get(key) or None
-        if raw is None:
-            try:
-                for line in (REPO_ROOT / ".env").read_text().splitlines():
-                    s = line.strip()
-                    if s.startswith(f"{key}="):
-                        raw = s.split("=", 1)[1].strip().strip('"').strip("'")
-                        break
-            except OSError:
-                pass
+        raw = resolved.env.get(key)
         return {"key": key, "value": raw if raw not in (None, "") else str(default),
                 "default": str(default), "set": raw not in (None, ""), "desc": desc}
 
@@ -1167,6 +1164,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             pass
 
     return {
+        "workspace":      build_workspace_identity(),
         "triage":         triage_state,
         "live_run":       build_live_run(),
         "quests":         quests,
@@ -1399,6 +1397,7 @@ def build_control() -> dict:
 
     return {
         "api_version": 1,
+        "workspace": dashboard["workspace"],
         "capabilities": {
             "control_snapshot": True,
             "normalized_activity": True,
@@ -2013,6 +2012,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json({"error": "request body must be a JSON object"}, 400)
             return
 
+        if path == "/api/workspace/open":
+            self._handle_open_workspace()
+            return
+
         parts = [p for p in path.strip("/").split("/") if p]
         # Expected: ["api", "<action>", "<id>"]
         if len(parts) == 3 and parts[0] == "api" and parts[1] in approval_state.HTTP_ACTIONS:
@@ -2037,6 +2040,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "reclaim": "only executing items with an expired lease can be reclaimed",
             "edit": "item is no longer in reviewed state",
         }.get(action, "already reviewed, executing, executed, or cancelled")
+
+    def _handle_open_workspace(self):
+        """Open the server's own workspace, never a browser-supplied path."""
+        preferred = os.environ.get("SIDEQUESTOR_IDE_APP", "Cursor").strip()
+        attempts = []
+        if preferred:
+            attempts.append((preferred, ["open", "-a", preferred, str(REPO_ROOT)]))
+        attempts.append(("default opener", ["open", str(REPO_ROOT)]))
+        errors = []
+        for opened_with, command in attempts:
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=str(REPO_ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                errors.append(str(exc))
+                continue
+            if result.returncode == 0:
+                self._send_json({
+                    "ok": True,
+                    "path": str(REPO_ROOT),
+                    "opened_with": opened_with,
+                })
+                return
+            detail = (result.stderr or result.stdout or "open failed").strip()
+            errors.append(detail[:200])
+        self._send_json({
+            "error": "could not open workspace in Cursor or the default application",
+            "detail": "; ".join(errors),
+        }, 500)
 
     def _handle_prompt(self, quest_id: str, payload: dict):
         """Durably queue one operator-authorized instruction for a quest."""

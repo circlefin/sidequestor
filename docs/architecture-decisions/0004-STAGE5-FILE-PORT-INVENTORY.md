@@ -183,7 +183,7 @@ shadow-job lifecycle. The shell helper is not silently invoked by the CLI.
 
 ## Amended Runtime Files
 
-These 21 files retain the original logic and have only the changes listed.
+These 24 files retain the original logic and have only the changes listed.
 
 | Source path | Amendment | Where it lives and why |
 |---|---|---|
@@ -197,7 +197,7 @@ These 21 files retain the original logic and have only the changes listed.
 | `yaas-triage/ledger/approval-helper.py` | Added workspace root and packaged runtime helper resolution. | Packaged runtime copy; approval writes stay in workspace state and helper imports stay inside the wheel. |
 | `yaas-triage/ledger/checker-health.py` | Added `YAAS_WORKSPACE` root resolution. | Packaged runtime copy; checker backoff/health is workspace state. |
 | `yaas-triage/ledger/watch-guard.py` | Added `YAAS_WORKSPACE` root resolution. | Packaged runtime copy; guard snapshots must protect the selected workspace. |
-| `yaas-triage/ops/dashboard-server.py` | Added workspace override, packaged runtime root, and package asset/manifest paths. | Packaged runtime copy; dashboard state remains workspace-local while HTML, logo, and manifests come from the wheel. |
+| `yaas-triage/ops/dashboard-server.py` | Added workspace override, packaged runtime root, package asset/manifest paths, and read-only workspace identity in dashboard snapshots. | Packaged runtime copy; dashboard state remains workspace-local while HTML, logo, and manifests come from the wheel, and the UI can identify its selected workspace without inferring from process state. |
 | `yaas-triage/ops/health-monitor.py` | Added `YAAS_WORKSPACE` root resolution. | Packaged runtime copy; health state follows the selected workspace. |
 | `yaas-triage/ops/notify.py` | Added `YAAS_WORKSPACE` root resolution. | Packaged runtime copy; notifications and state must not resolve to the source checkout. |
 | `yaas-triage/ops/rotate-logs.py` | Added `YAAS_WORKSPACE` root resolution. | Packaged runtime copy; log rotation operates on workspace logs. |
@@ -212,11 +212,74 @@ These 21 files retain the original logic and have only the changes listed.
 | `yaas-triage/tick_state.py` | Added workspace/runtime root resolution and changed checker validation from executable-bit dependence to regular-file dependence. | Packaged runtime copy; wheel extraction may not preserve executable bits for Python checker files, while the selected interpreter executes them. |
 | `yaas-triage/triage-loop.sh` | Resolves failure state under `YAAS_WORKSPACE` instead of assuming a source-tree sibling. | Packaged runtime copy; loop failure counters belong to the workspace. |
 
-The package-facing `sq stop` command also accepts no instance argument when
-run inside an initialized workspace. It walks from the current directory to
-its parents, selects the workspace marker, and stops that workspace's
-instance. An explicit `--workspace` or instance identifier remains available
-for disambiguation.
+## Workspace and launchd amendment (2026-08-23)
+
+All workspace-aware commands use one resolver. It canonicalizes the supplied
+`--workspace`, canonical `SIDEQUESTOR_WORKSPACE`, legacy `YAAS_WORKSPACE`, or
+current directory and walks toward the
+filesystem root until it finds `.yaas/instance.json`. This applies to nested
+directories and to `doctor`, `instances doctor/register/rekey`, `migrate`,
+`sync-resources`, setup, start/stop, tick/loop, dashboard, ledger, and isolated
+surface commands. An explicit instance ID is resolved through the advisory
+registry and must identify exactly one entry. `init` remains path-explicit
+because it creates a workspace rather than discovering one.
+
+Production launchd jobs are native package adapters rather than amended legacy
+runtime files. Their accepted behavior is:
+
+- Labels include the workspace instance ID and manifests record both that ID
+  and the canonical workspace path. Status, stop, and uninstall reject copied
+  or stale manifests that identify another workspace.
+- The interpreter path is made absolute without resolving the venv's Python
+  symlink. Persistent jobs therefore continue using the environment where
+  Sidequestor was installed.
+- Launchd exports both canonical `SIDEQUESTOR_WORKSPACE`/
+  `SIDEQUESTOR_RUNTIME_ROOT` names and their YAAS runtime aliases. Registry
+  storage similarly gives `SIDEQUESTOR_CONFIG_HOME` precedence over
+  `YAAS_CONFIG_HOME`.
+- The dashboard production job requests port `0`; the adapter allocates a free
+  loopback port and writes `state/dashboard-url.txt` only after the server has
+  bound successfully. It removes the readiness file when the server exits.
+- Dashboard control and full snapshots expose the selected workspace's display
+  name, canonical path, and instance ID. The top bar shows the name and an
+  ellipsized path, retains the full path as a tooltip, and hides only the path
+  on narrow screens. This prevents operators from acting on the wrong local
+  instance while preserving the existing dashboard hierarchy.
+- `sq stop` with no selector discovers the containing workspace, unloads only
+  that instance's jobs, and retains its manifest and plists for restart.
+  `sq setup --production uninstall` unloads the same jobs and removes their
+  package-owned plists and manifest.
+- Reinstall unloads prior labels for that workspace, writes and bootstraps the
+  current UUID-scoped jobs, marks the manifest running, and removes superseded
+  package-owned plist paths after success.
+- Rekeying is refused while shadow or production launchd manifests exist. The
+  operator must uninstall first so a new UUID cannot orphan old labels.
+- The dashboard adapter forwards `SIGTERM` and `SIGINT` to its server child.
+  This prevents `launchctl bootout` from leaving an orphan listener or stale
+  readiness URL.
+
+## Lifecycle and configuration consistency amendment (2026-08-23)
+
+The first disposable package E2E exposed two adapter gaps that were not
+behavioral changes to the legacy triage algorithm, but did make the standalone
+package report or manage its state incorrectly:
+
+- The dashboard configuration payload had its own `YAAS_*` dotenv reader. A
+  fresh package workspace writes canonical `SIDEQUESTOR_*` names, so the
+  dashboard showed Claude and Slack enabled defaults even though `tick.py`
+  resolved Codex and Slack disabled. The dashboard and health monitor now use
+  the same packaged runtime environment resolver as `tick.py`, including
+  canonical-name precedence, legacy aliases, and validation.
+- `sq stop` ignored every `launchctl bootout` result and marked the manifest
+  stopped without verifying that each UUID-scoped service had unloaded. The
+  package lifecycle adapter now unloads one exact label at a time, retries
+  transient unloads, verifies the label with `launchctl print`, and leaves the
+  manifest running when any job remains. Uninstall and replacement paths use
+  the same helper.
+
+These changes preserve the `.env` compatibility boundary and do not add
+workspace secrets to launchd plists. Regression tests cover both effective
+configuration parity and a dashboard label that remains loaded during stop.
 
 ## Tests, Fixtures, and Goldens
 
@@ -356,30 +419,31 @@ These files were introduced by the package layer and have no `.git-yaas-v2`
 source-path equivalent:
 
 ```text
-.local/yaas-package/pyproject.toml
-.local/yaas-package/README.md
-.local/yaas-package/.gitignore
-.local/yaas-package/src/sidequestor/__init__.py
-.local/yaas-package/src/sidequestor/__main__.py
-.local/yaas-package/src/sidequestor/cli.py
-.local/yaas-package/src/sidequestor/dashboard.py
-.local/yaas-package/src/sidequestor/isolated.py
-.local/yaas-package/src/sidequestor/launchd.py
-.local/yaas-package/src/sidequestor/migrations.py
-.local/yaas-package/src/sidequestor/native.py
-.local/yaas-package/src/sidequestor/resources.py
-.local/yaas-package/src/sidequestor/workspace.py
-.local/yaas-package/src/sidequestor/package_data/OPERATING.md
-.local/yaas-package/src/sidequestor/package_data/settings.json.example
-.local/yaas-package/src/sidequestor/dispatch/fake-worker.py
-.local/yaas-package/src/yaas_triage/__init__.py
-.local/yaas-package/src/yaas_triage/__main__.py
-.local/yaas-package/src/yaas_triage/cli.py
-.local/yaas-package/tests/command_surface/test_stage2.py
-.local/yaas-package/tests/behavior/test_stage2.py
-.local/yaas-package/tests/full_workspace/test_stage3.py
-.local/yaas-package/tools/protect-live-tree
-.local/yaas-package/baselines/protected-tree.json
+pyproject.toml
+README.md
+.gitignore
+src/sidequestor/__init__.py
+src/sidequestor/__main__.py
+src/sidequestor/cli.py
+src/sidequestor/dashboard.py
+src/sidequestor/isolated.py
+src/sidequestor/launchd.py
+src/sidequestor/migrations.py
+src/sidequestor/native.py
+src/sidequestor/resources.py
+src/sidequestor/workspace.py
+src/sidequestor/package_data/OPERATING.md
+src/sidequestor/package_data/settings.json.example
+src/sidequestor/runtime/yaas-triage/dispatch/fake-worker.py
+src/yaas_triage/__init__.py
+src/yaas_triage/__main__.py
+src/yaas_triage/cli.py
+tests/command_surface/test_stage2.py
+tests/behavior/test_stage2.py
+tests/full_workspace/test_stage3.py
+tests/test_launchd_lifecycle.py
+tests/test_runtime_imports.py
+tests/test_setup.py
 ```
 
 The package also creates build-only files such as `.venv/`, `dist/`, wheel
@@ -424,32 +488,34 @@ versioned and do not overwrite personal skills.
 
 ## Validation and Safety
 
-- Protected-tree verification: `232 tracked paths unchanged`.
-- Final wheel: `sidequestor-0.1.0.dev0`, SHA-256
-  `669083484d9e2d67325f63c84575338a9c4d183167f99c3ed48c8ce05d731669`, built
-  from standalone source commit `815f26f3c2cbef5a1551106a660253b4918affbc`.
-- Wheel audit: no tests, review folders, private workspace files, symlinks,
-  bytecode, or `__pycache__` entries.
-- Current standalone package suite: `22 tests, OK (skipped=2)` in the restricted
-  verification environment. It includes command surface, isolated adapters,
-  reaction watermarking, fake dispatch, shadow workspace behavior, dashboard HTTP
-  routes, setup lifecycle, and installed-runtime import/approval-watch checks.
-  The two dashboard tests were skipped only because that environment forbids
-  localhost socket binding; they must run on a normal developer machine.
-- Fresh package workspace: `/private/tmp/sidequestor-final-test/workspace`.
-- Fresh wheel installation successfully ran `sidequestor init`, `doctor`, an
-  isolated tick, launchd rendering, `yaas --version`, and `python -m
-  yaas_triage --version` using canonical settings from `.env`, with no
-  inherited `YAAS_*` process variables.
-- Standalone source repository: `/private/tmp/sidequestor-package-publish`,
-  branch `package/sidequestor-0.1.0`, with its own `.git`. It contains the
-  package and OSS metadata only; tests, code-review folders, and workspace
-  state are absent.
-- Historical published branch: `publish/sidequestor-package-0.1.0` at
-  `66f66e328529d3095b830e5743e293a2885b08c9`. The signed delivery commit was
-  verified by GitHub as `true valid`, but it predates the installed-runtime
-  import-boundary correction and must not be treated as the latest installable
-  package. The corrected standalone tree is ready for a subsequent publication.
+- Normalized inventory verification: zero missing legacy runtime files, zero
+  undocumented differences, and exactly 24 documented amended files. The only
+  package-only runtime file is `dispatch/fake-worker.py`.
+- Protected legacy tree: no tracked changes. Its unrelated pre-existing
+  untracked audit/docs/test files were left untouched.
+- Final audit wheel: `sidequestor-0.1.1.dev0`, SHA-256
+  `f524e8f511b00e813d9a02d514509392f3644b1d44951545034cd44667468786`.
+  Its 129 entries contain 97 runtime and 9 managed-skill entries, with no tests,
+  bytecode, or cache paths.
+- Installed-wheel package suite: `31 tests, OK` on the developer machine,
+  including both localhost dashboard tests. The same suite reports two socket
+  skips only inside the managed sandbox where binding is denied.
+- Real launchd E2E: production install, three-job UUID identity, authenticated
+  dashboard access, selector-free nested-directory stop, old-listener
+  termination, restart on a newly selected free port, status, and production
+  uninstall all passed in a disposable workspace.
+- Legacy baseline: 53 of 54 shell suites passed and all 29 differential tick
+  goldens passed. The sole baseline failure is the stale `doc-contracts` check
+  requiring checker-authoring literals in `CLAUDE.example.md`; that file now
+  deliberately routes source mutation to a separate checkout, while the full
+  checker-authoring contract remains bundled in the runtime skill.
+- Leak review: no tracked env/state/log/E2E paths, token-like values, Circle
+  email addresses, gitlinks, or nested Git paths. Matches were code identifiers,
+  empty configuration keys, Keychain commands, and example URLs. `trivy` was
+  unavailable locally.
+- Signed internal-testing branch: `publish/sidequestor-pip-internal-testing`
+  at `f28377a`. It predates the final-audit changes documented here and requires
+  republishing before it includes them.
 - The original `.git-yaas-v2` tracked tree was not edited, moved, or replaced.
 - Production cutover was not performed. The package workspace is running
   side-by-side; the legacy source and its rollback paths remain preserved.

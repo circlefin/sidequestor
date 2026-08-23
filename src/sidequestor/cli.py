@@ -20,6 +20,8 @@ from .resources import sync_resources
 from .setup import run_setup
 from .workspace import (
     Workspace,
+    find_workspace,
+    find_workspace_root,
     init_workspace,
     list_instances,
     load_workspace,
@@ -61,6 +63,10 @@ LEGACY_COMMANDS = {
 ISOLATED_COMMANDS = {"slack-send", "react", "mcp-call", "jira-call"}
 
 
+def _workspace_from_environment() -> str | None:
+    return os.environ.get("SIDEQUESTOR_WORKSPACE") or os.environ.get("YAAS_WORKSPACE")
+
+
 def _usage() -> str:
     lines = ["usage: sidequestor [--workspace PATH] COMMAND [ARGS...]", "", "commands:"]
     lines.extend(f"  {name:15} {description}" for name, description in COMMANDS.items())
@@ -73,13 +79,14 @@ def _usage() -> str:
 def _command_help(command: str) -> str:
     examples = {
         "init": "sidequestor init PATH [--name NAME]",
-        "instances": "sidequestor instances list|doctor|register PATH|rekey PATH",
-        "setup": "sidequestor [--workspace PATH] setup [--non-interactive|--render-only|install|status|uninstall]",
+        "instances": "sidequestor instances list|doctor|register [PATH]|rekey [PATH]",
+        "setup": "sidequestor [--workspace PATH] setup [--production] [--non-interactive|--render-only|install|status|uninstall]",
         "start": "sidequestor [--workspace PATH] start",
         "stop": "sidequestor [--workspace PATH] stop [INSTANCE_ID]",
         "tick": "sidequestor [--workspace PATH] tick [--dry-run|--isolated [--fake-worker]]",
         "loop": "sidequestor [--workspace PATH] loop [--max-ticks N]",
         "dashboard": "sidequestor [--workspace PATH] dashboard serve|url",
+        "migrate": "sidequestor [--workspace PATH] migrate [NAME|--name NAME]",
     }
     usage = examples.get(command, f"sidequestor [--workspace PATH] {command} [ARGS...]")
     return f"usage: {usage}\n\n{COMMANDS[command]}"
@@ -118,25 +125,17 @@ def _workspace(workspace_path: str | None, instance: str | None) -> Workspace:
     if workspace_path and instance:
         raise SystemExit("choose either --workspace or --instance, not both")
     if workspace_path:
-        return load_workspace(workspace_path)
+        return find_workspace(workspace_path)
     if instance:
-        for row in list_instances():
-            if row.get("instance_id") == instance or row.get("display_name") == instance:
-                return load_workspace(row["path"])
-        raise SystemExit(f"instance not found: {instance}")
-    inherited = os.environ.get("YAAS_WORKSPACE")
+        matches = [row for row in list_instances()
+                   if row.get("instance_id") == instance or row.get("display_name") == instance]
+        if len(matches) != 1:
+            raise SystemExit(f"instance not found or ambiguous: {instance}")
+        return load_workspace(matches[0]["path"])
+    inherited = _workspace_from_environment()
     if inherited:
-        return load_workspace(inherited)
-    try:
-        current = Path.cwd().resolve()
-    except OSError as exc:
-        raise SystemExit(
-            "the current directory is unavailable; change to a live directory or use --workspace PATH"
-        ) from exc
-    for candidate in (current, *current.parents):
-        if (candidate / ".yaas" / "instance.json").exists():
-            return load_workspace(candidate)
-    return load_workspace(current)
+        return find_workspace(inherited)
+    return find_workspace()
 
 
 def _cmd_init(args: list[str]) -> int:
@@ -151,21 +150,37 @@ def _cmd_init(args: list[str]) -> int:
     return 0
 
 
-def _cmd_instances(args: list[str], workspace_path: str | None = None) -> int:
+def _cmd_instances(
+    args: list[str], workspace_path: str | None = None, instance: str | None = None,
+) -> int:
     action = args[0] if args else "list"
     if action == "list":
         for row in list_instances():
             print(json.dumps(row, sort_keys=True))
         return 0
     if action in {"doctor", "register", "rekey"}:
-        path = args[1] if len(args) > 1 else workspace_path or os.environ.get("YAAS_WORKSPACE")
-        if not path:
-            raise SystemExit(f"instances {action} requires PATH or YAAS_WORKSPACE")
+        if len(args) > 2:
+            raise SystemExit(f"instances {action} accepts at most one PATH")
+        if workspace_path and instance:
+            raise SystemExit("choose either --workspace or --instance, not both")
+        if len(args) > 1 and instance:
+            raise SystemExit("choose one of PATH or --instance")
+        if len(args) > 1 and workspace_path:
+            positional_root = find_workspace(args[1]).root
+            selected_root = find_workspace(workspace_path).root
+            if positional_root != selected_root:
+                raise SystemExit("PATH and --workspace select different workspaces")
+        path = args[1] if len(args) > 1 else workspace_path
+        if path:
+            workspace = find_workspace(path)
+        elif instance:
+            workspace = _workspace(None, instance)
+        else:
+            workspace = find_workspace(_workspace_from_environment())
         if action == "rekey":
-            updated = rekey_workspace(path)
+            updated = rekey_workspace(workspace.root)
             print(f"rekeyed instance {updated.instance_id}: {updated.root}")
             return 0
-        workspace = load_workspace(path)
         if action == "register":
             register_workspace(workspace)
             print(f"registered instance {workspace.instance_id}: {workspace.root}")
@@ -208,7 +223,8 @@ def _cmd_setup(workspace: Workspace, args: list[str]) -> int:
             if manifest is None:
                 print("production jobs: not installed")
                 return 0
-            print(f"production jobs: installed ({manifest['workspace']})")
+            state = "running" if manifest.get("running", True) else "stopped"
+            print(f"production jobs: installed, {state} ({manifest['workspace']})")
             for name, job in manifest["jobs"].items():
                 print(f"{name}: {job['label']} ({job['plist']})")
             return 0
@@ -252,10 +268,14 @@ def _cmd_start(workspace: Workspace) -> int:
 
 
 def _cmd_stop(workspace: Workspace) -> int:
-    from .launchd import stop_production
+    from .launchd import LaunchdLifecycleError, stop_production
 
-    if not stop_production(workspace):
-        print(f"no production jobs installed for instance {workspace.instance_id}")
+    try:
+        if not stop_production(workspace):
+            print(f"no production jobs installed for instance {workspace.instance_id}")
+            return 1
+    except LaunchdLifecycleError as exc:
+        print(f"could not stop Sidequestor instance {workspace.instance_id}: {exc}", file=sys.stderr)
         return 1
     print(f"stopped Sidequestor instance {workspace.instance_id}")
     return 0
@@ -323,10 +343,17 @@ def _cmd_dashboard(workspace: Workspace, args: list[str]) -> int:
     raise SystemExit(f"unknown dashboard action: {action}")
 
 
-def _cmd_migrate(path: str | None, name: str | None = None) -> int:
-    if not path:
-        raise SystemExit("migrate requires --workspace PATH")
-    workspace, archive, changed = migrate_workspace(path, name)
+def _cmd_migrate(path: str | None, args: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="sidequestor migrate")
+    parser.add_argument("legacy_name", nargs="?")
+    parser.add_argument("--name")
+    values = parser.parse_args(args)
+    if values.legacy_name and values.name:
+        parser.error("choose either positional NAME or --name NAME")
+    selected = path or _workspace_from_environment()
+    target = Path(selected).expanduser() if selected else Path.cwd()
+    workspace_root = find_workspace_root(target) or target
+    workspace, archive, changed = migrate_workspace(workspace_root, values.name or values.legacy_name)
     if changed:
         print(f"migrated Sidequestor workspace: {workspace.root}")
         if archive:
@@ -340,15 +367,21 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
     if command == "init":
         return _cmd_init(args)
     if command == "instances":
-        return _cmd_instances(args, workspace_path)
+        return _cmd_instances(args, workspace_path, instance)
     if command == "migrate":
-        return _cmd_migrate(workspace_path, args[0] if args else None)
+        if instance:
+            raise SystemExit("migrate accepts --workspace, not --instance")
+        return _cmd_migrate(workspace_path, args)
+    if command == "stop" and len(args) > 1:
+        raise SystemExit("stop accepts at most one INSTANCE_ID")
+    if command == "stop" and args and (workspace_path or instance):
+        raise SystemExit("choose one of INSTANCE_ID, --workspace, or --instance")
     if command == "stop" and (args or instance):
         target = args[0] if args else instance
         matches = [row for row in list_instances()
                    if row.get("instance_id") == target or row.get("display_name") == target]
         if len(matches) != 1:
-            raise SystemExit(f"instance not found: {target}")
+            raise SystemExit(f"instance not found or ambiguous: {target}")
         return _cmd_stop(load_workspace(matches[0]["path"]))
     workspace = _workspace(workspace_path, instance)
     if command == "doctor":
