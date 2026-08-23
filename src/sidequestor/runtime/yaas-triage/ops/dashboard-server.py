@@ -1205,6 +1205,12 @@ def build_messages() -> dict:
             # after an operator approves an item, not make it disappear into a
             # thinner "queued" representation until the worker picks it up.
             queued_items.append(card)
+            continue
+        # Fail visible when the state machine gains a new non-terminal status.
+        # Unknown work may not have a legal dashboard action yet, but silently
+        # dropping it from both live lists is worse than surfacing it under
+        # Attention with its raw status and context.
+        other_actions.append(card)
 
     # Recent activity: all timeline events (not just outbound) across active quests.
     # Skips "created" (no display value) and empty note/info events.
