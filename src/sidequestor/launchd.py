@@ -134,6 +134,10 @@ def _production_manifest_path(workspace: Workspace) -> Path:
     return workspace.yaas_dir / "launchd" / "production.json"
 
 
+def _clear_dashboard_readiness(workspace: Workspace) -> None:
+    (workspace.state / "dashboard-url.txt").unlink(missing_ok=True)
+
+
 def _production_jobs(workspace: Workspace, executable: Path) -> dict:
     python = _preserve_executable_path(executable)
     runtime = Path(__file__).resolve().parent / "runtime"
@@ -141,6 +145,8 @@ def _production_jobs(workspace: Workspace, executable: Path) -> dict:
         "EnvironmentVariables": {
             "HOME": str(Path.home()),
             "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+            "SIDEQUESTOR_WORKSPACE": str(workspace.root),
+            "SIDEQUESTOR_RUNTIME_ROOT": str(runtime),
             "YAAS_WORKSPACE": str(workspace.root),
             "YAAS_RUNTIME_ROOT": str(runtime),
         },
@@ -150,9 +156,9 @@ def _production_jobs(workspace: Workspace, executable: Path) -> dict:
         "ThrottleInterval": 10,
     }
     commands = {
-            "triage": [str(python), "-m", "sidequestor", "--workspace", str(workspace.root), "loop"],
+        "triage": [str(python), "-m", "sidequestor", "--workspace", str(workspace.root), "loop"],
         "heartbeat": ["/bin/bash", str(runtime / "yaas-triage" / "ops" / "heartbeat-loop.sh")],
-            "dashboard": [str(python), "-m", "sidequestor", "--workspace", str(workspace.root), "dashboard", "serve", "0"],
+        "dashboard": [str(python), "-m", "sidequestor", "--workspace", str(workspace.root), "dashboard", "serve", "0"],
     }
     jobs = {}
     for name, arguments in commands.items():
@@ -215,6 +221,8 @@ def install_production(workspace: Workspace, executable: Path) -> dict:
                 if old_label:
                     subprocess.run(["launchctl", "bootout", f"gui/{uid}/{old_label}"], check=False, capture_output=True)
         for name, job in jobs.items():
+            if name == "dashboard":
+                _clear_dashboard_readiness(workspace)
             destination = launch_agents / job["plist"]
             temporary = destination.with_name(destination.name + ".tmp")
             temporary.write_text(_plist(job["values"]))
@@ -230,10 +238,24 @@ def install_production(workspace: Workspace, executable: Path) -> dict:
         for _, destination in written:
             destination.unlink(missing_ok=True)
         raise
-    manifest = {"schema": 1, "backend": "production", "workspace": str(workspace.root), "python": str(_preserve_executable_path(executable)), "jobs": rendered}
+    manifest = {
+        "schema": 2,
+        "backend": "production",
+        "instance_id": workspace.instance_id,
+        "workspace": str(workspace.root),
+        "python": str(_preserve_executable_path(executable)),
+        "running": True,
+        "jobs": rendered,
+    }
     temporary_manifest = manifest_path.with_name(manifest_path.name + ".tmp")
     temporary_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
     os.replace(temporary_manifest, manifest_path)
+    if previous:
+        active_plists = {Path(job["plist"]) for job in rendered.values()}
+        for old_job in previous.get("jobs", {}).values():
+            old_plist = Path(old_job.get("plist", ""))
+            if old_plist not in active_plists and old_plist.is_file() and old_plist.parent == launch_agents:
+                old_plist.unlink()
     return manifest
 
 
@@ -242,7 +264,18 @@ def production_status(workspace: Workspace) -> dict | None:
         value = json.loads(_production_manifest_path(workspace).read_text())
     except (OSError, ValueError):
         return None
-    return value if isinstance(value, dict) and value.get("backend") == "production" else None
+    if not isinstance(value, dict) or value.get("backend") != "production":
+        return None
+    try:
+        recorded_workspace = Path(value["workspace"]).expanduser().resolve()
+    except (KeyError, OSError, TypeError):
+        return None
+    if recorded_workspace != workspace.root:
+        return None
+    recorded_instance = value.get("instance_id")
+    if recorded_instance is not None and recorded_instance != workspace.instance_id:
+        return None
+    return value
 
 
 def uninstall_production(workspace: Workspace) -> bool:
@@ -258,6 +291,7 @@ def uninstall_production(workspace: Workspace) -> bool:
         if plist.is_file() and plist.parent == _production_root():
             plist.unlink()
     _production_manifest_path(workspace).unlink(missing_ok=True)
+    _clear_dashboard_readiness(workspace)
     return True
 
 
@@ -273,6 +307,7 @@ def stop_production(workspace: Workspace) -> bool:
         if label:
             subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], check=False, capture_output=True)
             stopped = True
+    _clear_dashboard_readiness(workspace)
     manifest["running"] = False
     path = _production_manifest_path(workspace)
     temporary = path.with_name(path.name + ".tmp")

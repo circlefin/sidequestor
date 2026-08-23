@@ -200,6 +200,8 @@ class Stage2BehaviorTest(unittest.TestCase):
             with browser.open(url + "/api/dashboard", timeout=3) as response:
                 payload = json.loads(response.read())
             self.assertIn("quests", payload)
+            self.assertEqual(payload["workspace"]["path"], str(self.workspace.resolve()))
+            self.assertEqual(payload["workspace"]["display_name"], "behavior")
             self.assertEqual(self.invoke("dashboard", "url").stdout.strip(), url)
         finally:
             process.terminate()

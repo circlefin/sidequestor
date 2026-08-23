@@ -102,6 +102,19 @@ DASHBOARD_HTML = RUNTIME_ROOT / "dashboard.html"
 DASHBOARD_LOGO = RUNTIME_ROOT / "yaas-triage" / "assets" / "sidequestor-mark.png"
 PORT           = int(sys.argv[1]) if len(sys.argv) > 1 else 8877
 
+
+def build_workspace_identity() -> dict:
+    marker = REPO_ROOT / ".yaas" / "instance.json"
+    try:
+        data = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        data = {}
+    return {
+        "display_name": str(data.get("display_name") or REPO_ROOT.name),
+        "path": str(REPO_ROOT),
+        "instance_id": str(data.get("instance_id") or ""),
+    }
+
 # Workspace-specific hosts. No hardcoded defaults: they belong to whoever runs
 # this, so they come from the gitignored repo-root .env (the same file the orchestrator
 # sources). Without them, a reconstructed Slack/Jira link is simply omitted; a
@@ -1167,6 +1180,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             pass
 
     return {
+        "workspace":      build_workspace_identity(),
         "triage":         triage_state,
         "live_run":       build_live_run(),
         "quests":         quests,
@@ -1399,6 +1413,7 @@ def build_control() -> dict:
 
     return {
         "api_version": 1,
+        "workspace": dashboard["workspace"],
         "capabilities": {
             "control_snapshot": True,
             "normalized_activity": True,

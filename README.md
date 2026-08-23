@@ -22,7 +22,8 @@ The virtualenv supplies the `sidequestor` command in the current terminal. Run
 
 Commands automatically use the current directory when it is an initialized
 workspace. You can run them from elsewhere by passing `--workspace PATH`, or
-set `YAAS_WORKSPACE` for a shell-wide default. For example:
+set `SIDEQUESTOR_WORKSPACE` for a shell-wide default. The legacy
+`YAAS_WORKSPACE` name remains accepted. For example:
 
 ```bash
 sidequestor --workspace ~/sidequestor-install/workspace doctor

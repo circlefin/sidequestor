@@ -14,6 +14,11 @@ SCHEMA_VERSION = 1
 REACTION_WATERMARK = "reaction-watermark.json"
 
 
+def _config_home() -> Path:
+    configured = os.environ.get("SIDEQUESTOR_CONFIG_HOME") or os.environ.get("YAAS_CONFIG_HOME")
+    return Path(configured).expanduser() if configured else Path.home() / ".config"
+
+
 @dataclass(frozen=True)
 class Workspace:
     root: Path
@@ -76,7 +81,7 @@ def ensure_reaction_watermark(workspace: Workspace) -> Path:
 
 def _register(workspace: Workspace) -> None:
     """Keep a small advisory registry for the Stage 2 instance commands."""
-    registry = Path(os.environ.get("YAAS_CONFIG_HOME", Path.home() / ".config")) / "yaas" / "instances.json"
+    registry = _config_home() / "yaas" / "instances.json"
     registry.parent.mkdir(parents=True, exist_ok=True)
     try:
         rows = json.loads(registry.read_text()) if registry.exists() else []
@@ -149,8 +154,32 @@ def load_workspace(path: str | Path) -> Workspace:
     return Workspace(root, instance_id, display_name)
 
 
+def find_workspace_root(path: str | Path | None = None) -> Path | None:
+    """Find the initialized workspace containing a path."""
+    try:
+        current = Path.cwd() if path is None else Path(path).expanduser()
+        current = current.resolve()
+    except OSError as exc:
+        raise SystemExit(
+            "the current directory is unavailable; change to a live directory or use --workspace PATH"
+        ) from exc
+    for candidate in (current, *current.parents):
+        if (candidate / ".yaas" / "instance.json").is_file():
+            return candidate
+    return None
+
+
+def find_workspace(path: str | Path | None = None) -> Workspace:
+    """Load the initialized workspace containing a path."""
+    root = find_workspace_root(path)
+    if root is not None:
+        return load_workspace(root)
+    target = Path.cwd() if path is None else Path(path).expanduser()
+    return load_workspace(target)
+
+
 def list_instances() -> list[dict]:
-    registry = Path(os.environ.get("YAAS_CONFIG_HOME", Path.home() / ".config")) / "yaas" / "instances.json"
+    registry = _config_home() / "yaas" / "instances.json"
     if not registry.exists():
         return []
     try:
@@ -166,6 +195,11 @@ def register_workspace(workspace: Workspace) -> None:
 
 def rekey_workspace(path: str | Path) -> Workspace:
     workspace = load_workspace(path)
+    launchd = workspace.yaas_dir / "launchd"
+    if (launchd / "production.json").exists() or (launchd / "installed" / "manifest.json").exists():
+        raise SystemExit(
+            "uninstall Sidequestor launchd jobs before rekeying this workspace"
+        )
     data = _read_json(workspace.yaas_dir / "instance.json")
     data["instance_id"] = secrets.token_hex(16)
     _write_json(workspace.yaas_dir / "instance.json", data)

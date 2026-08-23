@@ -183,9 +183,15 @@ class Stage3FullWorkspaceTest(unittest.TestCase):
             with browser.open(url + "/", timeout=3) as response:
                 html = response.read().decode()
             self.assertIn("Sidequestor", html)
+            self.assertIn('id="workspace-id"', html)
             with browser.open(url + "/api/dashboard", timeout=3) as response:
                 payload = json.loads(response.read())
             self.assertIn("quests", payload)
+            self.assertEqual(payload["workspace"]["path"], str(self.workspace.resolve()))
+            self.assertEqual(payload["workspace"]["display_name"], "stage3")
+            with browser.open(url + "/api/control", timeout=3) as response:
+                control = json.loads(response.read())
+            self.assertEqual(control["workspace"], payload["workspace"])
             self.assertEqual(self.invoke("dashboard", "url").stdout.strip(), url)
         finally:
             process.terminate()

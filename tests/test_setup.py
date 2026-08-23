@@ -8,6 +8,7 @@ from sidequestor.launchd import _production_jobs
 from sidequestor.resources import sync_resources
 from sidequestor.setup import provision_env
 from sidequestor.workspace import init_workspace
+from sidequestor.workspace import list_instances
 
 
 class SetupTests(unittest.TestCase):
@@ -55,6 +56,13 @@ class SetupTests(unittest.TestCase):
             for name in ("triage", "dashboard"):
                 self.assertEqual(jobs[name]["arguments"][0], str(venv_python))
             self.assertEqual(jobs["dashboard"]["arguments"][-1], "0")
+
+    def test_canonical_config_home_precedes_legacy_alias(self):
+        with tempfile.TemporaryDirectory() as raw, tempfile.TemporaryDirectory() as canonical:
+            with patch.dict(os.environ, {"SIDEQUESTOR_CONFIG_HOME": canonical}):
+                workspace = init_workspace(Path(raw))
+                self.assertEqual(list_instances()[0]["instance_id"], workspace.instance_id)
+                self.assertTrue((Path(canonical) / "yaas" / "instances.json").is_file())
 
 
 if __name__ == "__main__":
