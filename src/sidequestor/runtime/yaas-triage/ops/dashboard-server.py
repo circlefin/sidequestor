@@ -504,6 +504,9 @@ def _approval_card(i: dict) -> dict:
         "review_history": i.get("review_history", []),
         "worker_reply":   i.get("worker_reply", ""),
         "stalled":        stalled,
+        "processing_error": i.get("processing_error", ""),
+        "processing_error_at": i.get("processing_error_at"),
+        "failed_from_status": i.get("failed_from_status"),
         "available_actions": approval_state.available_actions(i, now),
         **_approval_target_link(i),
     }
@@ -1205,6 +1208,12 @@ def build_messages() -> dict:
             # after an operator approves an item, not make it disappear into a
             # thinner "queued" representation until the worker picks it up.
             queued_items.append(card)
+            continue
+        # Fail visible when the state machine gains a new non-terminal status.
+        # Unknown work may not have a legal dashboard action yet, but silently
+        # dropping it from both live lists is worse than surfacing it under
+        # Attention with its raw status and context.
+        other_actions.append(card)
 
     # Recent activity: all timeline events (not just outbound) across active quests.
     # Skips "created" (no display value) and empty note/info events.
@@ -1374,7 +1383,8 @@ def build_control() -> dict:
         attention.append({
             "id": f"approval:{card.get('id')}", "kind": "review",
             "priority": "high", "label": "Review agent action",
-            "detail": card.get("risk_reason") or card.get("message_text", ""),
+            "detail": (card.get("processing_error") or card.get("risk_reason")
+                       or card.get("message_text", "")),
             "quest_id": card.get("quest_id"), "quest_title": card.get("quest_title"),
             "approval": card,
         })
@@ -1382,7 +1392,8 @@ def build_control() -> dict:
         attention.append({
             "id": f"approval:{card.get('id')}", "kind": "review",
             "priority": "high", "label": "Review agent action",
-            "detail": card.get("risk_reason") or card.get("message_text", ""),
+            "detail": (card.get("processing_error") or card.get("risk_reason")
+                       or card.get("message_text", "")),
             "quest_id": card.get("quest_id"), "quest_title": card.get("quest_title"),
             "approval": card,
         })

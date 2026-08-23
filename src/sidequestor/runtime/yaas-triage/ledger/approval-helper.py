@@ -72,6 +72,10 @@ done <id> [response_ts | result_url] [report]
 abandon <id> <reason>
     Terminally cancel an executing manual instruction whose outcome cannot be
     reconciled safely. This prevents an expired lease from dispatching forever.
+
+fail <id> <reason>
+    Return an approval the worker could not process to pending_review and record
+    the error for the operator. The approval will not dispatch again until reviewed.
 """
 
 from __future__ import annotations  # PEP 604 unions below must not be
@@ -559,6 +563,32 @@ def cmd_abandon(approval_id: str, reason: str):
     print("ok")
 
 
+def cmd_fail(approval_id: str, reason: str):
+    reason = reason.strip()[:1000]
+    if not reason:
+        print("error:reason_required", file=sys.stderr)
+        sys.exit(1)
+    try:
+        item = approval_store.mutate_item(
+            approval_id,
+            lambda current: approval_state.apply_transition(
+                current, "fail", {"reason": reason}, datetime.now(timezone.utc)
+            ),
+        )
+    except approval_state.InvalidPayload as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+    if item is approval_store.NOT_FOUND:
+        print(f"error:not_found:{approval_id}", file=sys.stderr)
+        sys.exit(1)
+    if item is approval_state.ILLEGAL:
+        current = next((i for i in approval_store.read_queue().get("items", [])
+                        if i.get("id") == approval_id), None)
+        print(f"skip:{(current or {}).get('status', 'unknown')}")
+        return
+    print("ok")
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -589,6 +619,8 @@ def main():
         )
     elif cmd == "abandon":
         cmd_abandon(sys.argv[2], sys.argv[3])
+    elif cmd == "fail":
+        cmd_fail(sys.argv[2], sys.argv[3])
     else:
         print(f"unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)

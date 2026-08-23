@@ -26,7 +26,7 @@ LEASE_MINUTES = int(os.environ.get("YAAS_APPROVAL_LEASE_MIN", "45"))
 ILLEGAL = object()
 
 HTTP_ACTIONS = ("review", "revise", "edit", "cancel", "undo", "reclaim")
-WORKER_ONLY_ACTIONS = ("start", "answer", "done", "abandon", "auto_cancel")
+WORKER_ONLY_ACTIONS = ("start", "answer", "done", "fail", "abandon", "auto_cancel")
 
 TRANSITIONS = {
     ("pending_review", "review"): {"http": True},
@@ -47,6 +47,9 @@ TRANSITIONS = {
     ("needs_reply", "answer"): {"http": False},
     ("executing", "done"): {"http": False},
     ("reviewed", "done"): {"http": False},
+    ("reviewed", "fail"): {"http": False},
+    ("needs_reply", "fail"): {"http": False},
+    ("executing", "fail"): {"http": False},
     ("executing", "abandon"): {"http": False},
     ("reviewed", "abandon"): {"http": False},
     ("reviewed", "auto_cancel"): {"http": False},
@@ -55,6 +58,15 @@ TRANSITIONS = {
 
 class InvalidPayload(ValueError):
     pass
+
+
+def _clear_processing_error(updates: dict) -> dict:
+    updates.update({
+        "processing_error": None,
+        "processing_error_at": None,
+        "failed_from_status": None,
+    })
+    return updates
 
 
 def _as_dt(now):
@@ -116,12 +128,12 @@ def apply_transition(item, action, payload, now):
         edited = "message_text" in payload
         # A bare Approve means "send the draft as it stands", so any instruction left
         # over from an earlier Request change must be cleared rather than inherited.
-        updates = {
+        updates = _clear_processing_error({
             "status": "reviewed",
             "reviewed_at": now_iso,
             "review_note": note or None,
             "asked_at": now_iso if note else None,
-        }
+        })
         if edited:
             new_text = str(payload.get("message_text") or "").strip()
             if not new_text:
@@ -134,7 +146,9 @@ def apply_transition(item, action, payload, now):
         note = str(payload.get("review_note") or "").strip()
         if not note:
             raise InvalidPayload("revision requires an instruction note")
-        updates = {"status": "needs_reply", "review_note": note, "asked_at": now_iso}
+        updates = _clear_processing_error({
+            "status": "needs_reply", "review_note": note, "asked_at": now_iso,
+        })
         if "message_text" in payload:
             new_text = str(payload.get("message_text") or "").strip()
             if not new_text:
@@ -150,31 +164,44 @@ def apply_transition(item, action, payload, now):
         new_text = str(payload.get("message_text") or "").strip()
         if not new_text:
             raise InvalidPayload("message_text required")
-        return {"message_text": new_text, "human_edited": True}
+        return _clear_processing_error({"message_text": new_text, "human_edited": True})
 
     if action == "undo":
-        return {
+        return _clear_processing_error({
             "status": "pending_review",
             "reviewed_at": None,
             "cancelled_at": None,
             "review_note": None,
             "asked_at": None,
-        }
+        })
 
     if action == "reclaim":
         if not _lease_expired(item, now_dt):
             return ILLEGAL
-        return {
+        return _clear_processing_error({
             "status": "pending_review",
             "lease_expires_at": None,
             "needs_reconcile": True,
-        }
+        })
 
     if action == "start":
         return {
             "status": "executing",
             "executing_at": now_iso,
             "lease_expires_at": (now_dt + timedelta(minutes=LEASE_MINUTES)).isoformat(),
+        }
+
+    if action == "fail":
+        reason = str(payload.get("reason") or "").strip()
+        if not reason:
+            raise InvalidPayload("error:reason_required")
+        return {
+            "status": "pending_review",
+            "processing_error": reason[:1000],
+            "processing_error_at": now_iso,
+            "failed_from_status": status,
+            "lease_expires_at": None,
+            "needs_reconcile": True if status == "executing" else None,
         }
 
     if action == "answer":

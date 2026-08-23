@@ -70,6 +70,51 @@ class RuntimeConfigTest(unittest.TestCase):
             self.assertEqual(items["YAAS_SLACK_CHECKERS_ENABLED"]["value"], "0")
             self.assertTrue(items["YAAS_SLACK_CHECKERS_ENABLED"]["set"])
 
+    def test_dashboard_surfaces_unknown_non_terminal_approval_status(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-dashboard-status-") as raw:
+            workspace = Path(raw)
+            approvals = workspace / "state" / "pending-approvals.json"
+            approvals.parent.mkdir(parents=True)
+            approvals.write_text('{"version": 1, "items": []}')
+            environment = {
+                "YAAS_WORKSPACE": str(workspace),
+                "YAAS_RUNTIME_ROOT": str(RUNTIME_ROOT),
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                import sys
+                sys.path.insert(0, str(TRIAGE_ROOT))
+                try:
+                    spec = importlib.util.spec_from_file_location(
+                        "sidequestor_dashboard_status_test",
+                        TRIAGE_ROOT / "ops" / "dashboard-server.py",
+                    )
+                    module = importlib.util.module_from_spec(spec)
+                    assert spec.loader is not None
+                    with patch.object(sys, "argv", ["dashboard-server.py"]):
+                        spec.loader.exec_module(module)
+                    unknown = {
+                        "id": "approval-blocked",
+                        "quest_id": "quest-one",
+                        "quest_title": "Quest one",
+                        "status": "blocked",
+                        "action_type": "slack_message",
+                        "message_text": "Worker could not complete this action.",
+                    }
+                    with patch.object(
+                        module, "_read_approvals",
+                        return_value={"version": 1, "items": [unknown]},
+                    ):
+                        messages = module.build_messages()
+                finally:
+                    sys.path.pop(0)
+
+            self.assertEqual(messages["needs_you"], [])
+            self.assertEqual(messages["queued_items"], [])
+            self.assertEqual(
+                [item["id"] for item in messages["other_actions"]],
+                ["approval-blocked"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
