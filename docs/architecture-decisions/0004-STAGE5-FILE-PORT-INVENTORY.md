@@ -30,7 +30,7 @@ existing workspace state.
 | Environment | New templates document `SIDEQUESTOR_*`. | The package boundary maps `SIDEQUESTOR_*` to the unchanged runtime `YAAS_*` contract, with YAAS names still accepted. |
 | Launchd | New package-rendered jobs use `com.sidequestor.*` labels and `python -m sidequestor`. | Existing `com.yaas.*` jobs are not renamed or unloaded by the package. |
 | Dashboard and help | User-facing package output says Sidequestor. | Dashboard state, routes, and worker protocol are unchanged. |
-| OSS metadata | Standalone public tree includes `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `VERSION`. | These remain source/publication files, not workspace state. |
+| OSS metadata | Standalone public tree includes `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, and `SECURITY.md`. | These remain source/publication files, not workspace state. |
 
 The implementation changes are narrow adapters around the battle-tested
 runtime. No legacy runtime file was renamed in place, and no active quest,
@@ -93,7 +93,6 @@ optional and user-owned.
 | `QUICKSTART.md` | SOURCE-ONLY | Source/repository onboarding documentation; package commands are exposed through CLI help and packaged operating instructions. |
 | `README.md` | SOURCE-ONLY | Repository/readme content; not workspace runtime data. |
 | `SECURITY.md` | SOURCE-ONLY | Repository security policy; not runtime package data. |
-| `VERSION` | SOURCE-ONLY | The package version is declared in `pyproject.toml`; this standalone source marker is not copied. |
 | `dashboard.html` | AMENDED | `sidequestor/runtime/dashboard.html`; the dashboard branding is Sidequestor while routes and state behavior remain unchanged. |
 | `settings.json.example` | WHOLESALE | `sidequestor/package_data/settings.json.example`; materialized into a new workspace. This was added during this audit because the wholesale `setup.sh` references it. |
 
@@ -495,6 +494,10 @@ versioned and do not overwrite personal skills.
   `f524e8f511b00e813d9a02d514509392f3644b1d44951545034cd44667468786`.
   Its 129 entries contain 97 runtime and 9 managed-skill entries, with no tests,
   bytecode, or cache paths.
+- Stable release artifacts: `sidequestor-0.1.4` wheel SHA-256
+  `314155359e567eb31832d013e9b7fafbcfed31f06b6ef299516e6f1212e5de63` and sdist SHA-256
+  `449d2d481837b94e0d72c31e22492d10a419662b80b06421d212c0b6b6281de6`. Both passed `twine check`,
+  and the wheel passed clean-environment `init` and `doctor` smoke tests.
 - Installed-wheel package suite: `31 tests, OK` on the developer machine,
   including both localhost dashboard tests. The same suite reports two socket
   skips only inside the managed sandbox where binding is denied.

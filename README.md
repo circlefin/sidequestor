@@ -34,8 +34,8 @@ cd ~/path/to/existing-workspace
 python3 -m venv .venv
 # Make the Sidequestor commands available in this terminal.
 source .venv/bin/activate
-# Install the package from the internal testing publication branch.
-python -m pip install 'git+https://github.com/circlefin/sidequestor.git@publish/sidequestor-package-0.1.0'
+# Install the latest stable package from PyPI.
+python -m pip install sidequestor
 # Add Sidequestor metadata and configuration to this directory.
 sidequestor init .
 # Print the Slack manifest when you are ready to create the app.
@@ -46,7 +46,7 @@ sq setup
 
 Nothing of yours is moved or overwritten: `sidequestor init .` only adds `.yaas` metadata alongside your existing files. `sq`, `sidequestor`, and `yaas` are all available aliases. The dashboard workspace label opens the current workspace in Cursor when available, or in macOS’s default IDE/file opener. Set `SIDEQUESTOR_IDE_APP` to prefer another application.
 
-The virtualenv supplies the commands, so `deactivate` puts the shell back the way you found it. Once this branch is merged or released you can drop the `@publish/sidequestor-package-0.1.0` suffix.
+The virtualenv supplies the commands, so `deactivate` puts the shell back the way you found it.
 
 Commands use the current directory when it is an initialized workspace. From elsewhere, pass `--workspace PATH` or set `SIDEQUESTOR_WORKSPACE`; the legacy `YAAS_WORKSPACE` name remains accepted.
 
@@ -109,8 +109,8 @@ sq --version
 ```bash
 # Stop the jobs so nothing runs mid-swap.
 sq stop
-# Reinstall from the branch; --force-reinstall avoids the unchanged-version no-op trap.
-python -m pip install --upgrade --force-reinstall 'git+https://github.com/circlefin/sidequestor.git@publish/sidequestor-package-0.1.0'
+# Upgrade to the latest stable PyPI release.
+python -m pip install --upgrade sidequestor
 # Refresh the managed engine (skills + OPERATING.md) into the workspace.
 sq sync-resources
 # Rewrite and reload the launchd jobs, then confirm the build.
