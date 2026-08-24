@@ -90,10 +90,15 @@ loopback port and publishes the selected URL only after successful bind.
 Its header identifies the selected workspace by configured display name and
 canonical path; the path truncates visually but remains available as a tooltip,
 and the compact mobile layout keeps the name while hiding the path.
-`sq stop` unloads the containing workspace's jobs but intentionally retains
-the manifest and plists so `sq start` can restart them. Full removal is
-explicit: `sq setup --production uninstall` unloads jobs and deletes only the
-plist paths recorded for that workspace under `~/Library/LaunchAgents`.
+`sq start` waits for dashboard readiness and prints the selected URL, so the
+normal start path brings up triage, heartbeat, and dashboard together.
+`sq dashboard url` retrieves the URL later. `sq dashboard serve` remains a
+foreground developer escape hatch rather than a second persistent lifecycle.
+`sq stop` unloads the containing workspace's jobs and also cleans up a matching
+foreground dashboard controller, while intentionally retaining the manifest
+and plists so `sq start` can restart them. Full removal is explicit:
+`sq setup --production uninstall` unloads jobs and deletes only the plist paths
+recorded for that workspace under `~/Library/LaunchAgents`.
 
 Lifecycle and configuration parity are explicit package guarantees. The
 dashboard and health monitor consume the same resolved environment object as

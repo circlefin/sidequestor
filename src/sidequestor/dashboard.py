@@ -15,6 +15,82 @@ from .native import RUNTIME_ROOT, _environment
 from .workspace import Workspace
 
 
+DASHBOARD_READY_TIMEOUT = 6.0
+
+
+def _dashboard_process_file(workspace: Workspace) -> Path:
+    return workspace.state / "dashboard-process.json"
+
+
+def read_dashboard_url(workspace: Workspace) -> str | None:
+    try:
+        value = (workspace.state / "dashboard-url.txt").read_text().strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def wait_for_dashboard_url(
+    workspace: Workspace, timeout: float = DASHBOARD_READY_TIMEOUT,
+) -> str | None:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        url = read_dashboard_url(workspace)
+        if url:
+            return url
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.05)
+
+
+def _dashboard_process_matches(pid: int, workspace: Workspace) -> bool:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    command = (result.stdout or "").strip()
+    return result.returncode == 0 and str(workspace.root) in command and "dashboard" in command
+
+
+def stop_dashboard_process(workspace: Workspace) -> bool:
+    """Stop only a foreground dashboard controller owned by this workspace."""
+    process_file = _dashboard_process_file(workspace)
+    try:
+        record = json.loads(process_file.read_text())
+        pid = int(record["controller_pid"])
+    except (OSError, ValueError, KeyError, TypeError):
+        process_file.unlink(missing_ok=True)
+        return False
+    if pid == os.getpid() or not _dashboard_process_matches(pid, workspace):
+        process_file.unlink(missing_ok=True)
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        process_file.unlink(missing_ok=True)
+        return False
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    process_file.unlink(missing_ok=True)
+    (workspace.state / "dashboard-url.txt").unlink(missing_ok=True)
+    return True
+
+
 def _ephemeral_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
@@ -35,6 +111,12 @@ def serve(workspace: Workspace, port: int = 8877) -> int:
         cwd=workspace.root,
         env=environment,
     )
+    process_file = _dashboard_process_file(workspace)
+    process_file.write_text(json.dumps({
+        "controller_pid": os.getpid(),
+        "server_pid": process.pid,
+        "workspace": str(workspace.root),
+    }) + "\n")
     previous_handlers = {}
 
     def terminate_child(signum: int, _frame: object) -> None:
@@ -69,3 +151,9 @@ def serve(workspace: Workspace, port: int = 8877) -> int:
             url_file.unlink()
         except FileNotFoundError:
             pass
+        try:
+            record = json.loads(process_file.read_text())
+        except (OSError, ValueError):
+            record = None
+        if isinstance(record, dict) and record.get("controller_pid") == os.getpid():
+            process_file.unlink(missing_ok=True)

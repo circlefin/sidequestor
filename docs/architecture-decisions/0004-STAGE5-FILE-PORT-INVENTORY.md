@@ -237,7 +237,9 @@ runtime files. Their accepted behavior is:
   `YAAS_CONFIG_HOME`.
 - The dashboard production job requests port `0`; the adapter allocates a free
   loopback port and writes `state/dashboard-url.txt` only after the server has
-  bound successfully. It removes the readiness file when the server exits.
+  bound successfully. `sq start` waits for this readiness marker and prints the
+  selected URL; `sq dashboard url` is the later lookup path. It removes the
+  readiness file when the server exits.
 - Dashboard control and full snapshots expose the selected workspace's display
   name, canonical path, and instance ID. The top bar shows the name and an
   ellipsized path, retains the full path as a tooltip, and hides only the path
@@ -245,6 +247,10 @@ runtime files. Their accepted behavior is:
   instance while preserving the existing dashboard hierarchy.
 - `sq stop` with no selector discovers the containing workspace, unloads only
   that instance's jobs, and retains its manifest and plists for restart.
+  It also stops a foreground `sq dashboard serve` controller when its recorded
+  process belongs to the same workspace, so the dashboard cannot outlive the
+  workspace lifecycle. The foreground controller records only its own PID and
+  is never stopped by a different workspace.
   `sq setup --production uninstall` unloads the same jobs and removes their
   package-owned plists and manifest.
 - Reinstall unloads prior labels for that workspace, writes and bootstraps the
@@ -476,6 +482,7 @@ state/triage/reaction-watermark.json
 state/triage/<ledgers,manifests,health and run state>
 state/dashboard-token
 state/dashboard-url.txt
+state/dashboard-process.json   # transient foreground dashboard ownership marker
 ```
 
 The package currently does not materialize the personal `skills/` directory

@@ -74,7 +74,7 @@ class RuntimeConfigTest(unittest.TestCase):
         environment = {
             "YAAS_WORKSPACE": tempfile.gettempdir(),
             "YAAS_RUNTIME_ROOT": str(RUNTIME_ROOT),
-            "SIDEQUESTOR_VERSION": "0.1.4",
+            "SIDEQUESTOR_VERSION": "0.1.5",
             "SIDEQUESTOR_COMMIT": "abcdef0123456789",
             "SIDEQUESTOR_REF": "package/sidequestor-0.1.0",
         }
@@ -93,7 +93,7 @@ class RuntimeConfigTest(unittest.TestCase):
                 build = module.build_build_info()
             finally:
                 sys.path.pop(0)
-        self.assertEqual(build["version"], "0.1.4")
+        self.assertEqual(build["version"], "0.1.5")
         self.assertEqual(build["commit"], "abcdef0")
         self.assertEqual(build["commit_full"], "abcdef0123456789")
         self.assertEqual(build["ref"], "package/sidequestor-0.1.0")

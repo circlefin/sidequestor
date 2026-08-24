@@ -12,7 +12,12 @@ from pathlib import Path
 from . import __version__
 from .build_info import build_info
 from .native import dry_tick, run_native, run_native_loop, run_native_tick
-from .dashboard import serve as serve_dashboard
+from .dashboard import (
+    read_dashboard_url,
+    serve as serve_dashboard,
+    stop_dashboard_process,
+    wait_for_dashboard_url,
+)
 from .isolated import run_isolated
 from .launchd import install as install_jobs
 from .launchd import install_production, production_is_running, production_status, uninstall_production
@@ -258,6 +263,8 @@ def _cmd_setup(workspace: Workspace, args: list[str]) -> int:
             print(f"installed production jobs for {manifest['workspace']}")
             for name, job in manifest["jobs"].items():
                 print(f"{name}: {job['label']}")
+            url = wait_for_dashboard_url(workspace)
+            print(f"dashboard: {url}" if url else "dashboard: still starting (run `sq dashboard url` to check)")
             return 0
         if action == "status":
             manifest = production_status(workspace)
@@ -305,6 +312,8 @@ def _cmd_start(workspace: Workspace) -> int:
     print(f"started Sidequestor instance {workspace.instance_id}")
     for name, job in manifest["jobs"].items():
         print(f"{name}: {job['label']}")
+    url = wait_for_dashboard_url(workspace)
+    print(f"dashboard: {url}" if url else "dashboard: still starting (run `sq dashboard url` to check)")
     return 0
 
 
@@ -312,7 +321,9 @@ def _cmd_stop(workspace: Workspace) -> int:
     from .launchd import LaunchdLifecycleError, stop_production
 
     try:
-        if not stop_production(workspace):
+        stopped_production = stop_production(workspace)
+        stopped_foreground = stop_dashboard_process(workspace)
+        if not stopped_production and not stopped_foreground:
             print(f"no production jobs installed for instance {workspace.instance_id}")
             return 1
     except LaunchdLifecycleError as exc:
@@ -370,11 +381,12 @@ def _cmd_tick(workspace: Workspace, args: list[str]) -> int:
 
 
 def _cmd_dashboard(workspace: Workspace, args: list[str]) -> int:
-    action = args[0] if args else "serve"
+    # Inspection is safe by default; foreground serving is an explicit escape hatch.
+    action = args[0] if args else "url"
     if action == "url":
-        url_file = workspace.state / "dashboard-url.txt"
-        print(url_file.read_text().strip() if url_file.exists() else "dashboard is not running")
-        return 0 if url_file.exists() else 1
+        url = read_dashboard_url(workspace)
+        print(url or "dashboard is not running")
+        return 0 if url else 1
     if action == "serve":
         parser = argparse.ArgumentParser(prog="yaas dashboard serve")
         parser.add_argument("port", nargs="?", type=int, default=8877)
