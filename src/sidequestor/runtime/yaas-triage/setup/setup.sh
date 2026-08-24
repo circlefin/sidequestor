@@ -96,11 +96,11 @@ set -a; source "$ENV_FILE"; set +a
 # launchd job or dashboard can accept unlinked work.
 python3 "$TRIAGE_DIR/ledger/approval-helper.py" ensure-inbox >/dev/null
 
-SLACK_CHECKERS_ENABLED="${YAAS_SLACK_CHECKERS_ENABLED:-1}"
+SLACK_CHECKERS_ENABLED="${SIDEQUESTOR_SLACK_CHECKERS_ENABLED:-${YAAS_SLACK_CHECKERS_ENABLED:-1}}"
 case "$SLACK_CHECKERS_ENABLED" in
   0|1) ;;
   *)
-    echo "ERROR: YAAS_SLACK_CHECKERS_ENABLED must be 0 or 1, got: $SLACK_CHECKERS_ENABLED" >&2
+    echo "ERROR: SIDEQUESTOR_SLACK_CHECKERS_ENABLED must be 0 or 1, got: $SLACK_CHECKERS_ENABLED" >&2
     exit 1
     ;;
 esac
@@ -132,6 +132,8 @@ it takes about two minutes.
   2. Pick your workspace, then paste the manifest below
   3. Create, then Install to Workspace (your admin may need to approve it)
   4. From Basic Information, copy App ID and Client ID into .env
+  5. Open Agents → "Slack Model Context Protocol (MCP) Server" and enable it
+  6. In OAuth and Permissions → User Token Scopes, verify the requested scopes
 
 ──────────────────────── paste this ────────────────────────
 BANNER
@@ -157,13 +159,16 @@ APP_URL="https://api.slack.com/apps/$SLACK_APP_ID"
 
 cat <<EOF
 ╔════════════════════════════════════════════════════════════════════╗
-║  yaas — Slack onboarding                                           ║
+║  Sidequestor — Slack onboarding                                    ║
 ╠════════════════════════════════════════════════════════════════════╣
 ║  App:         $APP_NAME ($APP_URL)
 ║  Client ID:   $CLIENT_ID
 ║  Redirect:    $REDIRECT
 ║  Scopes:      $(echo "$SCOPES" | tr ',' '\n' | head -3 | tr '\n' ',' | sed 's/,$//'), ... ($(echo "$SCOPES" | tr ',' '\n' | wc -l | tr -d ' ') total)
 ╚════════════════════════════════════════════════════════════════════╝
+
+Before continuing, open Agents → "Slack Model Context Protocol (MCP) Server" and enable it here:
+  $APP_URL/app-assistant
 
 You'll be redirected to Slack in your browser to authorize this app for
 your user account. Review the permissions, click "Allow", then return here.
@@ -201,18 +206,18 @@ LOG_PATH = sys.argv[2]
 EXPECTED_STATE = sys.argv[3]
 
 RESPONSE_OK = b"""<!DOCTYPE html>
-<html><head><title>yaas installed</title>
+<html><head><title>Sidequestor installed</title>
 <style>body{font-family:-apple-system,sans-serif;max-width:600px;margin:80px auto;padding:0 24px;color:#111;}
 h1{color:#2eb67d;}code{background:#f4f4f4;padding:2px 6px;border-radius:3px;}</style>
 </head><body>
-<h1>yaas authorized</h1>
+<h1>Sidequestor authorized</h1>
 <p>The token has been issued and stored in your Mac Keychain.</p>
 <p>You can close this tab and return to your terminal.</p>
 </body></html>"""
 
 RESPONSE_ERR = lambda msg: f"""<!DOCTYPE html>
 <html><body style="font-family:-apple-system;max-width:600px;margin:80px auto;padding:0 24px;">
-<h1 style="color:#e01e5a;">yaas install failed</h1>
+<h1 style="color:#e01e5a;">Sidequestor install failed</h1>
 <p>{msg}</p>
 <p>Check your terminal for details.</p>
 </body></html>""".encode()
@@ -465,7 +470,7 @@ fi
 
 echo
 echo "╔════════════════════════════════════════════════════════════════════╗"
-echo "║  yaas setup complete                                               ║"
+echo "║  Sidequestor setup complete                                        ║"
 echo "╠════════════════════════════════════════════════════════════════════╣"
 echo "║  Manual run:     python3 $TRIAGE_DIR/tick.py"
 echo "║  Dry run:        DRY_RUN=1 python3 $TRIAGE_DIR/tick.py"

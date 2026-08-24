@@ -6,9 +6,74 @@ Versions are dated by the day the snapshot was published.
 
 ## Unreleased
 
+Package `sidequestor` 0.1.3.dev0.
+
+### Added
+- The dashboard header, `sq --version` and `sq doctor` all report the running build: package
+  version, short commit, and engine version, with the full sha, ref and source on the chip's
+  tooltip. The commit is read from the `direct_url.json` pip writes for a `git+https://` install,
+  so no build-time stamping is needed; a source checkout falls back to `git rev-parse`, and both
+  degrade to a blank commit rather than raising. Also served as a `build` block on `/api/control`.
+- A "How do I upgrade?" section in the README, which did not exist. It names the trap: re-running
+  the documented `pip install 'git+…@branch'` is a no-op when the branch moves but the version
+  string does not, so `--upgrade --force-reinstall` is required. It also says what survives an
+  upgrade and what does not.
+- README sections for prerequisites, the Slack app walkthrough and troubleshooting, and a
+  `tests/test_reaction_config.py` covering emoji defaults, override precedence, colon stripping
+  and validation — none of which had any test.
+
 ### Changed
+- The reaction workflow defaults are now all standard Unicode emoji, present in every Slack
+  workspace: `process` → `robot_face`, `loading` → `hourglass_flowing_sand`, `done` →
+  `white_check_mark`. The previous three were custom emoji, so a fresh install's reaction workflow
+  silently never triggered — the sweep searched `hasmy:` for an emoji nobody could react with.
+  Items already queued under an old emoji in `state/triage/pending_reactions.json` are not picked
+  up again and a message already wearing the old loading emoji keeps it; pin
+  `SIDEQUESTOR_REACTION_PROCESS_EMOJI` / `_LOADING_EMOJI` / `_DONE_EMOJI` to keep the old set. The
+  four dedup state filenames still carry the old names on purpose — they are keyed by role, and
+  renaming them would discard "already replied" history.
+- The workspace chip in the dashboard header shows the name only; the full path moved to the
+  hover tooltip it was already populating, freeing horizontal space in a crowded header.
+- The Slack setup instructions name the actual UI: **Agents → "Slack Model Context Protocol (MCP)
+  Server"** must be enabled by hand (the manifest cannot set it), and **OAuth and Permissions →
+  User Token Scopes** is where the 18 requested user scopes are verified. `reactions:read` may
+  need admin approval and reaction monitoring silently finds nothing without it; `reactions:write`
+  is required or every lifecycle transition fails `missing_scope`; granting a scope later means
+  reinstalling the app and re-running `sq setup`.
+- The README and the setup wizard copy are written to be read by a first-time installer rather
+  than to specify behavior. User-visible copy says Sidequestor rather than yaas; the `yaas` CLI
+  alias, keychain names and `YAAS_*` env prefixes are unchanged.
+- Codex is the default worker backend everywhere, and a codex install now provisions
+  `gpt-5.6-luna` at `high` reasoning effort. `sq setup` fills only the SELECTED backend's blank
+  model and effort, and `.env.example` says so rather than claiming the Claude values are unset
+  while shipping them preset. A workspace whose `.env` never pinned `SIDEQUESTOR_AGENT` switches
+  from claude to codex on upgrade: pin it explicitly to keep the old backend.
+- The optional instruction block printed by `sq setup` and `sq setup --instructions` targets
+  `CLAUDE.md` only under the Claude backend; every other backend (codex, cursor) gets `AGENTS.md`.
+  Neither file is ever created or edited by Sidequestor.
+- Skill cross-references that pointed at a workspace `CLAUDE.md` now name what actually holds the
+  rule: `§3d` lives in the `yaas-quest-dispatch` skill, and coexistence and shared-state rules live
+  in `OPERATING.md`. Since `sq init` no longer writes a `CLAUDE.md`, those pointers resolved to
+  nothing on a fresh workspace.
 - Every Markdown file in `state/briefs/` is now displayed. Briefing names are free-form, ordering
   comes from filesystem creation time, and cadence words in names are optional display hints.
+
+### Fixed
+- The dashboard's reaction field guide honors a `SIDEQUESTOR_REACTION_*_EMOJI` override. It built
+  its lookup from the legacy `YAAS_*` names only, so an override the checker and tick respected
+  was invisible in the UI.
+- `setup.sh` reads `SIDEQUESTOR_SLACK_CHECKERS_ENABLED`, falling back to the legacy name. A
+  workspace where `sq setup` wrote the canonical toggle as `0` still took the Slack-enabled branch
+  and demanded the four `SLACK_*` values.
+- `ENGINE_VERSION` tracks the package version instead of being pinned at `0.1.0.dev0`, so engine
+  directories are genuinely versioned rather than sharing one slot. Stale sibling directories are
+  pruned after the `current` symlink is repointed, never before. `migrations.py` and
+  `workspace.py` no longer hardcode the same stale string.
+
+### Removed
+- `doctor.sh` no longer has a "Worker instructions" section. The dispatch prompt carries the
+  operating contract, so a workspace instruction file is optional and user-owned — the check could
+  only ever pass, and reporting on it either way was noise. Remaining sections are renumbered.
 
 ## 2.5.1 - 2026-08-17
 

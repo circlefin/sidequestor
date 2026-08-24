@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .workspace import Workspace
+from .build_info import build_info
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parent / "runtime"
@@ -31,6 +32,12 @@ def _environment(workspace: Workspace, extra_env: dict[str, str] | None = None) 
         "YAAS_ENGINE_ROOT": str(workspace.yaas_dir / "engine" / "current"),
         "YAAS_RUNTIME_ROOT": str(RUNTIME_ROOT),
         "REPO_ROOT": str(workspace.root),
+    })
+    info = build_info()
+    environment.update({
+        "SIDEQUESTOR_VERSION": info["version"],
+        "SIDEQUESTOR_COMMIT": info["commit_full"],
+        "SIDEQUESTOR_REF": info["ref"],
     })
     runtime_python = str(RUNTIME_ROOT / "yaas-triage")
     current_pythonpath = environment.get("PYTHONPATH", "")

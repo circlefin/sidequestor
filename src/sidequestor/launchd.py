@@ -12,6 +12,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from .workspace import Workspace
+from .build_info import build_info
 
 
 JOB_NAMES = ("triage", "dashboard")
@@ -197,6 +198,12 @@ def _production_jobs(workspace: Workspace, executable: Path) -> dict:
         "KeepAlive": True,
         "ThrottleInterval": 10,
     }
+    info = build_info()
+    common["EnvironmentVariables"].update({
+        "SIDEQUESTOR_VERSION": info["version"],
+        "SIDEQUESTOR_COMMIT": info["commit_full"],
+        "SIDEQUESTOR_REF": info["ref"],
+    })
     commands = {
         "triage": [str(python), "-m", "sidequestor", "--workspace", str(workspace.root), "loop"],
         "heartbeat": ["/bin/bash", str(runtime / "yaas-triage" / "ops" / "heartbeat-loop.sh")],

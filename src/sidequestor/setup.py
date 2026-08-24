@@ -15,6 +15,10 @@ from .workspace import Workspace
 
 _PLACEHOLDERS = {None, "", "<set>", "CHANGE_ME", "TODO"}
 _ENV_LINE = re.compile(r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$")
+_INTERACTIVE_INSTRUCTIONS = (
+    "Before acting on a triage dispatch, read `.yaas/engine/current/OPERATING.md`.\n"
+    "Engine-managed skills are installed under `.yaas/engine/current/skills/`."
+)
 
 
 def _value(lines: list[str], key: str) -> str | None:
@@ -63,6 +67,22 @@ def _yes_no(label: str, default: bool, *, input_fn=input) -> bool:
     return answer in {"y", "yes"}
 
 
+def configured_agent(workspace: Workspace) -> str:
+    """Return the selected backend without changing workspace state."""
+    return _value(workspace.env_file.read_text().splitlines(), "SIDEQUESTOR_AGENT") or "codex"
+
+
+def print_worker_instructions(agent: str) -> None:
+    """Print optional interactive guidance without touching user-owned files."""
+    filename = "CLAUDE.md" if agent == "claude" else "AGENTS.md"
+    print()
+    print(f"Optional: give your interactive sessions the same context, via {filename}.")
+    print(f"Paste this in yourself when you want it — {filename} is yours and Sidequestor never touches it:")
+    print("---")
+    print(_INTERACTIVE_INSTRUCTIONS)
+    print("---")
+
+
 def provision_env(workspace: Workspace, *, input_fn=input, interactive: bool = True) -> tuple[dict[str, str], bool]:
     """Copy the template once and fill only empty/placeholder values."""
     example = workspace.root / ".env.example"
@@ -107,11 +127,11 @@ def provision_env(workspace: Workspace, *, input_fn=input, interactive: bool = T
     permission_key = f"SIDEQUESTOR_{agent.upper()}_PERMISSION_MODE"
     model = existing.get(model_key)
     if model in _PLACEHOLDERS:
-        model = _prompt("Worker model", "claude-opus-4-6" if agent == "claude" else "gpt-5", input_fn=input_fn) if interactive else ("claude-opus-4-6" if agent == "claude" else "gpt-5")
+        model = _prompt("Worker model", "claude-opus-4-6" if agent == "claude" else "gpt-5.6-luna", input_fn=input_fn) if interactive else ("claude-opus-4-6" if agent == "claude" else "gpt-5.6-luna")
         values[model_key] = model
     effort = existing.get(effort_key)
     if effort in _PLACEHOLDERS:
-        effort = _prompt("Reasoning effort", "medium", input_fn=input_fn) if interactive else "medium"
+        effort = _prompt("Reasoning effort", "high", input_fn=input_fn) if interactive else "high"
         values[effort_key] = effort
     permission = existing.get(permission_key)
     if permission in _PLACEHOLDERS:
@@ -139,14 +159,26 @@ def provision_env(workspace: Workspace, *, input_fn=input, interactive: bool = T
 def run_setup(workspace: Workspace, executable: Path, *, input_fn=input, interactive: bool = True) -> int:
     sync_resources(workspace)
     provision_env(workspace, input_fn=input_fn, interactive=interactive)
-    enabled = _value(workspace.env_file.read_text().splitlines(), "SIDEQUESTOR_SLACK_CHECKERS_ENABLED") == "1"
+    env_lines = workspace.env_file.read_text().splitlines()
+    agent = _value(env_lines, "SIDEQUESTOR_AGENT") or "codex"
+    enabled = _value(env_lines, "SIDEQUESTOR_SLACK_CHECKERS_ENABLED") == "1"
+    if interactive:
+        print(f"Worker backend: {agent}. Good choice.")
+        print("One thing Sidequestor will not do for you: log in to Claude or Codex. Authenticate that CLI separately before starting.")
+        if enabled:
+            app_id = _value(env_lines, "SLACK_APP_ID")
+            if app_id:
+                print("Open Agents → Slack Model Context Protocol (MCP) Server and enable it before OAuth:")
+                print(f"https://api.slack.com/apps/{app_id}/app-assistant")
     if enabled and interactive and _yes_no("Run Slack OAuth now", True, input_fn=input_fn):
         script = RUNTIME_ROOT / "yaas-triage" / "setup" / "setup.sh"
         result = subprocess.run(["bash", str(script), "--workspace", str(workspace.root), "--oauth-only"], cwd=workspace.root)
         if result.returncode:
             return result.returncode
     manifest = install_production(workspace, executable)
-    print(f"started Sidequestor instance {workspace.instance_id}")
+    print(f"You are live. Sidequestor instance {workspace.instance_id} is running these jobs:")
     for name, job in manifest["jobs"].items():
         print(f"{name}: {job['label']}")
+    if interactive:
+        print_worker_instructions(agent)
     return 0

@@ -94,7 +94,7 @@ class Tick:
         except ValueError as exc:
             raise SystemExit(f"invalid reaction emoji configuration: {exc}")
         # Knobs (validated in Config.__init__; here as ints/strings for the flow).
-        self.agent = self.env.get("YAAS_AGENT", "claude")
+        self.agent = self.env.get("YAAS_AGENT", "codex")
         self.unacked_promote = self.cfg.knob("YAAS_UNACKED_PROMOTE")
         self.error_promote = self.cfg.knob("YAAS_CHECKER_ERROR_PROMOTE")
         self.max_parallel = self.cfg.knob("YAAS_TRIAGE_MAX_PARALLEL")
@@ -890,6 +890,12 @@ _RUN_DISCIPLINE = ("watch.json is not editable: append with yaas-triage/ledger/a
                    "material happened; else exit with no text.")
 
 
+def _dispatch_read_instructions(skill: str) -> str:
+    """Return the invariant startup instructions for every worker dispatch."""
+    return ("First read .yaas/engine/current/OPERATING.md, then load and follow "
+            f".yaas/engine/current/skills/{skill}/SKILL.md. ")
+
+
 def dispatch_loop(t, dispatch_targets, targets_json):
     """The per-target dispatch: emit the plan, rotate for fairness, then for each target apply
     the fanout/budget defer and per-target breaker, dispatch one worker, and commit. Mirrors
@@ -1059,17 +1065,16 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
     )
     if target == "reactions":
         prompt = (f"Yaas worker dispatch: dirty target: reactions. Ack items (JSON): {items_json}"
-                  f" — each item_id is \"<emoji>:<msg_ts>\". First read "
-                  f".yaas/engine/current/OPERATING.md, then load and follow "
-                  f".yaas/engine/current/skills/yaas-reactions/SKILL.md (the Reactions Fast Path). "
+                  f" — each item_id is \"<emoji>:<msg_ts>\". "
+                  f"{_dispatch_read_instructions('yaas-reactions')}"
+                  f"(the Reactions Fast Path). "
                   f"The workspace has no yaas-triage/ source directory; for helper commands "
                   f"use the packaged runtime path.{runtime_hint} "
                   f"{ack_block} {_RUN_DISCIPLINE}")
     else:
         prompt = (f"Yaas worker dispatch: dirty target: {target}. Exact dirty watches (JSON): "
                   f"{items_json} — each item_id is a watch_id. Process EVERY listed watch_id. "
-                  f"First read .yaas/engine/current/OPERATING.md, then load and follow "
-                  f".yaas/engine/current/skills/yaas-quest-dispatch/SKILL.md. "
+                  f"{_dispatch_read_instructions('yaas-quest-dispatch')}"
                   f"The workspace has no yaas-triage/ source directory; for helper commands "
                   f"use the packaged runtime path.{runtime_hint} "
                   f"{ack_block} {_RUN_DISCIPLINE}")

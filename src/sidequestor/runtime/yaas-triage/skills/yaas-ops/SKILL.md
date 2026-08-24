@@ -71,8 +71,7 @@ logs/
 
 .env                          ← per-install secrets + knobs (gitignored)
 .env.example                  ← template for new installs
-CLAUDE.example.md             ← starter worker instructions (template)
-CLAUDE.md                     ← your customized worker instructions (copy from CLAUDE.example.md)
+CLAUDE.md / AGENTS.md          ← optional user-owned worker instructions (never written by Sidequestor)
 ARCHITECTURE.md               ← full system design
 ```
 
@@ -261,7 +260,6 @@ Deterministic quest scaffolding. Takes a JSON spec on argv or stdin, creates the
 git clone <this repo>
 cd <repo>
 cp .env.example .env             # configure the adapters you use
-cp CLAUDE.example.md CLAUDE.md   # customize as needed
 ./yaas-triage/setup/setup.sh
 ./yaas-triage/ops/doctor.sh          # is this machine configured (real creds, PATH, plist)
 python3 yaas-triage/ops/health-monitor.py   # is it working right now

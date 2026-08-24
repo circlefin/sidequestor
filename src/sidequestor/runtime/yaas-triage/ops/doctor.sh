@@ -70,7 +70,7 @@ section() { [ "$QUIET" = "0" ] && printf '\n\033[1m%s\033[0m\n' "$1"; }
 # used to hard-fail on a missing `claude` even with YAAS_AGENT=codex, which contradicted
 # the README's multi-backend story and made a perfectly good install look broken.
 section "Prerequisites"
-AGENT="${YAAS_AGENT:-claude}"
+AGENT="${YAAS_AGENT:-codex}"
 case "$AGENT" in
   claude) AGENT_BIN="claude" ;;
   codex)  AGENT_BIN="codex" ;;
@@ -162,31 +162,7 @@ else
   esac
 fi
 
-# ── 3. Worker instructions ──────────────────────────────────────────────────
-# Each backend reads a differently-named rules file (AGENTS.md and GEMINI.md are commonly
-# symlinks to CLAUDE.md). Requiring CLAUDE.md specifically failed a valid codex/cursor
-# install, so accept whichever of them exists and only fail when NONE does.
-section "Worker instructions"
-RULES_FILE=""
-for candidate in CLAUDE.md AGENTS.md GEMINI.md; do
-  if [ -f "$REPO_ROOT/$candidate" ]; then RULES_FILE="$REPO_ROOT/$candidate"; break; fi
-done
-if [ -n "$RULES_FILE" ]; then
-  ok "worker rules present at ${RULES_FILE#$REPO_ROOT/}"
-  # Accept EITHER the inline protocol or a pointer at the skill that now carries it: a
-  # thin rules file that loads yaas-quest-dispatch is correct and must not be failed. But
-  # a file with neither means the worker has no rules at all, which stays a hard failure —
-  # that check is the reason this section exists.
-  if grep -q "Quest Activation Protocol\|yaas-quest-dispatch" "$RULES_FILE" 2>/dev/null; then
-    ok "worker rules reach the quest dispatch protocol"
-  else
-    fail "worker rules have neither the Quest Activation Protocol nor a yaas-quest-dispatch pointer — copy from CLAUDE.example.md"
-  fi
-else
-  fail "no worker rules file (CLAUDE.md / AGENTS.md / GEMINI.md) at $REPO_ROOT — copy from CLAUDE.example.md"
-fi
-
-# ── 4. Slack token in Keychain ──────────────────────────────────────────────
+# ── 3. Slack token in Keychain ──────────────────────────────────────────────
 section "Slack credentials"
 if [ "${SLACK_CHECKERS_ENABLED:-1}" = "0" ]; then
   ok "Slack OAuth token not required while local Slack checkers are disabled"
@@ -219,7 +195,7 @@ else
   fail "Slack token not in Keychain — run ./yaas-triage/setup/setup.sh"
 fi
 
-# ── 5. State directory ──────────────────────────────────────────────────────
+# ── 4. State directory ──────────────────────────────────────────────────────
 section "State directories"
 for d in state state/quests state/quests/active state/triage logs; do
   if [ -d "$REPO_ROOT/$d" ]; then
@@ -229,7 +205,7 @@ for d in state state/quests state/quests/active state/triage logs; do
   fi
 done
 
-# ── 6. launchd job ──────────────────────────────────────────────────────────
+# ── 5. launchd job ──────────────────────────────────────────────────────────
 section "launchd"
 PLIST="$HOME/Library/LaunchAgents/com.yaas.triage.plist"
 if [ -f "$PLIST" ]; then
@@ -279,7 +255,7 @@ else
   fail "launchd job not loaded — run ./setup/install-launchd.sh"
 fi
 
-# ── 7. Runtime liveness — delegated ─────────────────────────────────────────
+# ── 6. Runtime liveness — delegated ─────────────────────────────────────────
 # This used to re-implement "how long since the last tick", with its own date
 # parsing and its own thresholds. health-monitor.py does that continuously, on its
 # own launchd job, with alerting and a published verdict — so a copy here was a
@@ -300,7 +276,7 @@ else
   warn "no health-status.json — install the heartbeat: ./setup/install-launchd-heartbeat.sh"
 fi
 
-# ── 8. Quest folder sanity ──────────────────────────────────────────────────
+# ── 7. Quest folder sanity ──────────────────────────────────────────────────
 section "Quest folders"
 QUEST_COUNT=0
 for q in "$REPO_ROOT/state/quests/active/"*/; do

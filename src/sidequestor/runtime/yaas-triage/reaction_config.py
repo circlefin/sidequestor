@@ -24,12 +24,12 @@ import sys
 
 
 EMOJI_SETTINGS = {
-    "process": ("YAAS_REACTION_PROCESS_EMOJI", "claude-intensifies"),
+    "process": ("YAAS_REACTION_PROCESS_EMOJI", "robot_face"),
     "draft": ("YAAS_REACTION_DRAFT_EMOJI", "writing_hand"),
     "save": ("YAAS_REACTION_SAVE_EMOJI", "floppy_disk"),
     "adopt": ("YAAS_REACTION_ADOPT_EMOJI", "incoming_envelope"),
-    "loading": ("YAAS_REACTION_LOADING_EMOJI", "claudeloading"),
-    "done": ("YAAS_REACTION_DONE_EMOJI", "updatedone"),
+    "loading": ("YAAS_REACTION_LOADING_EMOJI", "hourglass_flowing_sand"),
+    "done": ("YAAS_REACTION_DONE_EMOJI", "white_check_mark"),
 }
 EMOJI_NAME = re.compile(r"^[A-Za-z0-9_+-]+$")
 

@@ -5,7 +5,7 @@ description: Quality rules for composing replies in Slack threads, channels, and
 
 # Answering Quality Rules
 
-Applies whenever the bot composes a reply in any Slack channel (a team Q&A channel, reaction-workflow `process` threads or `draft` actions, any public or private channel Q&A) **and to partner-facing quest replies** — the composition rules below (especially #6-#8) are what make a reply read as the operator rather than as a machine. Voice/register defaults live in CLAUDE.md § Tone; this skill owns answer quality.
+Applies whenever the bot composes a reply in any Slack channel (a team Q&A channel, reaction-workflow `process` threads or `draft` actions, any public or private channel Q&A) **and to partner-facing quest replies** — the composition rules below (especially #6-#8) are what make a reply read as the operator rather than as a machine. Voice/register defaults live in your optional workspace instruction file (`CLAUDE.md` under the Claude backend, `AGENTS.md` otherwise), which is user-owned and may be absent; this skill owns answer quality.
 
 ## 0. Know the room before you answer
 

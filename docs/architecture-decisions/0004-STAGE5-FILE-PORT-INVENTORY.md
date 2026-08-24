@@ -63,19 +63,20 @@ watermark, or dispatch logic was rewritten.
 
 | Disposition | Count | Result |
 |---|---:|---|
-| Wholesale runtime copy | 71 | Bundled under `sidequestor/runtime/yaas-triage/` |
+| Wholesale runtime copy | 70 | Bundled under `sidequestor/runtime/yaas-triage/` |
 | Amended runtime copy | 24 | Bundled under the same path with narrow path/workspace, rebrand, and setup adapters |
 | Wholesale top-level resource | 1 | `settings.json.example` is packaged/materialized wholesale |
 | Amended top-level package resource | 2 | `.env.example` and `dashboard.html` are packaged/materialized with the rebrand adapters |
-| Amended top-level workspace instruction | 1 | `CLAUDE.example.md` becomes generated `CLAUDE.md` |
+| Managed operating instructions | 1 | `OPERATING.md` is installed under `.yaas/engine/current/`; no user instruction file is generated or mutated |
 | Source-only top-level files | 11 | Repository metadata, docs, CI, and versioning; not workspace runtime files |
 | Excluded tests and fixtures | 122 | Not in the wheel; retained in `.git-yaas-v2` and run from the source tree |
-| **Total tracked paths** | **232** | Protected-tree verification passed unchanged |
+| **Total tracked paths** | **230** | Protected-tree verification passed unchanged |
 
 The package does not copy `yaas-triage/` into an initialized workspace. Runtime
 files stay in the installed wheel. A workspace receives state, logs, control
 metadata, the managed operating instructions, and the managed skill subset
-under `.yaas/engine/current/`.
+under `.yaas/engine/current/`; any backend-native user instruction file remains
+optional and user-owned.
 
 ## Top-Level Files
 
@@ -87,7 +88,6 @@ under `.yaas/engine/current/`.
 | `.gitignore` | SOURCE-ONLY | Source-repository ignore policy; workspace behavior is implemented by the package. |
 | `ARCHITECTURE.md` | SOURCE-ONLY | Architecture documentation remains in the source repository. Runtime workers use packaged `OPERATING.md`. |
 | `CHANGELOG.md` | SOURCE-ONLY | Release documentation; package version is taken from `pyproject.toml`. |
-| `CLAUDE.example.md` | AMENDED | Becomes a generated workspace `CLAUDE.md` that points to `.yaas/engine/current/OPERATING.md` and managed skills. The source example referenced source-tree paths, which do not exist in a package workspace. |
 | `CONTRIBUTING.md` | SOURCE-ONLY | Contributor instructions; not installed into a workspace. |
 | `LICENSE` | SOURCE-ONLY | Remains in the source repository; the current wheel metadata does not bundle it as runtime data. |
 | `QUICKSTART.md` | SOURCE-ONLY | Source/repository onboarding documentation; package commands are exposed through CLI help and packaged operating instructions. |
@@ -136,7 +136,6 @@ yaas-triage/checkers/slack_thread.watch.json
 yaas-triage/checkers/slack_utils.py
 yaas-triage/dispatch/extract-tokens.py
 yaas-triage/dispatch/format-stream.py
-yaas-triage/dispatch/manual-dispatch.sh
 yaas-triage/dispatch/plan.py
 yaas-triage/dispatch/slack-read-health.py
 yaas-triage/dispatch/spend-window.py
@@ -464,7 +463,6 @@ and source runtime are deliberately absent:
 ```text
 .env                         # user-owned; configured separately
 .env.example                 # packaged safe template
-CLAUDE.md                    # generated package-aware entrypoint
 settings.json                # user-owned settings, initially {}
 settings.json.example       # packaged wholesale safe template
 .yaas/.yaas-version
@@ -506,9 +504,9 @@ versioned and do not overwrite personal skills.
   uninstall all passed in a disposable workspace.
 - Legacy baseline: 53 of 54 shell suites passed and all 29 differential tick
   goldens passed. The sole baseline failure is the stale `doc-contracts` check
-  requiring checker-authoring literals in `CLAUDE.example.md`; that file now
-  deliberately routes source mutation to a separate checkout, while the full
-  checker-authoring contract remains bundled in the runtime skill.
+  requiring checker-authoring literals in the removed source-tree instruction
+  template; the full checker-authoring contract remains bundled in the runtime
+  skill.
 - Leak review: no tracked env/state/log/E2E paths, token-like values, Circle
   email addresses, gitlinks, or nested Git paths. Matches were code identifiers,
   empty configuration keys, Keychain commands, and example URLs. `trivy` was

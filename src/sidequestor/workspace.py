@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import __version__
+
 
 SCHEMA_VERSION = 1
 REACTION_WATERMARK = "reaction-watermark.json"
@@ -119,13 +121,6 @@ def init_workspace(path: str | Path, name: str | None = None) -> Workspace:
         ws.env_file.chmod(0o600)
     if not (root / "settings.json").exists():
         _write_json(root / "settings.json", {})
-    if not (root / "CLAUDE.md").exists():
-        (root / "CLAUDE.md").write_text(
-            "# Sidequestor workspace\n\n"
-            "Before acting on a triage dispatch, read `.yaas/engine/current/OPERATING.md`.\n"
-            "Engine-managed skills are installed under `.yaas/engine/current/skills/`.\n"
-        )
-
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     _write_json(marker, {
         "instance_id": instance_id,
@@ -134,7 +129,7 @@ def init_workspace(path: str | Path, name: str | None = None) -> Workspace:
     })
     _write_json(ws.yaas_dir / ".yaas-version", {
         "schema_version": SCHEMA_VERSION,
-        "created_by": "0.1.0.dev0",
+        "created_by": __version__,
     })
     ensure_reaction_watermark(ws)
     _register(ws)
