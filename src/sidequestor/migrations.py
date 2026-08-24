@@ -18,6 +18,7 @@ BACKUP_ITEMS = (
     ".env",
     ".env.example",
     "CLAUDE.md",
+    "AGENTS.md",
     "settings.json",
     "state",
     "logs",

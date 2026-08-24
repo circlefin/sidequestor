@@ -18,8 +18,8 @@
 """
 run-agent.py — run ONE headless agent invocation and return its exit code.
 
-This is the pipeline that the original shell orchestrator and manual-dispatch.sh each used to implement
-separately: launch dispatch-agent.sh, tee the raw event stream to an ndjson file, pipe
+This is the shared pipeline for the triage orchestrator: launch dispatch-agent.sh,
+tee the raw event stream to an ndjson file, pipe
 it through format-stream.py into a human transcript, symlink worker-latest.*, and kill
 the whole process tree if it runs past its timeout. Two copies meant a fix to the
 watchdog or the log pipeline had to be made twice, and half of it had no test.
@@ -56,8 +56,8 @@ def _repo_root(start):
 
     NOT counted as `parent.parent`: that is correct only while every script sits directly
     in yaas-triage/, and silently resolves to yaas-triage/ itself once a script moves into
-    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on CLAUDE.md
-    (a fresh clone has only CLAUDE.example.md) and NOT on .git (two git dirs here, none in
+    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on a worker
+    instruction file and NOT on .git (two git dirs here, none in
     fixtures). Ambient $REPO_ROOT is deliberately ignored: a stale value pointing at another
     checkout would pass any marker check and silently redirect writes. Test fixtures copy
     the whole tree, so the walk-up finds the fixture on its own.
@@ -183,7 +183,7 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
         "run_ref": f"{stamp}-{slug}",
         "state": "running",
         "targets": [label],
-        "agent": os.environ.get("YAAS_AGENT", "claude"),
+        "agent": os.environ.get("YAAS_AGENT", "codex"),
         "supervisor_pid": os.getpid(),
         "started_at": started_at,
         "heartbeat_at": started_at,

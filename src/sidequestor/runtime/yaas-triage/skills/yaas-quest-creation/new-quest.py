@@ -100,8 +100,8 @@ def _repo_root(start):
 
     NOT counted as `parent.parent`: that is correct only while every script sits directly
     in yaas-triage/, and silently resolves to yaas-triage/ itself once a script moves into
-    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on CLAUDE.md
-    (a fresh clone has only CLAUDE.example.md) and NOT on .git (two git dirs here, none in
+    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on a worker
+    instruction file and NOT on .git (two git dirs here, none in
     fixtures). Ambient $REPO_ROOT is deliberately ignored: a stale value pointing at another
     checkout would pass any marker check and silently redirect writes. Test fixtures copy
     the whole tree, so the walk-up finds the fixture on its own.

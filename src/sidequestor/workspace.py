@@ -119,13 +119,6 @@ def init_workspace(path: str | Path, name: str | None = None) -> Workspace:
         ws.env_file.chmod(0o600)
     if not (root / "settings.json").exists():
         _write_json(root / "settings.json", {})
-    if not (root / "CLAUDE.md").exists():
-        (root / "CLAUDE.md").write_text(
-            "# Sidequestor workspace\n\n"
-            "Before acting on a triage dispatch, read `.yaas/engine/current/OPERATING.md`.\n"
-            "Engine-managed skills are installed under `.yaas/engine/current/skills/`.\n"
-        )
-
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     _write_json(marker, {
         "instance_id": instance_id,

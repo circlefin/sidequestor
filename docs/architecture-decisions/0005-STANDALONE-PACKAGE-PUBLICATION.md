@@ -126,7 +126,7 @@ term. It is not the primary product or package brand after this migration.
 5. Render new launchd labels with `com.sidequestor.*` only for newly managed package jobs, while
    detecting and preserving existing `com.yaas.*` labels. Never start both old and new jobs for
    one workspace. Existing jobs must continue to point at the same workspace and state paths.
-6. Update `.env.example`, `settings.json.example`, generated `CLAUDE.md`, OPERATING instructions,
+6. Update `.env.example`, `settings.json.example`, OPERATING instructions,
    skills, README, changelog, dashboard headings, diagnostics, and error messages to say
    Sidequestor. Keep compatibility notes concise and operational.
 7. Add tests for both directions: a fresh Sidequestor workspace uses only canonical names, and an

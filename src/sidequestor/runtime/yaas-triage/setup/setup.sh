@@ -132,6 +132,7 @@ it takes about two minutes.
   2. Pick your workspace, then paste the manifest below
   3. Create, then Install to Workspace (your admin may need to approve it)
   4. From Basic Information, copy App ID and Client ID into .env
+  5. Open the app's App Assistant settings and enable Slack Model Context Protocol Server
 
 ──────────────────────── paste this ────────────────────────
 BANNER
@@ -164,6 +165,9 @@ cat <<EOF
 ║  Redirect:    $REDIRECT
 ║  Scopes:      $(echo "$SCOPES" | tr ',' '\n' | head -3 | tr '\n' ',' | sed 's/,$//'), ... ($(echo "$SCOPES" | tr ',' '\n' | wc -l | tr -d ' ') total)
 ╚════════════════════════════════════════════════════════════════════╝
+
+Before continuing, enable Slack Model Context Protocol Server here:
+  $APP_URL/app-assistant
 
 You'll be redirected to Slack in your browser to authorize this app for
 your user account. Review the permissions, click "Allow", then return here.

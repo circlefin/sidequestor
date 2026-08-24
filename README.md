@@ -70,7 +70,24 @@ costless local Slack checker, which worker backend to use (`claude` or
 `codex`), the model, reasoning effort, and worker permission mode. It copies
 `.env.example` to `.env` when needed, fills only missing or placeholder values,
 never overwrites real existing values, optionally runs Slack PKCE OAuth, and
-starts the workspace's launchd jobs.
+starts the workspace's launchd jobs. The wizard also reminds you that Claude or
+Codex authentication is separate and must already be configured for the selected
+CLI; Sidequestor does not log in to either agent.
+
+If local Slack checking is enabled, the wizard also directs you to enable
+**Slack Model Context Protocol Server** for your app at
+`https://api.slack.com/apps/<SLACK_APP_ID>/app-assistant` before completing OAuth.
+
+At the end of successful interactive setup, the wizard prints an optional
+instruction block for the selected backend. You can print it again without
+changing anything with:
+
+```bash
+# Print the optional block for manual addition to CLAUDE.md or AGENTS.md.
+sq setup --instructions
+```
+
+The command never creates or edits those user-owned files.
 
 The lifecycle commands are:
 

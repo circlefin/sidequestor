@@ -7,7 +7,7 @@ description: How to handle a Sidequestor quest dispatch — read the fired watch
 
 **Mode A (autonomous):** you were dispatched with `dirty target: <quest_id>` and an item list. Work only that quest, follow §1-5, and ack every listed item before exiting.
 
-**Mode B (interactive):** you may use §1-5 to inspect or steer a quest for a human — but with three constraints, because the loop may be handling the same quest right now (see the Coexistence section of CLAUDE.md): (a) use the SAME helpers below, never hand-edit state files; (b) do NOT open or ack the ack ledger — that is Mode A's; (c) before sending or editing `context.md`/`meta.json`, confirm no in-flight `state/triage/dispatch-*.json` manifest and no just-written timeline entry for this quest, else route through the review queue.
+**Mode B (interactive):** you may use §1-5 to inspect or steer a quest for a human — but with three constraints, because the loop may be handling the same quest right now (see the workspace coexistence rules): (a) use the SAME helpers below, never hand-edit state files; (b) do NOT open or ack the ack ledger — that is Mode A's; (c) before sending or editing `context.md`/`meta.json`, confirm no in-flight `state/triage/dispatch-*.json` manifest and no just-written timeline entry for this quest, else route through the review queue.
 
 The loop owns watermark advancement in both modes: never edit an existing `watch.json` entry.
 

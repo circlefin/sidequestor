@@ -33,21 +33,22 @@
 # Usage:   YAAS_AGENT=codex|cursor|claude dispatch-agent.sh "<prompt>"
 #
 # Env:
-#   YAAS_AGENT                   backend (default: claude)
+#   YAAS_AGENT                   backend (default: codex)
 #   REPO_ROOT                    repo working dir (default: parent of script dir)
 #   YAAS_CLAUDE_PERMISSION_MODE  claude --permission-mode (default: acceptEdits)
 #   YAAS_CODEX_PERMISSION_MODE   workspace-write (default) or bypassPermissions
 #   YAAS_WORKER_PERMISSION_MODE  deprecated Claude fallback
 #   YAAS_CLAUDE_MODEL            default: opus
 #   YAAS_CLAUDE_EFFORT           claude --effort (low|medium|high|...); unset → omit flag
-#   YAAS_CODEX_MODEL             default: "" → codex uses ~/.codex/config.toml model
+#   YAAS_CODEX_MODEL             sq setup fills blank Codex values with gpt-5.6-luna;
+#                                otherwise codex uses ~/.codex/config.toml model
 #   YAAS_CODEX_EFFORT            reasoning effort (none|low|medium|high|xhigh|max); unset → config default
 #   YAAS_CURSOR_MODEL            default: "" → cursor uses its default (auto)
 
 set -uo pipefail
 
 PROMPT="${1:?usage: dispatch-agent.sh <prompt>}"
-BACKEND="${YAAS_AGENT:-claude}"
+BACKEND="${YAAS_AGENT:-codex}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNTIME_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"

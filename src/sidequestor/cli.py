@@ -18,7 +18,7 @@ from .launchd import install_production, production_is_running, production_statu
 from .launchd import render, status as launchd_status, uninstall as uninstall_jobs
 from .migrations import migrate_workspace
 from .resources import sync_resources
-from .setup import run_setup
+from .setup import configured_agent, print_worker_instructions, run_setup
 from .workspace import (
     Workspace,
     find_workspace,
@@ -81,7 +81,7 @@ def _command_help(command: str) -> str:
     examples = {
         "init": "sidequestor init PATH [--name NAME]",
         "instances": "sidequestor instances list [--all]|doctor|register [PATH]|rekey [PATH]",
-        "setup": "sidequestor [--workspace PATH] setup [--manifest|--production] [--non-interactive|--render-only|install|status|uninstall]",
+        "setup": "sidequestor [--workspace PATH] setup [--instructions|--manifest|--production] [--non-interactive|--render-only|install|status|uninstall]",
         "start": "sidequestor [--workspace PATH] start",
         "stop": "sidequestor [--workspace PATH] stop [INSTANCE_ID]",
         "tick": "sidequestor [--workspace PATH] tick [--dry-run|--isolated [--fake-worker]]",
@@ -240,6 +240,9 @@ def _cmd_doctor(workspace: Workspace) -> int:
 
 
 def _cmd_setup(workspace: Workspace, args: list[str]) -> int:
+    if args == ["--instructions"]:
+        print_worker_instructions(configured_agent(workspace))
+        return 0
     if not args or args == ["--non-interactive"]:
         return run_setup(workspace, Path(sys.executable), interactive="--non-interactive" not in args)
     production = "--production" in args

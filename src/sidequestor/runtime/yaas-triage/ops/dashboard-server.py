@@ -880,7 +880,7 @@ def build_config() -> dict:
             knob("YAAS_RETIRE_EPHEMERAL_HOURS", 168, "Lifetime of a watch marked ephemeral (a DM reply-catcher). Unmarked watches never expire."),
         ]},
         {"title": "Backend", "items": [
-            knob("YAAS_AGENT", "claude", "Which agent backend runs the worker dispatch (claude / codex / cursor)."),
+            knob("YAAS_AGENT", "codex", "Which agent backend runs the worker dispatch (claude / codex / cursor)."),
         ]},
     ]
     return {"orchestrator": "tick.py", "worker_timeout_sec": 1800, "groups": groups}
