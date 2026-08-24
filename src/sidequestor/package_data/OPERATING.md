@@ -51,6 +51,7 @@ the packaged runtime directory. Put mutable data in the workspace through the su
   `allow_send` again as a permanent veto.
 - If an action is blocked, log the blocker, ack the item `blocked`, and report it.
 
-Backend-native workspace instruction files may add user-specific instructions.
-Those files remain user-owned; this file owns the Sidequestor runtime boundary and
-dispatch protocol.
+A backend-native workspace instruction file (`CLAUDE.md` under the Claude backend,
+`AGENTS.md` otherwise) may add user-specific instructions. It is optional, and
+Sidequestor never creates or edits it. Those instructions remain in force, but this
+file owns the Sidequestor runtime boundary and dispatch protocol.

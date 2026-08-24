@@ -74,7 +74,7 @@ def configured_agent(workspace: Workspace) -> str:
 
 def print_worker_instructions(agent: str) -> None:
     """Print optional interactive guidance without touching user-owned files."""
-    filename = "AGENTS.md" if agent == "codex" else "CLAUDE.md"
+    filename = "CLAUDE.md" if agent == "claude" else "AGENTS.md"
     print()
     print(f"Optional interactive instructions for {filename}:")
     print(f"Append this block manually to {filename}; Sidequestor will not modify it:")
@@ -131,7 +131,7 @@ def provision_env(workspace: Workspace, *, input_fn=input, interactive: bool = T
         values[model_key] = model
     effort = existing.get(effort_key)
     if effort in _PLACEHOLDERS:
-        effort = _prompt("Reasoning effort", "medium", input_fn=input_fn) if interactive else "medium"
+        effort = _prompt("Reasoning effort", "high", input_fn=input_fn) if interactive else "high"
         values[effort_key] = effort
     permission = existing.get(permission_key)
     if permission in _PLACEHOLDERS:

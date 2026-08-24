@@ -66,8 +66,9 @@ sidequestor --workspace ~/path/to/existing-workspace doctor
 ```
 
 `sq setup` is the complete onboarding wizard. It asks whether to enable the
-costless local Slack checker, which worker backend to use (`claude` or
-`codex`), the model, reasoning effort, and worker permission mode. It copies
+costless local Slack checker, which worker backend to use (`codex` by default, or
+`claude`), the model, reasoning effort, and worker permission mode. A codex install
+defaults to `gpt-5.6-luna` at `high` effort. It copies
 `.env.example` to `.env` when needed, fills only missing or placeholder values,
 never overwrites real existing values, optionally runs Slack PKCE OAuth, and
 starts the workspace's launchd jobs. The wizard also reminds you that Claude or
@@ -87,7 +88,8 @@ changing anything with:
 sq setup --instructions
 ```
 
-The command never creates or edits those user-owned files.
+The block targets `CLAUDE.md` under the Claude backend and `AGENTS.md` for every
+other backend. The command never creates or edits those user-owned files.
 
 The lifecycle commands are:
 

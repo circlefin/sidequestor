@@ -162,22 +162,7 @@ else
   esac
 fi
 
-# ── 3. Worker instructions ──────────────────────────────────────────────────
-# Dispatch prompts supply the packaged operating contract. A workspace rules file is
-# optional and remains entirely user-owned.
-section "Worker instructions"
-RULES_FILE=""
-for candidate in CLAUDE.md AGENTS.md GEMINI.md; do
-  if [ -f "$REPO_ROOT/$candidate" ]; then RULES_FILE="$REPO_ROOT/$candidate"; break; fi
-done
-if [ -n "$RULES_FILE" ]; then
-  ok "worker rules present at ${RULES_FILE#$REPO_ROOT/}"
-  ok "workspace rules are user-owned; dispatch protocol comes from the packaged prompt and skills"
-else
-  ok "no workspace rules file (optional; dispatch protocol comes from the packaged prompt and skills)"
-fi
-
-# ── 4. Slack token in Keychain ──────────────────────────────────────────────
+# ── 3. Slack token in Keychain ──────────────────────────────────────────────
 section "Slack credentials"
 if [ "${SLACK_CHECKERS_ENABLED:-1}" = "0" ]; then
   ok "Slack OAuth token not required while local Slack checkers are disabled"
@@ -210,7 +195,7 @@ else
   fail "Slack token not in Keychain — run ./yaas-triage/setup/setup.sh"
 fi
 
-# ── 5. State directory ──────────────────────────────────────────────────────
+# ── 4. State directory ──────────────────────────────────────────────────────
 section "State directories"
 for d in state state/quests state/quests/active state/triage logs; do
   if [ -d "$REPO_ROOT/$d" ]; then
@@ -220,7 +205,7 @@ for d in state state/quests state/quests/active state/triage logs; do
   fi
 done
 
-# ── 6. launchd job ──────────────────────────────────────────────────────────
+# ── 5. launchd job ──────────────────────────────────────────────────────────
 section "launchd"
 PLIST="$HOME/Library/LaunchAgents/com.yaas.triage.plist"
 if [ -f "$PLIST" ]; then
@@ -270,7 +255,7 @@ else
   fail "launchd job not loaded — run ./setup/install-launchd.sh"
 fi
 
-# ── 7. Runtime liveness — delegated ─────────────────────────────────────────
+# ── 6. Runtime liveness — delegated ─────────────────────────────────────────
 # This used to re-implement "how long since the last tick", with its own date
 # parsing and its own thresholds. health-monitor.py does that continuously, on its
 # own launchd job, with alerting and a published verdict — so a copy here was a
@@ -291,7 +276,7 @@ else
   warn "no health-status.json — install the heartbeat: ./setup/install-launchd-heartbeat.sh"
 fi
 
-# ── 8. Quest folder sanity ──────────────────────────────────────────────────
+# ── 7. Quest folder sanity ──────────────────────────────────────────────────
 section "Quest folders"
 QUEST_COUNT=0
 for q in "$REPO_ROOT/state/quests/active/"*/; do

@@ -55,13 +55,15 @@ class SetupTests(unittest.TestCase):
 
             provision_env(workspace, interactive=False)
 
-            self.assertIn("SIDEQUESTOR_CODEX_MODEL=gpt-5.6-luna", workspace.env_file.read_text())
+            content = workspace.env_file.read_text()
+            self.assertIn("SIDEQUESTOR_CODEX_MODEL=gpt-5.6-luna", content)
+            self.assertIn("SIDEQUESTOR_CODEX_EFFORT=high", content)
 
     def test_interactive_instructions_target_selected_backend_without_writing(self):
         from contextlib import redirect_stdout
         from io import StringIO
 
-        for agent, filename in (("codex", "AGENTS.md"), ("claude", "CLAUDE.md")):
+        for agent, filename in (("codex", "AGENTS.md"), ("claude", "CLAUDE.md"), ("cursor", "AGENTS.md")):
             with self.subTest(agent=agent), tempfile.TemporaryDirectory() as raw:
                 workspace = init_workspace(raw)
                 output = StringIO()

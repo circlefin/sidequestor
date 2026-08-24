@@ -71,7 +71,7 @@ logs/
 
 .env                          ← per-install secrets + knobs (gitignored)
 .env.example                  ← template for new installs
-Optional backend-native worker instructions ← user-owned additions, if desired
+CLAUDE.md / AGENTS.md          ← optional user-owned worker instructions (never written by Sidequestor)
 ARCHITECTURE.md               ← full system design
 ```
 

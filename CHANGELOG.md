@@ -6,9 +6,28 @@ Versions are dated by the day the snapshot was published.
 
 ## Unreleased
 
+Package `sidequestor` 0.1.2.dev0.
+
 ### Changed
+- Codex is the default worker backend everywhere, and a codex install now provisions
+  `gpt-5.6-luna` at `high` reasoning effort. `sq setup` fills only the SELECTED backend's blank
+  model and effort, and `.env.example` says so rather than claiming the Claude values are unset
+  while shipping them preset. A workspace whose `.env` never pinned `SIDEQUESTOR_AGENT` switches
+  from claude to codex on upgrade: pin it explicitly to keep the old backend.
+- The optional instruction block printed by `sq setup` and `sq setup --instructions` targets
+  `CLAUDE.md` only under the Claude backend; every other backend (codex, cursor) gets `AGENTS.md`.
+  Neither file is ever created or edited by Sidequestor.
+- Skill cross-references that pointed at a workspace `CLAUDE.md` now name what actually holds the
+  rule: `§3d` lives in the `yaas-quest-dispatch` skill, and coexistence and shared-state rules live
+  in `OPERATING.md`. Since `sq init` no longer writes a `CLAUDE.md`, those pointers resolved to
+  nothing on a fresh workspace.
 - Every Markdown file in `state/briefs/` is now displayed. Briefing names are free-form, ordering
   comes from filesystem creation time, and cadence words in names are optional display hints.
+
+### Removed
+- `doctor.sh` no longer has a "Worker instructions" section. The dispatch prompt carries the
+  operating contract, so a workspace instruction file is optional and user-owned — the check could
+  only ever pass, and reporting on it either way was noise. Remaining sections are renumbered.
 
 ## 2.5.1 - 2026-08-17
 

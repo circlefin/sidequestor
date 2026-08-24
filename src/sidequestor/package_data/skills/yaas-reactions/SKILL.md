@@ -5,7 +5,7 @@ description: The Sidequestor Reactions Fast Path — handle emoji-triggered acti
 
 # yaas-reactions
 
-Load this when dispatched with `dirty target: reactions`. It is self-contained — do NOT read any quest folder except where the configured `adopt` reaction explicitly requires it. Drive the reaction lifecycle through `surfaces/react-lifecycle.py advance` only (never hand-composed add/remove). All workspace coexistence and draft-first rules still apply.
+Load this when dispatched with `dirty target: reactions`. It is self-contained — do NOT read any quest folder except where the configured `adopt` reaction explicitly requires it. Drive the reaction lifecycle through `surfaces/react-lifecycle.py advance` only (never hand-composed add/remove). All shared-state and draft-first rules in `.yaas/engine/current/OPERATING.md` still apply.
 
 Before interpreting any pending emoji, run `python3 yaas-triage/reaction_config.py` and use its JSON roles (`process`, `draft`, `save`, `adopt`, `loading`, `done`). `.env` may customize every one. Never infer the action from a hardcoded default when the resolved mapping differs.
 
