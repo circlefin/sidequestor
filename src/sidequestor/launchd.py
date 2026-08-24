@@ -83,7 +83,12 @@ def render(workspace: Workspace, executable: Path, destination: Path | None = No
 
 
 def install(workspace: Workspace, executable: Path) -> dict:
-    """Install only this workspace's jobs into its shadow-managed bundle."""
+    """Install workspace-local validation artifacts without loading them.
+
+    The shadow bundle lets package and migration tests inspect stable, instance-scoped
+    plists without changing the operator's launchd state. Only the production
+    lifecycle below bootstraps runnable jobs.
+    """
     root = _install_root(workspace)
     root.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".install.", dir=root))

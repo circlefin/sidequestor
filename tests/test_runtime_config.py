@@ -14,6 +14,20 @@ TRIAGE_ROOT = RUNTIME_ROOT / "yaas-triage"
 
 
 class RuntimeConfigTest(unittest.TestCase):
+    def test_legacy_environment_aliases_reach_canonical_consumers(self) -> None:
+        from sidequestor.native import _apply_env_aliases
+
+        environment = {
+            "YAAS_IDE_APP": "Legacy IDE",
+            "SIDEQUESTOR_AGENT": "codex",
+            "YAAS_AGENT": "claude",
+        }
+        resolved = _apply_env_aliases(environment)
+
+        self.assertEqual(resolved["SIDEQUESTOR_IDE_APP"], "Legacy IDE")
+        self.assertEqual(resolved["SIDEQUESTOR_AGENT"], "codex")
+        self.assertEqual(resolved["YAAS_AGENT"], "codex")
+
     def test_canonical_environment_resolves_to_runtime_names(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sidequestor-config-") as raw:
             workspace = Path(raw)

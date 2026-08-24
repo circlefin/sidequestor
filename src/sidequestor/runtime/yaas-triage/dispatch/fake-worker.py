@@ -8,16 +8,17 @@ import sys
 from pathlib import Path
 
 
-def option(flag: str) -> str:
-    args = sys.argv[1:]
-    return args[args.index(flag) + 1] if flag in args else ""
-
-
 run_id = ""
+label = ""
 arguments = sys.argv[1:]
 for index, value in enumerate(arguments):
-    if value == "--header" and index + 1 < len(arguments):
-        header = arguments[index + 1]
+    if index + 1 >= len(arguments):
+        continue
+    option_value = arguments[index + 1]
+    if value == "--label":
+        label = option_value
+    elif value == "--header":
+        header = option_value
         if header.startswith("Run ID: "):
             run_id = header[len("Run ID: "):]
 
@@ -34,7 +35,7 @@ for item in data["items"]:
 
 called = {
     "run_id": run_id,
-    "target": option("--label"),
+    "target": label,
     "items": [item["item_id"] for item in data["items"]],
 }
 (workspace / "state" / "fake-worker-called.json").write_text(json.dumps(called, indent=2) + "\n")

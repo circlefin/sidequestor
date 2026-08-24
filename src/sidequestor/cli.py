@@ -345,17 +345,11 @@ def _cmd_loop(workspace: Workspace, args: list[str]) -> int:
         return run_native_loop(workspace, max(0.01, values.interval))
     if values.max_ticks is None:
         return run_native(workspace, "yaas-triage/triage-loop.sh", [])
-    ticks = values.max_ticks if values.max_ticks is not None else None
-    completed = 0
     try:
-        while ticks is None or completed < max(0, ticks):
+        for _ in range(max(0, values.max_ticks)):
             code = run_native_tick(workspace) if values.isolated else dry_tick(workspace)
-            completed += 1
             if code:
                 return code
-            if ticks is None:
-                import time
-                time.sleep(max(0, values.interval))
     except KeyboardInterrupt:
         return 0
     return 0
