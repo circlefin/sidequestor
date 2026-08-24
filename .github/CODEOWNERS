@@ -1,0 +1,3 @@
+# Default owner for every file in this repository.
+# The publish workflow rewrites this mirror handle for the Circlefin delivery.
+* @guangmian-circle
