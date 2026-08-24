@@ -50,6 +50,7 @@ class Stage2CommandSurfaceTest(unittest.TestCase):
             home_path = Path(home)
             result = run("init", str(workspace), "--name", "stage2", home=home_path)
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("sq setup --manifest", result.stdout)
             self.assertTrue((workspace / ".yaas" / "instance.json").exists())
             listed = run("instances", "list", "--all", home=home_path)
             self.assertEqual(listed.returncode, 0, listed.stderr)

@@ -19,6 +19,8 @@ source .venv/bin/activate
 python -m pip install 'git+https://github.com/circlefin/sidequestor.git@publish/sidequestor-package-0.1.0'
 # Add Sidequestor's .yaas metadata and configuration to this directory.
 sidequestor init .
+# If enabling local Slack integration, print the manifest to paste into Slack.
+# sq setup --manifest
 # Run interactive onboarding; choose `bypassPermissions` for the worker backend.
 sq setup
 ```
