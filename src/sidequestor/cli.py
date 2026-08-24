@@ -13,7 +13,7 @@ from .native import dry_tick, run_native, run_native_loop, run_native_tick
 from .dashboard import serve as serve_dashboard
 from .isolated import run_isolated
 from .launchd import install as install_jobs
-from .launchd import install_production, production_status, uninstall_production
+from .launchd import install_production, production_is_running, production_status, uninstall_production
 from .launchd import render, status as launchd_status, uninstall as uninstall_jobs
 from .migrations import migrate_workspace
 from .resources import sync_resources
@@ -79,7 +79,7 @@ def _usage() -> str:
 def _command_help(command: str) -> str:
     examples = {
         "init": "sidequestor init PATH [--name NAME]",
-        "instances": "sidequestor instances list|doctor|register [PATH]|rekey [PATH]",
+        "instances": "sidequestor instances list [--all]|doctor|register [PATH]|rekey [PATH]",
         "setup": "sidequestor [--workspace PATH] setup [--production] [--non-interactive|--render-only|install|status|uninstall]",
         "start": "sidequestor [--workspace PATH] start",
         "stop": "sidequestor [--workspace PATH] stop [INSTANCE_ID]",
@@ -155,8 +155,32 @@ def _cmd_instances(
 ) -> int:
     action = args[0] if args else "list"
     if action == "list":
-        for row in list_instances():
-            print(json.dumps(row, sort_keys=True))
+        parser = argparse.ArgumentParser(prog="sidequestor instances list")
+        parser.add_argument("--all", action="store_true", help="include registered workspaces that are not running")
+        values = parser.parse_args(args[1:])
+        rows = []
+        for registered in list_instances():
+            row = dict(registered)
+            path = str(registered.get("path", ""))
+            try:
+                workspace = load_workspace(path)
+            except (OSError, SystemExit):
+                row["status"] = "missing"
+                row["path"] = path
+            else:
+                row["path"] = str(workspace.root)
+                row["status"] = "running" if production_is_running(workspace) else "stopped"
+            if values.all or row["status"] == "running":
+                rows.append(row)
+        if not rows and not values.all:
+            print("no running Sidequestor instances")
+        for row in rows:
+            print(
+                f"{row['status'].upper():7} "
+                f"{row.get('instance_id', 'unknown')} "
+                f"{row.get('display_name', '')} "
+                f"workspace={row.get('path', '')}"
+            )
         return 0
     if action in {"doctor", "register", "rekey"}:
         if len(args) > 2:

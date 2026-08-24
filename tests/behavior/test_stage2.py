@@ -117,7 +117,7 @@ class Stage2BehaviorTest(unittest.TestCase):
         )
 
     def test_workspace_management_and_dry_tick(self) -> None:
-        self.assertIn(str(self.workspace), self.invoke("instances", "list").stdout)
+        self.assertIn(str(self.workspace), self.invoke("instances", "list", "--all").stdout)
         self.invoke("instances", "register", str(self.workspace))
         self.invoke("instances", "rekey", str(self.workspace))
         self.invoke("instances", "doctor")

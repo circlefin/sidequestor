@@ -51,6 +51,10 @@ class Stage2CommandSurfaceTest(unittest.TestCase):
             result = run("init", str(workspace), "--name", "stage2", home=home_path)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((workspace / ".yaas" / "instance.json").exists())
+            listed = run("instances", "list", "--all", home=home_path)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertIn("STOPPED", listed.stdout)
+            self.assertIn(f"workspace={workspace.resolve()}", listed.stdout)
             for command in (
                 ("--workspace", str(workspace), "doctor"),
                 ("--workspace", str(workspace), "instances", "doctor"),
