@@ -53,7 +53,7 @@ fi
 # Generated from yaas-app-config.json rather than kept as a second copy: the
 # scope list is the thing that drifts, and a manifest pasted into Slack months
 # ago is invisible from here. Whatever this prints is exactly what setup.sh will
-# then ask Slack to authorize.
+# then ask Slack to authorize. The output is Slack's YAML manifest format.
 print_manifest() {
   jq -r '
     "display_information:",
@@ -68,7 +68,8 @@ print_manifest() {
     "settings:",
     "  org_deploy_enabled: false",
     "  socket_mode_enabled: false",
-    "  token_rotation_enabled: true"
+    "  token_rotation_enabled: true",
+    "  is_mcp_enabled: true"
   ' "$CONFIG"
 }
 
@@ -132,7 +133,7 @@ it takes about two minutes.
   2. Pick your workspace, then paste the manifest below
   3. Create, then Install to Workspace (your admin may need to approve it)
   4. From Basic Information, copy App ID and Client ID into .env
-  5. Open Agents → "Slack Model Context Protocol (MCP) Server" and enable it
+  5. Confirm that Agents → "Slack Model Context Protocol (MCP) Server" is enabled; the manifest requests it, but workspace policy may still require a manual toggle
   6. In OAuth and Permissions → User Token Scopes, verify the requested scopes
 
 ──────────────────────── paste this ────────────────────────
@@ -167,7 +168,8 @@ cat <<EOF
 ║  Scopes:      $(echo "$SCOPES" | tr ',' '\n' | head -3 | tr '\n' ',' | sed 's/,$//'), ... ($(echo "$SCOPES" | tr ',' '\n' | wc -l | tr -d ' ') total)
 ╚════════════════════════════════════════════════════════════════════╝
 
-Before continuing, open Agents → "Slack Model Context Protocol (MCP) Server" and enable it here:
+Confirm that Agents → "Slack Model Context Protocol (MCP) Server" is enabled. The manifest
+requests it; if Slack did not apply that setting, enable it here:
   $APP_URL/app-assistant
 
 You'll be redirected to Slack in your browser to authorize this app for

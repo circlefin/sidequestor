@@ -169,7 +169,7 @@ def run_setup(workspace: Workspace, executable: Path, *, input_fn=input, interac
         if enabled:
             app_id = _value(env_lines, "SLACK_APP_ID")
             if app_id:
-                print("Open Agents → Slack Model Context Protocol (MCP) Server and enable it before OAuth:")
+                print("Confirm Agents → Slack Model Context Protocol (MCP) Server is enabled before OAuth; enable it manually only if Slack did not apply the manifest setting:")
                 print(f"https://api.slack.com/apps/{app_id}/app-assistant")
     if enabled and interactive and _yes_no("Run Slack OAuth now", True, input_fn=input_fn):
         script = RUNTIME_ROOT / "yaas-triage" / "setup" / "setup.sh"
