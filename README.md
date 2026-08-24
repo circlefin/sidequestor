@@ -89,6 +89,7 @@ sq setup --production install
 
 ```bash
 # Start triage, heartbeat, and dashboard jobs for the current workspace.
+# Wait for the dashboard and print its selected free loopback URL.
 sq start
 # Stop every job for the current workspace; the instance ID is optional here.
 sq stop
@@ -98,6 +99,8 @@ sq instances list
 sq instances list --all
 # Validate the current workspace and print its build identity.
 sq doctor
+# Look up the dashboard URL later without restarting anything.
+sq dashboard url
 # From another directory, stop one registered workspace explicitly.
 sq stop INSTANCE_ID
 # Print the installed package build identity.
@@ -125,7 +128,7 @@ Reaction defaults are now standard Unicode names: `robot_face`, `hourglass_flowi
 
 ## Something looks wrong. Now what?
 
-Start with `sq doctor` — it is the cheapest question you can ask. Include its build line when reporting a problem. The dashboard URL is recorded in `state/dashboard-url.txt`; job errors are in `logs/package-*.err.log`.
+Start with `sq doctor` — it is the cheapest question you can ask. Include its build line when reporting a problem. `sq start` prints the dashboard URL and records it in `state/dashboard-url.txt`; `sq dashboard url` retrieves it later. `sq dashboard serve` remains available as a foreground developer escape hatch, but the normal persistent lifecycle is `sq start` and `sq stop`. Job errors are in `logs/package-*.err.log`.
 
 ## How do I test a checkout?
 

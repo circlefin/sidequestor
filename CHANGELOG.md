@@ -4,6 +4,17 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.5 - 2026-08-24
+
+Package `sidequestor` 0.1.5.
+
+### Changed
+- `sq start` and `sq setup` now wait for the managed dashboard to bind and print its selected
+  free loopback URL alongside the triage and heartbeat jobs.
+- `sq stop` stops the complete workspace lifecycle, including a matching foreground dashboard
+  started with the explicit `sq dashboard serve` developer escape hatch.
+- Bare `sq dashboard` now inspects the current URL; foreground serving requires `sq dashboard serve`.
+
 ## 0.1.4 - 2026-08-24
 
 Package `sidequestor` 0.1.4.

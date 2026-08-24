@@ -7,6 +7,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from .dashboard import wait_for_dashboard_url
 from .launchd import install_production
 from .native import RUNTIME_ROOT
 from .resources import sync_resources
@@ -179,6 +180,8 @@ def run_setup(workspace: Workspace, executable: Path, *, input_fn=input, interac
     print(f"You are live. Sidequestor instance {workspace.instance_id} is running these jobs:")
     for name, job in manifest["jobs"].items():
         print(f"{name}: {job['label']}")
+    url = wait_for_dashboard_url(workspace)
+    print(f"dashboard: {url}" if url else "dashboard: still starting (run `sq dashboard url` to check)")
     if interactive:
         print_worker_instructions(agent)
     return 0
