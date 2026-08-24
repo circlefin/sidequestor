@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from sidequestor.launchd import (
     LaunchdLifecycleError,
+    install as install_shadow,
     install_production,
     production_status,
     stop_production,
@@ -69,6 +70,14 @@ class ProductionLaunchdLifecycleTest(unittest.TestCase):
         calls = [call.args[0] for call in self.run.call_args_list]
         self.assertTrue(any(command[:2] == ["launchctl", "bootstrap"] for command in calls))
         self.assertTrue(any(command[:2] == ["launchctl", "bootout"] for command in calls))
+
+    def test_shadow_install_never_changes_launchd_state(self) -> None:
+        self.run.reset_mock()
+
+        manifest = install_shadow(self.workspace, self.root / "venv" / "bin" / "python")
+
+        self.assertEqual(manifest["backend"], "workspace-shadow")
+        self.run.assert_not_called()
 
     def test_status_rejects_a_manifest_copied_from_another_workspace(self) -> None:
         manifest_path = self.workspace.yaas_dir / "launchd" / "production.json"
