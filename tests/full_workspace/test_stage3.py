@@ -70,7 +70,7 @@ class Stage3FullWorkspaceTest(unittest.TestCase):
         return quest
 
     def test_every_public_command_runs_against_the_shadow(self) -> None:
-        self.assertIn(str(self.workspace), self.invoke("instances", "list").stdout)
+        self.assertIn(str(self.workspace), self.invoke("instances", "list", "--all").stdout)
         self.invoke("instances", "register", str(self.workspace))
         rekeyed = self.invoke("instances", "rekey", str(self.workspace))
         self.instance_id = json.loads(

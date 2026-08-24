@@ -146,12 +146,15 @@ def _clear_dashboard_readiness(workspace: Workspace) -> None:
 
 
 def _service_loaded(target: str) -> bool:
-    result = subprocess.run(
-        ["launchctl", "print", target],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", target],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
     return result.returncode == 0
 
 
@@ -318,6 +321,21 @@ def production_status(workspace: Workspace) -> dict | None:
     if recorded_instance is not None and recorded_instance != workspace.instance_id:
         return None
     return value
+
+
+def production_is_running(workspace: Workspace) -> bool:
+    """Return whether all recorded production jobs are loaded in launchd."""
+    manifest = production_status(workspace)
+    if not manifest or not manifest.get("running"):
+        return False
+    labels = [
+        job.get("label")
+        for job in manifest.get("jobs", {}).values()
+        if isinstance(job, dict) and job.get("label")
+    ]
+    return bool(labels) and all(
+        _service_loaded(f"gui/{os.getuid()}/{label}") for label in labels
+    )
 
 
 def uninstall_production(workspace: Workspace) -> bool:

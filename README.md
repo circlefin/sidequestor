@@ -77,8 +77,10 @@ The lifecycle commands are:
 sq start
 # Stop every job for the current workspace; the instance ID is optional here.
 sq stop
-# List registered workspaces and their instance IDs.
+# List currently running Sidequestor instances and their exact workspaces.
 sq instances list
+# Include stopped or historical registered workspaces as well.
+sq instances list --all
 # Validate the current workspace from inside it.
 sq doctor
 # From another directory, stop one registered workspace explicitly.
