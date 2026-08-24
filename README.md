@@ -38,10 +38,12 @@ source .venv/bin/activate
 python -m pip install sidequestor
 # Add Sidequestor metadata and configuration to this directory.
 sidequestor init .
-# Print the Slack manifest when you are ready to create the app.
-sq setup --manifest
+# Save the ready-to-paste Slack YAML manifest.
+sq setup --manifest > slack-app-manifest.yaml
 # Run interactive onboarding; choose bypassPermissions for the worker backend.
 sq setup
+# Start triage, heartbeat, and the dashboard and print the dashboard URL.
+sq start
 ```
 
 Nothing of yours is moved or overwritten: `sidequestor init .` only adds `.yaas` metadata alongside your existing files. `sq`, `sidequestor`, and `yaas` are all available aliases. The dashboard workspace label opens the current workspace in Cursor when available, or in macOS’s default IDE/file opener. Set `SIDEQUESTOR_IDE_APP` to prefer another application.
@@ -52,9 +54,9 @@ Commands use the current directory when it is an initialized workspace. From els
 
 ## How do I set up the Slack app?
 
-1. Run `sq setup --manifest`, then paste the output at api.slack.com → Create New App → From an app manifest.
+1. Run `sq setup --manifest > slack-app-manifest.yaml`, then paste that YAML at api.slack.com → Create New App → From an app manifest.
 2. Choose the workspace and Install to Workspace; an administrator may need to approve it.
-3. In **Agents**, open **Slack Model Context Protocol (MCP) Server** and enable it. This manual toggle is not represented in the manifest.
+3. Confirm that **Agents → Slack Model Context Protocol (MCP) Server** is enabled. The manifest requests this automatically; enable it there manually only if Slack or workspace policy leaves it off.
 4. In **OAuth and Permissions → User Token Scopes**, verify the 18 requested user scopes. There are no bot scopes. `reactions:read` may need workspace-admin approval; without it reaction monitoring silently finds nothing. `reactions:write` is required or lifecycle transitions fail with `missing_scope`.
 5. If you grant a scope later, reinstall the app and run `sq setup` again.
 6. In Basic Information, copy the App ID and Client ID into `.env`, then complete OAuth.

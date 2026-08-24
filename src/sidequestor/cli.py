@@ -154,7 +154,7 @@ def _cmd_init(args: list[str]) -> int:
     sync_resources(workspace)
     print(f"initialized Sidequestor workspace: {workspace.root}")
     print(f"instance_id: {workspace.instance_id}")
-    print("Slack app manifest: run `sq setup --manifest` to generate the ready-to-paste app config.")
+    print("Slack app manifest: run `sq setup --manifest > slack-app-manifest.yaml` to generate the ready-to-paste YAML.")
     return 0
 
 
