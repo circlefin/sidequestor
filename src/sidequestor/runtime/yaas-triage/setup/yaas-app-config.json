@@ -1,7 +1,7 @@
 {
   "$schema_description": "Generic Slack OAuth config for yaas. Defines the scopes and PKCE flow. Per-install values (app_id, client_id, workspace) live in .env at the repo root — see .env.example. Used by setup.sh.",
   "slack_app": {
-    "app_name": "yaas",
+    "app_name": "Sidequestor",
     "use_pkce": true,
     "redirect_uri": "http://localhost:3118/callback",
     "description": "Personal Slack assistant. Watches the threads you choose and drafts replies as you."
