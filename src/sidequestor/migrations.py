@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from .workspace import Workspace, init_workspace, load_workspace
+from .resources import ENGINE_VERSION
 
 
 MIGRATION_ID = "legacy-checkout-to-workspace-v1"
@@ -79,7 +80,7 @@ def migrate_workspace(path: str | Path, name: str | None = None) -> tuple[Worksp
         journal.parent.mkdir(parents=True, exist_ok=True)
         journal.write_text(json.dumps({
             "completed": [MIGRATION_ID],
-            "engine": "0.1.0.dev0",
+            "engine": ENGINE_VERSION,
             "backup": str(archive) if archive else None,
             "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }, indent=2) + "\n")

@@ -8,9 +8,10 @@ from importlib.resources import as_file, files
 from pathlib import Path
 
 from .workspace import Workspace, ensure_reaction_watermark
+from . import __version__
 
 
-ENGINE_VERSION = "0.1.0.dev0"
+ENGINE_VERSION = __version__
 
 
 def sync_resources(workspace: Workspace) -> Path:
@@ -44,4 +45,9 @@ def sync_resources(workspace: Workspace) -> Path:
         pass
     temporary.symlink_to(ENGINE_VERSION, target_is_directory=True)
     os.replace(temporary, current)
+    for sibling in (destination.parent).iterdir():
+        if sibling.name in {ENGINE_VERSION, "current"}:
+            continue
+        if sibling.is_dir() and not sibling.is_symlink():
+            shutil.rmtree(sibling)
     return destination

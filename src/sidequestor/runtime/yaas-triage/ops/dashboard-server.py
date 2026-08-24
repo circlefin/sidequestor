@@ -1408,6 +1408,7 @@ def build_control() -> dict:
 
     return {
         "api_version": 1,
+        "build": build_build_info(),
         "workspace": dashboard["workspace"],
         "capabilities": {
             "control_snapshot": True,
@@ -1430,11 +1431,35 @@ def build_reaction_emojis() -> dict:
     """Expose only the resolved emoji names, never the surrounding environment."""
     from reaction_config import EMOJI_SETTINGS, load_reaction_emojis
 
-    env = {var: _dotenv(var, default) for var, default in EMOJI_SETTINGS.values()}
+    env = {}
+    for var, default in EMOJI_SETTINGS.values():
+        env[var] = _dotenv(var, default)
+        canonical = var.replace("YAAS_", "SIDEQUESTOR_", 1)
+        override = _dotenv(canonical, "")
+        if override:
+            env[canonical] = override
     try:
         return {"roles": load_reaction_emojis(env), "error": None}
     except ValueError as exc:
         return {"roles": {}, "error": str(exc)}
+
+
+def build_build_info() -> dict:
+    """Return package build identity without requiring package imports."""
+    try:
+        from sidequestor.build_info import build_info
+        info = build_info()
+    except Exception:
+        info = {}
+    commit_full = os.environ.get("SIDEQUESTOR_COMMIT") or info.get("commit_full", "")
+    return {
+        "version": os.environ.get("SIDEQUESTOR_VERSION") or info.get("version", "unknown"),
+        "commit": commit_full[:7],
+        "commit_full": commit_full,
+        "ref": os.environ.get("SIDEQUESTOR_REF") or info.get("ref", ""),
+        "source": info.get("source", "unknown"),
+        "engine": info.get("engine", "unknown"),
+    }
 
 
 # ── Quest detail builder (lazy-fetched by the drawer) ────────────────────────

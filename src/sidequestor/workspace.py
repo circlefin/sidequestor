@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import __version__
+
 
 SCHEMA_VERSION = 1
 REACTION_WATERMARK = "reaction-watermark.json"
@@ -127,7 +129,7 @@ def init_workspace(path: str | Path, name: str | None = None) -> Workspace:
     })
     _write_json(ws.yaas_dir / ".yaas-version", {
         "schema_version": SCHEMA_VERSION,
-        "created_by": "0.1.0.dev0",
+        "created_by": __version__,
     })
     ensure_reaction_watermark(ws)
     _register(ws)

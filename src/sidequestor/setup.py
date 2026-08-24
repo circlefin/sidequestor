@@ -76,8 +76,8 @@ def print_worker_instructions(agent: str) -> None:
     """Print optional interactive guidance without touching user-owned files."""
     filename = "CLAUDE.md" if agent == "claude" else "AGENTS.md"
     print()
-    print(f"Optional interactive instructions for {filename}:")
-    print(f"Append this block manually to {filename}; Sidequestor will not modify it:")
+    print(f"Optional: give your interactive sessions the same context, via {filename}.")
+    print(f"Paste this in yourself when you want it — {filename} is yours and Sidequestor never touches it:")
     print("---")
     print(_INTERACTIVE_INSTRUCTIONS)
     print("---")
@@ -163,12 +163,12 @@ def run_setup(workspace: Workspace, executable: Path, *, input_fn=input, interac
     agent = _value(env_lines, "SIDEQUESTOR_AGENT") or "codex"
     enabled = _value(env_lines, "SIDEQUESTOR_SLACK_CHECKERS_ENABLED") == "1"
     if interactive:
-        print(f"Selected worker backend: {agent}")
-        print("sq setup does not authenticate Claude or Codex; authenticate the selected CLI separately before starting Sidequestor.")
+        print(f"Worker backend: {agent}. Good choice.")
+        print("One thing Sidequestor will not do for you: log in to Claude or Codex. Authenticate that CLI separately before starting.")
         if enabled:
             app_id = _value(env_lines, "SLACK_APP_ID")
             if app_id:
-                print("Enable Slack Model Context Protocol Server before OAuth:")
+                print("Open Agents → Slack Model Context Protocol (MCP) Server and enable it before OAuth:")
                 print(f"https://api.slack.com/apps/{app_id}/app-assistant")
     if enabled and interactive and _yes_no("Run Slack OAuth now", True, input_fn=input_fn):
         script = RUNTIME_ROOT / "yaas-triage" / "setup" / "setup.sh"
@@ -176,7 +176,7 @@ def run_setup(workspace: Workspace, executable: Path, *, input_fn=input, interac
         if result.returncode:
             return result.returncode
     manifest = install_production(workspace, executable)
-    print(f"started Sidequestor instance {workspace.instance_id}")
+    print(f"You are live. Sidequestor instance {workspace.instance_id} is running these jobs:")
     for name, job in manifest["jobs"].items():
         print(f"{name}: {job['label']}")
     if interactive:

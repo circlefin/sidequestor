@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .build_info import build_info
 from .native import dry_tick, run_native, run_native_loop, run_native_tick
 from .dashboard import serve as serve_dashboard
 from .isolated import run_isolated
@@ -231,9 +232,12 @@ def _cmd_instances(
 
 def _cmd_doctor(workspace: Workspace) -> int:
     errors = validate_workspace(workspace)
-    checks = [("workspace", not errors), ("python", sys.version_info >= (3, 11)), ("package", True)]
+    info = build_info()
+    suffix = f" ({info['commit']}, engine {info['engine']})" if info["commit"] else f" (engine {info['engine']})"
+    checks = [("workspace", not errors), ("python", sys.version_info >= (3, 11))]
     for name, passed in checks:
         print(f"{name}: {'ok' if passed else 'error'}")
+    print(f"sidequestor {info['version']}{suffix}")
     for error in errors:
         print(f"error: {error}", file=sys.stderr)
     return 1 if errors else 0
@@ -450,7 +454,9 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     if "--version" in raw:
-        print(__version__)
+        info = build_info()
+        commit = f"{info['commit']}, " if info["commit"] else ""
+        print(f"sidequestor {info['version']} ({commit}engine {info['engine']})")
         return 0
     if not raw or raw == ["help"]:
         print(_usage())
