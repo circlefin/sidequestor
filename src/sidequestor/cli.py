@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -80,7 +81,7 @@ def _command_help(command: str) -> str:
     examples = {
         "init": "sidequestor init PATH [--name NAME]",
         "instances": "sidequestor instances list [--all]|doctor|register [PATH]|rekey [PATH]",
-        "setup": "sidequestor [--workspace PATH] setup [--production] [--non-interactive|--render-only|install|status|uninstall]",
+        "setup": "sidequestor [--workspace PATH] setup [--manifest|--production] [--non-interactive|--render-only|install|status|uninstall]",
         "start": "sidequestor [--workspace PATH] start",
         "stop": "sidequestor [--workspace PATH] stop [INSTANCE_ID]",
         "tick": "sidequestor [--workspace PATH] tick [--dry-run|--isolated [--fake-worker]]",
@@ -147,7 +148,16 @@ def _cmd_init(args: list[str]) -> int:
     sync_resources(workspace)
     print(f"initialized Sidequestor workspace: {workspace.root}")
     print(f"instance_id: {workspace.instance_id}")
+    print("Slack app manifest: run `sq setup --manifest` to generate the ready-to-paste app config.")
     return 0
+
+
+def _cmd_setup_manifest() -> int:
+    script = Path(__file__).resolve().parent / "runtime" / "yaas-triage" / "setup" / "setup.sh"
+    if not script.is_file():
+        raise SystemExit(f"Slack app manifest generator not found: {script}")
+    result = subprocess.run(["bash", str(script), "--manifest"], check=False)
+    return result.returncode
 
 
 def _cmd_instances(
@@ -396,6 +406,8 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
         if instance:
             raise SystemExit("migrate accepts --workspace, not --instance")
         return _cmd_migrate(workspace_path, args)
+    if command == "setup" and args == ["--manifest"]:
+        return _cmd_setup_manifest()
     if command == "stop" and len(args) > 1:
         raise SystemExit("stop accepts at most one INSTANCE_ID")
     if command == "stop" and args and (workspace_path or instance):
