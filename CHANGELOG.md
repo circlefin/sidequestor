@@ -1,12 +1,12 @@
 # Changelog
 
-All notable changes to Sidequestor (YaaS). The current version also lives in `VERSION`.
+All notable changes to Sidequestor (YaaS). The package version is declared in `pyproject.toml`.
 
 Versions are dated by the day the snapshot was published.
 
-## Unreleased
+## 0.1.4 - 2026-08-24
 
-Package `sidequestor` 0.1.4.dev0.
+Package `sidequestor` 0.1.4.
 
 ### Added
 - The dashboard header, `sq --version` and `sq doctor` all report the running build: package

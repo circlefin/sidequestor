@@ -150,7 +150,6 @@ sidequestor-package/
   LICENSE
   README.md
   SECURITY.md
-  VERSION
   pyproject.toml
   src/
     sidequestor/
@@ -232,11 +231,15 @@ accepted by ADR 0004. The legacy runner passed 53 of 54 shell suites plus all
 ADR 0004 and is not an installed-package behavior regression. A subsequent
 disposable E2E run exposed the dashboard configuration-display and unchecked
 launchd-stop gaps described above; those corrections are now covered by
-focused tests and await republishing.
+focused tests and were published to the internal testing branch at `491d8c1`.
 An independent Claude review found and prompted fixes for explicit-instance
 precedence over an exported workspace and positional `migrate NAME`
 compatibility. Its final tracked-diff review reported no findings and validated
 the dashboard workspace identity API and responsive top-bar treatment.
+
+The stable `sidequestor-0.1.4` release candidate was then built as both wheel and
+sdist. `twine check` passed for both artifacts, and a clean Python 3.14 environment
+installed the wheel and passed `sidequestor --version`, `init`, and `doctor` smoke tests.
 
 ## Git History
 
@@ -263,8 +266,8 @@ publish/yaas-v2-20260822-013157
 ```
 
 The signed internal pip-testing publication is
-`publish/sidequestor-pip-internal-testing` at `f28377a`. Final-audit changes in
-the standalone source require a subsequent publication before that branch can
+`publish/sidequestor-pip-internal-testing` at `491d8c1`. Release changes in the
+standalone source require a subsequent publication before that branch can
 represent this decision in full.
 
 ## Publication Tooling
@@ -315,8 +318,7 @@ The durable source is
 
    ```bash
    python3.11 -m venv .venv
-   .venv/bin/python -m pip install \
-     "git+https://github.com/circlefin/sidequestor.git@publish/sidequestor-package-0.1.0"
+   .venv/bin/python -m pip install sidequestor
    .venv/bin/sidequestor init ./sidequestor-workspace
    ```
 
