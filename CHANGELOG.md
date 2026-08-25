@@ -15,6 +15,9 @@ Versions are dated by the day the snapshot was published.
   ordinary one-shot schedules are never reclassified as bootstrap work.
 - Dashboard initialising state reads the explicit flag, and copied terminal commands shell-quote
   workspace paths.
+- The bootstrap dispatch verifies proposed channel, thread, person, repository, and query
+  identifiers with a live source read before installing a watch; unverifiable targets remain
+  blocked instead of immediately entering checker backoff.
 - Regression builds export a clean committed snapshot and explicitly exclude the intentionally
   removed `dispatch/manual-dispatch.sh` path.
 

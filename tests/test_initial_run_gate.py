@@ -138,6 +138,16 @@ class BootstrapStateTest(unittest.TestCase):
         self.assertIn("yaas-quest-dispatch", bootstrap)
         self.assertNotIn("yaas-quest-creation", bootstrap)
 
+    def test_bootstrap_prompt_requires_live_identifier_verification_before_watch(self):
+        source = (RUNTIME_ROOT / "tick.py").read_text()
+        start = source.index("elif is_bootstrap:")
+        bootstrap = source[start:source.index("    else:\n", start)]
+        self.assertIn("Do not call `sq watch` until", bootstrap)
+        self.assertIn("candidate `channel_id` plus parent `thread_ts`", bootstrap)
+        self.assertIn("Permalink parsing, a name match, or a", bootstrap)
+        self.assertIn("checker-equivalent live-read", bootstrap)
+        self.assertIn("block instead of installing the watch", bootstrap)
+
 
 if __name__ == "__main__":
     unittest.main()
