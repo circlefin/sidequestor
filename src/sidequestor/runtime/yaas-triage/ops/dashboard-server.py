@@ -966,6 +966,18 @@ def build_dashboard(include_briefs: bool = False) -> dict:
         # True once ANY event other than `created` exists, i.e. a worker has actually
         # picked this quest up. Distinct from last_action, which skips note/blocked and
         # so cannot tell "never ran" from "ran but only left a note".
+        #
+        # FUTURE WORK: this is inferred, and the inference can lie. A worker that acks
+        # its items without calling log-event.py leaves has_run False forever, so
+        # isInitialising() in dashboard.html keeps rendering the quest as "Waiting for
+        # the first worker run" when it has already run and installed nothing. That is
+        # exactly what the stray-email quest did on 2026-08-25. The fix is to stop
+        # inferring: key the group on whether the quest holds a live watch
+        # (`watch_count == 0`), which is the thing the label actually claims, and needs
+        # no new state. Left undone deliberately — the requires_initial_run gate in
+        # tick.py now holds the watermark and redispatches such a quest, so after
+        # SIDEQUESTOR_UNACKED_PROMOTE attempts it surfaces under "Needs attention"
+        # anyway. This narrows the lie to the first few attempts rather than forever.
         has_run      = False
         last_seen_ts = None   # newest non-blocked event of ANY type (incl. notes):
                               # a later note means the worker recovered after a block
