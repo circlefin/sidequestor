@@ -56,6 +56,12 @@ import tick_check
 import tick_dispatch
 from reaction_config import load_reaction_emojis
 
+BOOTSTRAP_ITEM_ID = "sidequestor-bootstrap"
+BOOTSTRAP_ITEM_TYPE = "sidequestor_bootstrap"
+LEGACY_BOOTSTRAP_REASON = (
+    "Run the operator's initial request once, then wait for follow-up instructions."
+)
+
 
 # ── small I/O helpers ────────────────────────────────────────────────────────
 
@@ -512,6 +518,99 @@ def have_network(t):
     return verdict["online"]
 
 
+def _write_json_atomic(path, data):
+    """Replace one JSON document without exposing a partially-written file."""
+    try:
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
+def _legacy_bootstrap_watch(watch):
+    """Match only the exact placeholder emitted by the old dashboard endpoint."""
+    return (isinstance(watch, dict)
+            and watch.get("type") == "schedule"
+            and "cron" not in watch
+            and bool(watch.get("next_fire_ts"))
+            and watch.get("reason") == LEGACY_BOOTSTRAP_REASON)
+
+
+def _clear_bootstrap_flag(t, qid, meta, quest_dir=None):
+    updated = dict(meta)
+    updated.pop("sidequestor_bootstrap", None)
+    quest_dir = quest_dir or (t.quests_dir / qid)
+    if not _write_json_atomic(quest_dir / "meta.json", updated):
+        t.log(f"BOOTSTRAP STATE WRITE FAILED: {qid} — flag retained")
+        return False
+    return True
+
+
+def prepare_bootstrap_quests(t, quest_dirs):
+    """Return active quest IDs that need the synthetic bootstrap dispatch.
+
+    The old dashboard used `requires_initial_run` plus a specially-worded one-shot
+    schedule. Migrate only that exact shape (or its already-retired empty form); never
+    infer bootstrap intent from an arbitrary one-shot schedule.
+    """
+    pending = set()
+    for quest_dir in quest_dirs:
+        qid = quest_dir.name
+        meta_path = quest_dir / "meta.json"
+        watch_path = quest_dir / "watch.json"
+        meta = t._read_json(meta_path, None)
+        watch_doc = t._read_json(watch_path, None)
+        if not isinstance(meta, dict) or not isinstance(watch_doc, dict):
+            continue
+        watches = watch_doc.get("watches")
+        if not isinstance(watches, list):
+            continue
+
+        if meta.get("requires_initial_run") is True:
+            legacy = [w for w in watches if _legacy_bootstrap_watch(w)]
+            if legacy or not watches:
+                remaining = [w for w in watches if not _legacy_bootstrap_watch(w)]
+                if remaining != watches:
+                    updated_watch = dict(watch_doc)
+                    updated_watch["watches"] = remaining
+                    if not _write_json_atomic(watch_path, updated_watch):
+                        t.log(f"BOOTSTRAP MIGRATION FAILED: {qid} — watch file unchanged")
+                        continue
+                    watches = remaining
+                updated_meta = dict(meta)
+                updated_meta.pop("requires_initial_run", None)
+                if not watches:
+                    updated_meta["sidequestor_bootstrap"] = True
+                if not _write_json_atomic(meta_path, updated_meta):
+                    t.log(f"BOOTSTRAP MIGRATION FAILED: {qid} — metadata unchanged")
+                    continue
+                meta = updated_meta
+                t.log(f"BOOTSTRAP MIGRATED: {qid} — removed legacy placeholder schedule")
+                t.event({"event": "bootstrap_migrated", "quest": qid})
+
+        if meta.get("sidequestor_bootstrap") is not True:
+            continue
+        # Do not clear the flag just because a watch appeared. The worker may have crashed
+        # or acked blocked after a partial append. commit_bootstrap() requires both the
+        # manifest acknowledgment and durable activation evidence from the same dispatch.
+        pending.add(qid)
+    return pending
+
+
+def bootstrap_result(t, qid):
+    """Create the synthetic dirty row, respecting the normal no-progress backoff."""
+    counts = t._read_json(t.unacked_file, {}) or {}
+    rec = counts.get(f"{qid}|{BOOTSTRAP_ITEM_ID}") if isinstance(counts, dict) else None
+    if isinstance(rec, dict) and not tick_check.is_due(rec, t.now_ts):
+        return {"qid": qid, "status": "backoff", "watch_id": BOOTSTRAP_ITEM_ID,
+                "type": BOOTSTRAP_ITEM_TYPE, "reason": "bootstrap retry backoff"}
+    return {"qid": qid, "status": "dirty", "watch_id": BOOTSTRAP_ITEM_ID,
+            "type": BOOTSTRAP_ITEM_TYPE, "advance_to": None, "complete": True,
+            "reason": "quest requires bootstrap setup"}
+
+
 def run_tick(t):
     """The whole tick after config is loaded. Returns the process exit code."""
     # tick start stamp (health-monitor watches started-vs-completed)
@@ -545,6 +644,11 @@ def run_tick(t):
     quest_count = len(quest_dirs)
     t.log(f"Triage starting. Active quests: {quest_count}")
 
+    # Bootstrap is quest state, not a fake schedule. Reconcile the one legacy dashboard
+    # shape under the tick lock, then keep pending bootstrap quests out of ordinary checker
+    # dispatch until the dedicated worker has installed a real watch.
+    bootstrap_quests = prepare_bootstrap_quests(t, quest_dirs)
+
     # NOTE: zero active quests does NOT mean the tick is idle — the global reaction
     # sweep (below) is independent of quests. Returning here would silently stop the
     # bot from ever answering an emoji-triggered message whenever no quest is active.
@@ -572,7 +676,8 @@ def run_tick(t):
     # which we reassemble in the original quest order so t.results — and therefore analyze() —
     # is deterministic regardless of which checker finished first. The dispatch order is
     # separately re-sorted anyway, so ordering here is about a stable log/diff, not correctness.
-    checkable = [qd.name for qd in quest_dirs if qd.name not in unreadable]
+    checkable = [qd.name for qd in quest_dirs
+                 if qd.name not in unreadable and qd.name not in bootstrap_quests]
     # Fairness rotation for the CHECK phase. The Slack budget runs out partway through a
     # tick, and with a fixed (alphabetical) order the same tail loses every time: a quest
     # can be rate-limited on every single tick purely for sorting last.
@@ -600,6 +705,8 @@ def run_tick(t):
         if qid in unreadable:
             t.results.append({"qid": qid, "status": "skip",
                               "reason": "watch_id migration failed; watermark held"})
+        elif qid in bootstrap_quests:
+            t.results.append(bootstrap_result(t, qid))
         else:
             t.results.extend(computed.get(qid, []))
 
@@ -1034,6 +1141,10 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     t.dispatch_run_id = f"run-{stamp}-{os.getpid()}-{t.dispatched}"
 
+    is_bootstrap = any(
+        w.get("quest_id") == target and w.get("type") == BOOTSTRAP_ITEM_TYPE
+        for w in dirty_watches_json
+    )
     if target == "reactions":
         kind = "reactions"
         pend = t._read_json(t.pending_reactions, {}) or {}
@@ -1080,6 +1191,27 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
                   f"The workspace has no yaas-triage/ source directory; for helper commands "
                   f"use the packaged runtime path.{runtime_hint} "
                   f"{ack_block} {_RUN_DISCIPLINE}")
+    elif is_bootstrap:
+        prompt = (
+            f"Sidequestor bootstrap dispatch for quest {target}. Bootstrap item (JSON): "
+            f"{items_json}. This quest was created from Quest Control with the operator's "
+            f"request in context.md. It normally has no watch; after an interrupted prior "
+            f"attempt it may contain an unverified appended watch that you must inspect. "
+            f"{_dispatch_read_instructions('yaas-quest-dispatch')}"
+            "BOOTSTRAP PROTOCOL: read the quest context and metadata first. Resolve every "
+            "external identifier with the available tools; never guess a channel, person, "
+            "thread, repository, or query. Use `sq watch` to append at least one exact durable "
+            "watch. A legitimate one-shot request may instead be completed and moved out of "
+            "state/quests/active according to OPERATING.md. If exact setup is ambiguous or a "
+            "dependency is unavailable, record a blocked timeline event and ack the bootstrap "
+            "item as blocked; do not install a speculative watch. Do not edit or remove the "
+            "sidequestor_bootstrap field yourself; triage clears it only after verifying a real "
+            "watch or terminal quest state. The workspace has no yaas-triage/ source directory; "
+            f"for helper commands use the packaged runtime path.{runtime_hint} "
+            f"Close the bootstrap item exactly once with `sq ack ack {t.dispatch_run_id} "
+            f"{BOOTSTRAP_ITEM_ID} handled|nothing_to_do|blocked \"<one-line note>\"`. "
+            f"{_RUN_DISCIPLINE}"
+        )
     else:
         prompt = (f"Yaas worker dispatch: dirty target: {target}. Exact dirty watches (JSON): "
                   f"{items_json} — each item_id is a watch_id. Process EVERY listed watch_id. "
@@ -1239,47 +1371,6 @@ def _return_approval_for_review(t, approval_id, reason):
     return True
 
 
-def _initial_run_incomplete(t, qid):
-    """True when a bootstrap quest finished its first run still watching nothing.
-
-    A quest created with `requires_initial_run` carries one placeholder watch: a one-shot
-    `schedule` whose only job is to wake the worker once so it can install the watches the
-    quest actually needs. Nothing enforced that. A worker that read the fired schedule as
-    an ordinary sweep could ack `nothing_to_do`, commit.py would advance the watermark past
-    `next_fire_ts`, and housekeep.retire_schedule() would then delete the spent one-shot —
-    leaving an active quest with `watches: []`, un-fireable forever and looking healthy.
-    That happened in production on 2026-08-25.
-
-    Holding the watermark is what fixes it: `last_checked_ts` stays below `next_fire_ts`,
-    so the one-shot is not retired, the schedule checker finds it due again, and the quest
-    redispatches instead of dying. The caller records no progress, so the existing unacked
-    backoff bounds the retries (5m doubling to a 24h cap) and the dashboard shows it as
-    backing off rather than looping hot.
-
-    Two ways to pass, and the second matters: either the worker appended a real watch, or
-    it moved the quest out of `active`. A genuinely one-shot quest ("do this once") SHOULD
-    end with no watches — but it has to say so by completing, not by sitting active and
-    empty. That is the distinction the old code could not draw.
-    """
-    quest_dir = t.quests_dir / qid
-    meta = t._read_json(quest_dir / "meta.json", None)
-    if not isinstance(meta, dict) or meta.get("requires_initial_run") is not True:
-        return False
-    if meta.get("status") != "active":
-        return False
-    doc = t._read_json(quest_dir / "watch.json", None)
-    watches = (doc or {}).get("watches") if isinstance(doc, dict) else None
-    if not isinstance(watches, list):
-        return False          # unreadable watch.json is watch-guard's problem, not ours
-    for w in watches:
-        if not isinstance(w, dict):
-            continue
-        bootstrap = (w.get("type") == "schedule" and "cron" not in w and "next_fire_ts" in w)
-        if not bootstrap:
-            return False      # a real watch exists: the quest is armed
-    return True
-
-
 def _record_progress(t, scope, committed_ids):
     """Bump the no-progress counter for every manifest item NOT in committed_ids; clear it for
     those that were. Mirrors the original shell orchestrator _record_progress."""
@@ -1413,9 +1504,58 @@ def dt_fromiso(s):
         return None
 
 
+def _find_quest_dir(t, qid):
+    root = t.repo_root / "state" / "quests"
+    for bucket in ("active", "completed", "archived"):
+        candidate = root / bucket / qid
+        if candidate.is_dir():
+            return bucket, candidate
+    return None, None
+
+
+def commit_bootstrap(t, qid, acked):
+    """Verify durable activation evidence and clear bootstrap state, or retry safely."""
+    if BOOTSTRAP_ITEM_ID not in acked:
+        t.log(f"BOOTSTRAP UNACKED [{qid}] — explicit bootstrap state retained.")
+        t.event({"event": "gate_bootstrap_unacked", "quest": qid,
+                 "run_id": t.dispatch_run_id})
+        _record_progress(t, qid, [])
+        return
+
+    bucket, quest_dir = _find_quest_dir(t, qid)
+    meta = t._read_json(quest_dir / "meta.json", None) if quest_dir else None
+    watch_doc = t._read_json(quest_dir / "watch.json", None) if quest_dir else None
+    watches = watch_doc.get("watches") if isinstance(watch_doc, dict) else None
+    terminal = bucket in ("completed", "archived") and isinstance(meta, dict) \
+        and meta.get("status") != "active"
+    armed = bucket == "active" and isinstance(watches, list) and bool(watches)
+
+    if not isinstance(meta, dict) or not isinstance(watches, list) or not (armed or terminal):
+        t.log(f"BOOTSTRAP INCOMPLETE [{qid}] — no verified watch or terminal quest state; "
+              "bootstrap flag retained.")
+        t.event({"event": "gate_bootstrap_incomplete", "quest": qid,
+                 "run_id": t.dispatch_run_id})
+        _record_progress(t, qid, [])
+        return
+
+    if meta.get("sidequestor_bootstrap") is True:
+        if not _clear_bootstrap_flag(t, qid, meta, quest_dir):
+            _record_progress(t, qid, [])
+            return
+    t.log(f"BOOTSTRAP COMPLETE [{qid}] — "
+          f"{'real watch installed' if armed else 'quest completed'}.")
+    t.event({"event": "gate_bootstrap_success", "targets": [qid],
+             "outcome": "armed" if armed else "completed"})
+    _record_progress(t, qid, [BOOTSTRAP_ITEM_ID])
+
+
 def commit_quest(t, qid, dirty_watches_json):
+    is_bootstrap = any(
+        w.get("quest_id") == qid and w.get("type") == BOOTSTRAP_ITEM_TYPE
+        for w in dirty_watches_json
+    )
     watch = t.quests_dir / qid / "watch.json"
-    if not watch.exists():
+    if not watch.exists() and not is_bootstrap:
         return
     if t.dispatch_exit not in (0, 124):
         t.log(f"WORKER FAILURE [{qid}] — exit {t.dispatch_exit}; watermarks left intact.")
@@ -1443,12 +1583,8 @@ def commit_quest(t, qid, dirty_watches_json):
         return
     acked = [x for x in (cpa.stdout or "").splitlines() if x.strip()]
 
-    if _initial_run_incomplete(t, qid):
-        t.log(f"INIT INCOMPLETE [{qid}] — bootstrap run installed no watch and the quest is "
-              f"still active; watermarks held so the one-shot schedule is not retired.")
-        t.event({"event": "gate_initial_run_incomplete", "quest": qid,
-                 "run_id": t.dispatch_run_id})
-        _record_progress(t, qid, [])
+    if is_bootstrap:
+        commit_bootstrap(t, qid, acked)
         return
 
     decision_in = {"quest_id": qid, "acked": acked, "dirty_watches": dirty_watches_json}

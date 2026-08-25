@@ -490,6 +490,13 @@ with public runtime skills; that root directory is created empty. Managed
 skills live under `.yaas/engine/current/skills/` so engine upgrades are
 versioned and do not overwrite personal skills.
 
+`yaas-triage/dispatch/manual-dispatch.sh` is also intentionally absent from the
+package runtime. It bypassed the tick's evidence-based acknowledgment manifest,
+watch guard, dispatch budgets, and no-progress retry ledger. The supported manual
+surface is a queued dashboard instruction, which re-enters the normal tick path;
+the regression inventory excludes this one legacy path explicitly and asserts it
+does not appear in built wheels.
+
 ## Validation and Safety
 
 - Normalized inventory verification: zero missing legacy runtime files, zero

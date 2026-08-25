@@ -34,7 +34,7 @@ Endpoints:
     POST /api/cancel/<id>     → cancel item
     POST /api/undo/<id>       → undo reviewed/cancelled back to pending_review
     POST /api/reclaim/<id>    → recover an expired executing lease
-    POST /api/quests          → closed (410); quests are created via the terminal skill
+    POST /api/quests          → create an explicitly-marked bootstrap quest
     POST /api/workspace/open  → open this workspace in Cursor or the default app
 """
 
@@ -963,22 +963,6 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             continue
         last_action  = None
         last_blocked = None
-        # True once ANY event other than `created` exists, i.e. a worker has actually
-        # picked this quest up. Distinct from last_action, which skips note/blocked and
-        # so cannot tell "never ran" from "ran but only left a note".
-        #
-        # FUTURE WORK: this is inferred, and the inference can lie. A worker that acks
-        # its items without calling log-event.py leaves has_run False forever, so
-        # isInitialising() in dashboard.html keeps rendering the quest as "Waiting for
-        # the first worker run" when it has already run and installed nothing. That is
-        # exactly what the stray-email quest did on 2026-08-25. The fix is to stop
-        # inferring: key the group on whether the quest holds a live watch
-        # (`watch_count == 0`), which is the thing the label actually claims, and needs
-        # no new state. Left undone deliberately — the requires_initial_run gate in
-        # tick.py now holds the watermark and redispatches such a quest, so after
-        # SIDEQUESTOR_UNACKED_PROMOTE attempts it surfaces under "Needs attention"
-        # anyway. This narrows the lie to the first few attempts rather than forever.
-        has_run      = False
         last_seen_ts = None   # newest non-blocked event of ANY type (incl. notes):
                               # a later note means the worker recovered after a block
         timeline_path = quest_dir / "timeline.ndjson"
@@ -988,8 +972,6 @@ def build_dashboard(include_briefs: bool = False) -> dict:
                 try:
                     e = json.loads(raw)
                     ev = e.get("event", "")
-                    if ev and ev != "created":
-                        has_run = True
                     if ev == "blocked" and last_blocked is None:
                         last_blocked = {"ts": e.get("ts"), "reason": (e.get("reason") or e.get("note") or "")[:80]}
                     if ev != "blocked" and last_seen_ts is None:
@@ -1033,8 +1015,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             "last_action":   last_action,
             "last_blocked":  last_blocked,
             "last_seen_ts":  last_seen_ts,
-            "has_run":       has_run,
-            "requires_initial_run": meta.get("requires_initial_run") is True,
+            "sidequestor_bootstrap": meta.get("sidequestor_bootstrap") is True,
             "backoff_count": 0,     # filled in below
             "backoff_watches": [],  # filled in below
             "ratelimited": False,   # filled in below (transient, from run-log)
@@ -2177,22 +2158,63 @@ class Handler(http.server.BaseHTTPRequestHandler):
                          "approval_id": result["approval_id"]}, 202)
 
     def _handle_create_quest(self, payload: dict):
-        """Closed. Quests are created interactively through the terminal agent.
+        """Create an empty quest that only the explicit bootstrap path may dispatch."""
+        fields = {name: payload.get(name) for name in ("prompt", "title", "priority")}
+        for name, value in fields.items():
+            if value is not None and not isinstance(value, str):
+                self._send_json({"error": f"{name} must be a string"}, 400)
+                return
+        prompt = (fields["prompt"] or "").strip()
+        title = (fields["title"] or "").strip()
+        priority = (fields["priority"] or "normal").strip()
+        if not prompt:
+            self._send_json({"error": "prompt is required"}, 400)
+            return
+        if len(prompt) > 4000:
+            self._send_json({"error": "prompt too long (max 4000 chars)"}, 400)
+            return
+        if len(title) > 120:
+            self._send_json({"error": "title too long (max 120 chars)"}, 400)
+            return
+        if priority not in ("high", "normal", "low"):
+            self._send_json({"error": "priority must be high, normal, or low"}, 400)
+            return
+        if not title:
+            first_line = next((line.strip() for line in prompt.splitlines() if line.strip()), "")
+            title = first_line[:80] or "Operator request"
 
-        The dashboard form could only take one block of free text, so the watches a
-        quest needs — which channel, which Gmail query, whose DMs — had to be guessed
-        by the first worker run. A guess that misses scaffolds a quest with no live
-        watch, which then reads as healthy in this UI. The quest-creation skill asks
-        for those values and confirms them, so creation belongs where that
-        conversation can happen. The endpoint stays here, and refuses, so an older
-        cached dashboard cannot go on creating unarmed quests.
-        """
-        self._send_json({
-            "error": "quest creation has moved to the terminal",
-            "detail": ("Run `claude` or `codex` in the workspace and follow "
-                       ".yaas/engine/current/skills/yaas-quest-creation/SKILL.md. "
-                       "It asks what to watch and confirms each identifier before writing the quest."),
-        }, 410)
+        spec = {
+            "title": title,
+            "priority": priority,
+            "allow_send": False,
+            "sidequestor_bootstrap": True,
+            "context": (
+                "## Operator request\n\n"
+                f"{prompt}\n\n"
+                "## Bootstrap safety\n\n"
+                "Resolve exact identifiers before installing watches. Never guess a channel, "
+                "person, thread, repository, or query. Draft first; do not send externally "
+                "without approval."
+            ),
+            "note": "Created from Quest Control",
+            "watches": [],
+        }
+        helper = SCRIPT_DIR.parent / "skills" / "yaas-quest-creation" / "new-quest.py"
+        try:
+            cp = subprocess.run(
+                [sys.executable, str(helper), json.dumps(spec)], capture_output=True,
+                text=True, timeout=10, cwd=str(REPO_ROOT),
+            )
+        except Exception as e:
+            self._send_json({"error": f"failed to create quest: {e}"}, 500)
+            return
+        match = re.search(r"^✓ Created ([a-z0-9-]+)$", cp.stdout or "", re.MULTILINE)
+        if cp.returncode != 0 or not match:
+            self._send_json({"error": "quest could not be created",
+                             "detail": ((cp.stderr or cp.stdout) or "").strip()[:500]}, 500)
+            return
+        self._send_json({"ok": True, "quest_id": match.group(1),
+                         "allow_send": False, "sidequestor_bootstrap": True}, 201)
 
 
     def _handle_review(self, approval_id: str, action: str, payload: dict):

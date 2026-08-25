@@ -4,6 +4,20 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.6.dev0 - 2026-08-25
+
+### Changed
+- Dashboard quest creation now uses explicit `sidequestor_bootstrap` quest metadata and a
+  dedicated synthetic dispatch instead of a placeholder one-shot schedule.
+- Bootstrap state clears only after the dispatch is acknowledged and triage verifies a real
+  watch or terminal quest state; failures use the existing no-progress backoff.
+- Legacy dashboard placeholders migrate only when their exact historical reason matches, so
+  ordinary one-shot schedules are never reclassified as bootstrap work.
+- Dashboard initialising state reads the explicit flag, and copied terminal commands shell-quote
+  workspace paths.
+- Regression builds export a clean committed snapshot and explicitly exclude the intentionally
+  removed `dispatch/manual-dispatch.sh` path.
+
 ## 0.1.5 - 2026-08-24
 
 Package `sidequestor` 0.1.5.

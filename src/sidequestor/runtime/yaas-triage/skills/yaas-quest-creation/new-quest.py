@@ -30,6 +30,8 @@ Spec JSON fields:
                            (this script sets it to now)
   priority    (optional) — "high" | "normal" | "low" — default: "normal"
   allow_send  (optional) — true | false — default: false
+  sidequestor_bootstrap (internal) — true creates an empty quest for the dedicated
+                           dashboard bootstrap dispatch; ordinary callers omit it
   context     (optional) — body text for context.md
   note        (optional) — short note for the created timeline event
 
@@ -194,9 +196,9 @@ def ordered_entry(raw_entry, now_ts):
     return entry
 
 
-def validate_watches(watches):
+def validate_watches(watches, *, allow_empty=False):
     required_fields, known_types, user_creatable_types = _watch_manifest_shapes()
-    if not watches:
+    if not watches and not allow_empty:
         die("watches must have at least one entry")
     for i, w in enumerate(watches):
         t = w.get("type")
@@ -242,7 +244,7 @@ def main():
     title      = spec.get("title", "").strip()
     priority   = spec.get("priority", "normal")
     allow_send = spec.get("allow_send", False)
-    requires_initial_run = spec.get("requires_initial_run", False)
+    sidequestor_bootstrap = spec.get("sidequestor_bootstrap", False)
     context    = spec.get("context", "")
     watches_in = spec.get("watches", [])
     note_raw   = spec.get("note", context[:80] if context else "Quest created")
@@ -252,13 +254,17 @@ def main():
         die("'title' is required")
     if priority not in ("high", "normal", "low"):
         die(f"priority must be high/normal/low, got: {priority!r}")
-    if not isinstance(requires_initial_run, bool):
-        die(f"requires_initial_run must be a boolean, got: {requires_initial_run!r}")
+    if not isinstance(sidequestor_bootstrap, bool):
+        die(f"sidequestor_bootstrap must be a boolean, got: {sidequestor_bootstrap!r}")
+    if "requires_initial_run" in spec:
+        die("requires_initial_run is obsolete; use sidequestor_bootstrap with no watches")
     if retire_days is not None and retire_days is not False:
         if not isinstance(retire_days, int) or retire_days < 0:
             die(f"retire_slack_threads_after_days must be a non-negative int or false, got: {retire_days!r}")
 
-    validate_watches(watches_in)
+    if sidequestor_bootstrap and watches_in:
+        die("sidequestor_bootstrap quests must start with an empty watches list")
+    validate_watches(watches_in, allow_empty=sidequestor_bootstrap)
 
     quest_id = unique_quest_id(title)
     now_ts   = f"{time.time():.6f}"
@@ -285,8 +291,8 @@ def main():
     }
     if retire_days is not None:
         meta["retire_slack_threads_after_days"] = retire_days
-    if requires_initial_run:
-        meta["requires_initial_run"] = True
+    if sidequestor_bootstrap:
+        meta["sidequestor_bootstrap"] = True
     (quest_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
 
     # ── watch.json ───────────────────────────────────────────────────────────
@@ -345,6 +351,8 @@ _Add Slack permalinks, Coda docs, Jira tickets as they emerge._
     for w in watches:
         type_counts[w["type"]] = type_counts.get(w["type"], 0) + 1
     watch_summary = ", ".join(f"{n} {t}" for t, n in type_counts.items())
+    if sidequestor_bootstrap:
+        watch_summary = "bootstrap dispatch pending"
 
     print(f"✓ Created {quest_id}")
     print(f"  Path:       state/quests/active/{quest_id}/")
