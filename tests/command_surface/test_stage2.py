@@ -30,13 +30,13 @@ class Stage2CommandSurfaceTest(unittest.TestCase):
     def test_public_help(self) -> None:
         result = run("--help")
         self.assertEqual(result.returncode, 0, result.stderr)
-        for command in ("init", "tick", "loop", "dashboard", "sync-resources", "mcp-call"):
+        for command in ("init", "tick", "loop", "dashboard", "sync-resources", "upgrade", "mcp-call"):
             self.assertIn(command, result.stdout)
 
     def test_every_public_command_has_help(self) -> None:
         commands = (
             "init", "instances", "setup", "start", "stop", "tick", "loop", "dashboard", "doctor",
-            "migrate", "sync-resources", "watch", "ack", "approval", "log", "slack-send",
+            "migrate", "sync-resources", "upgrade", "watch", "ack", "approval", "log", "slack-send",
             "react", "mcp-call", "jira-call",
         )
         for command in commands:

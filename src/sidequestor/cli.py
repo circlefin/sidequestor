@@ -25,6 +25,7 @@ from .launchd import render, status as launchd_status, uninstall as uninstall_jo
 from .migrations import migrate_workspace
 from .resources import ENGINE_VERSION, current_engine_version, sync_resources
 from .setup import configured_agent, print_worker_instructions, run_setup
+from .upgrade import run_upgrade
 from .workspace import (
     Workspace,
     find_workspace,
@@ -50,6 +51,7 @@ COMMANDS = {
     "doctor": "validate a workspace and its engine",
     "migrate": "apply workspace schema migrations",
     "sync-resources": "refresh managed engine resources",
+    "upgrade": "upgrade the package and refresh managed resources",
     "new-quest": "scaffold a quest folder from a JSON spec",
     "watch": "manage watches",
     "ack": "acknowledge dispatched work",
@@ -106,6 +108,7 @@ def _command_help(command: str) -> str:
         "loop": "sidequestor [--workspace PATH] loop [--max-ticks N]",
         "dashboard": "sidequestor [--workspace PATH] dashboard serve|url",
         "migrate": "sidequestor [--workspace PATH] migrate [NAME|--name NAME]",
+        "upgrade": "sidequestor [--workspace PATH] upgrade [--source GITHUB_URL --ref REF] [--pre] [--yes] [--no-restart]",
     }
     usage = examples.get(command, f"sidequestor [--workspace PATH] {command} [ARGS...]")
     return f"usage: {usage}\n\n{COMMANDS[command]}"
@@ -471,6 +474,8 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
     if command == "sync-resources":
         print(f"synced engine resources: {sync_resources(workspace)}")
         return 0
+    if command == "upgrade":
+        return run_upgrade(workspace, args)
     if command == "setup":
         return _cmd_setup(workspace, args)
     if command in {"start", "tick", "loop"}:

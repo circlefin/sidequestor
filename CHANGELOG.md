@@ -18,6 +18,12 @@ Versions are dated by the day the snapshot was published.
 - Regression builds export a clean committed snapshot and explicitly exclude the intentionally
   removed `dispatch/manual-dispatch.sh` path.
 
+### Added
+- `sq upgrade` upgrades the package from PyPI by default, or from an explicit HTTPS GitHub
+  repository and branch/tag/commit with `--source` and `--ref`. It stops previously running jobs,
+  installs through the command's own Python interpreter, synchronizes resources and validates from
+  a fresh process, then restores the prior running state only after those checks succeed.
+
 ## 0.1.5 - 2026-08-24
 
 Package `sidequestor` 0.1.5.
