@@ -29,7 +29,14 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INTERVAL="${YAAS_HEARTBEAT_INTERVAL:-300}"
+WORKSPACE_ROOT="${SIDEQUESTOR_WORKSPACE:-${YAAS_WORKSPACE:-$SCRIPT_DIR/../..}}"
+if [ -f "$WORKSPACE_ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$WORKSPACE_ROOT/.env"
+  set +a
+fi
+INTERVAL="${SIDEQUESTOR_HEARTBEAT_INTERVAL:-${YAAS_HEARTBEAT_INTERVAL:-300}}"
 
 while true; do
   # Non-zero just means "something is unhealthy" — that is the normal reporting path,

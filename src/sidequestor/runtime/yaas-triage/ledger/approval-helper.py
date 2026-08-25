@@ -125,6 +125,9 @@ if (RUNTIME_ROOT / "yaas-triage").is_dir():
 sys.path.insert(0, str(RUNTIME_ROOT))
 import approval_state
 import approval_store
+import tick_state
+
+approval_state.configure(tick_state.load_environment(REPO_ROOT))
 
 APPROVALS_FILE = approval_store.APPROVALS_FILE
 QUESTS_DIR     = REPO_ROOT / "state" / "quests"

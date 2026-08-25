@@ -14,6 +14,28 @@ TRIAGE_ROOT = RUNTIME_ROOT / "yaas-triage"
 
 
 class RuntimeConfigTest(unittest.TestCase):
+    def test_native_children_receive_workspace_dotenv_aliases(self) -> None:
+        from sidequestor.native import _environment
+        from sidequestor.workspace import init_workspace
+
+        with tempfile.TemporaryDirectory(prefix="sidequestor-native-env-") as raw:
+            with patch.dict(os.environ, {
+                "SIDEQUESTOR_CONFIG_HOME": str(Path(raw) / "config"),
+            }, clear=False):
+                workspace = init_workspace(Path(raw) / "workspace")
+            workspace.env_file.write_text(
+                "SIDEQUESTOR_TRIAGE_INTERVAL=11\n"
+                "SIDEQUESTOR_HEARTBEAT_INTERVAL=17\n"
+                "SIDEQUESTOR_APPROVAL_LEASE_MIN=23\n"
+            )
+            environment = _environment(workspace)
+            self.assertEqual(environment["YAAS_TRIAGE_INTERVAL"], "11")
+            self.assertEqual(environment["YAAS_HEARTBEAT_INTERVAL"], "17")
+            self.assertEqual(environment["YAAS_APPROVAL_LEASE_MIN"], "23")
+            overridden = _environment(workspace, {"YAAS_AGENT": "stub"})
+            self.assertEqual(overridden["YAAS_AGENT"], "stub")
+            self.assertEqual(overridden["SIDEQUESTOR_AGENT"], "stub")
+
     def test_legacy_environment_aliases_reach_canonical_consumers(self) -> None:
         from sidequestor.native import _apply_env_aliases
 
@@ -34,6 +56,7 @@ class RuntimeConfigTest(unittest.TestCase):
             (workspace / ".env").write_text(
                 "SIDEQUESTOR_AGENT=codex\n"
                 "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+                "SIDEQUESTOR_UNACKED_PROMOTE=9\n"
             )
             with patch.dict(os.environ, {"YAAS_WORKSPACE": str(workspace)}, clear=False):
                 import sys
@@ -53,6 +76,7 @@ class RuntimeConfigTest(unittest.TestCase):
             (workspace / ".env").write_text(
                 "SIDEQUESTOR_AGENT=codex\n"
                 "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+                "SIDEQUESTOR_UNACKED_PROMOTE=9\n"
             )
             environment = {
                 "YAAS_WORKSPACE": str(workspace),
@@ -71,6 +95,7 @@ class RuntimeConfigTest(unittest.TestCase):
                     with patch.object(sys, "argv", ["dashboard-server.py"]):
                         spec.loader.exec_module(module)
                     config = module.build_config()
+                    self.assertEqual(module._dotenv("YAAS_UNACKED_PROMOTE", "3"), "9")
                 finally:
                     sys.path.pop(0)
 
@@ -83,6 +108,34 @@ class RuntimeConfigTest(unittest.TestCase):
             self.assertTrue(items["YAAS_AGENT"]["set"])
             self.assertEqual(items["YAAS_SLACK_CHECKERS_ENABLED"]["value"], "0")
             self.assertTrue(items["YAAS_SLACK_CHECKERS_ENABLED"]["set"])
+
+    def test_health_monitor_configures_thresholds_from_workspace_dotenv(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-health-config-") as raw:
+            workspace = Path(raw)
+            (workspace / ".env").write_text(
+                "SIDEQUESTOR_HEALTH_STALL_MIN=21\n"
+                "SIDEQUESTOR_HEALTH_HUNG_MIN=81\n"
+                "SIDEQUESTOR_APPROVAL_LEASE_MIN=33\n"
+            )
+            import sys
+            sys.path.insert(0, str(TRIAGE_ROOT))
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    "sidequestor_health_test",
+                    TRIAGE_ROOT / "ops" / "health-monitor.py",
+                )
+                module = importlib.util.module_from_spec(spec)
+                assert spec.loader is not None
+                with patch.dict(os.environ, {
+                    "SIDEQUESTOR_WORKSPACE": str(workspace),
+                    "SIDEQUESTOR_RUNTIME_ROOT": str(RUNTIME_ROOT),
+                }, clear=False):
+                    spec.loader.exec_module(module)
+                module.configure(module.load_environment(workspace))
+            finally:
+                sys.path.pop(0)
+            self.assertEqual(module.STALL_MIN, 21.0)
+            self.assertEqual(module.HUNG_MIN, 81.0)
 
     def test_dashboard_build_info_honors_launch_environment(self) -> None:
         environment = {

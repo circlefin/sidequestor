@@ -34,14 +34,20 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INTERVAL="${YAAS_TRIAGE_INTERVAL:-60}"
+WORKSPACE_ROOT="${SIDEQUESTOR_WORKSPACE:-${YAAS_WORKSPACE:-$SCRIPT_DIR/..}}"
+if [ -f "$WORKSPACE_ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$WORKSPACE_ROOT/.env"
+  set +a
+fi
+INTERVAL="${SIDEQUESTOR_TRIAGE_INTERVAL:-${YAAS_TRIAGE_INTERVAL:-60}}"
 
 # `|| true` is required — a worker failure legitimately makes tick.py exit non-zero
 # and this loop must not die on it. But discarding the code outright lets a crash loop
 # run indefinitely while launchd still reports a healthy job. So count
 # consecutive failures to a file that health-monitor.py reads. The threshold there is
 # several ticks, precisely because a single non-zero exit is normal.
-WORKSPACE_ROOT="${YAAS_WORKSPACE:-$SCRIPT_DIR/..}"
 FAILFILE="$WORKSPACE_ROOT/state/triage/consecutive-tick-failures"
 mkdir -p "$(dirname "$FAILFILE")" 2>/dev/null || true
 

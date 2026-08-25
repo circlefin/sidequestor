@@ -21,7 +21,20 @@ import os
 from datetime import datetime, timedelta, timezone
 
 
-LEASE_MINUTES = int(os.environ.get("YAAS_APPROVAL_LEASE_MIN", "45"))
+LEASE_MINUTES = 45
+
+
+def configure(environment=None):
+    """Resolve the approval lease from canonical or legacy environment names."""
+    global LEASE_MINUTES
+    environment = os.environ if environment is None else environment
+    raw = (environment.get("SIDEQUESTOR_APPROVAL_LEASE_MIN")
+           or environment.get("YAAS_APPROVAL_LEASE_MIN")
+           or "45")
+    LEASE_MINUTES = int(raw)
+
+
+configure()
 
 ILLEGAL = object()
 

@@ -211,8 +211,8 @@ session) deciding whether the type exists. Update them in the same commit as the
 The dispatch skill is the one people forget. A watch type with no entry there fires correctly
 and then the worker has to improvise what to do about it, at Opus prices, every time.
 
-Sanity check before committing: run `yaas-triage/tests/behaviour/doc-contracts.test.sh`. It fails
-with the exact stale doc file and expected contract when a new type or lag value is missing from
+Sanity check before committing, in a source checkout: run the repository's
+`tests/behaviour/doc-contracts.test.sh`. It fails with the exact stale doc file and expected contract when a new type or lag value is missing from
 the maintained tables in `README.md`, `ARCHITECTURE.md`, `yaas-ops/SKILL.md`, or
 `yaas-quest-creation/SKILL.md`.
 

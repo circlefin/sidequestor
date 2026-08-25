@@ -70,6 +70,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import approval_state
 import approval_store
 import result
+import tick_state
+
+approval_state.configure(tick_state.load_environment(REPO_ROOT))
 
 def main():
     if len(sys.argv) < 2:

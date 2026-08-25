@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import __version__
 from .build_info import build_info
-from .native import dry_tick, run_native, run_native_loop, run_native_tick
+from .native import _environment, dry_tick, run_native, run_native_loop, run_native_tick
 from .dashboard import (
     read_dashboard_url,
     serve as serve_dashboard,
@@ -373,7 +373,12 @@ def _cmd_loop(workspace: Workspace, args: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="yaas loop")
     parser.add_argument("--max-ticks", type=int)
     parser.add_argument("--isolated", action="store_true")
-    parser.add_argument("--interval", type=float, default=float(os.environ.get("YAAS_LOOP_INTERVAL", "60")))
+    configured_env = _environment(workspace)
+    default_interval = configured_env.get(
+        "YAAS_TRIAGE_INTERVAL",
+        configured_env.get("YAAS_LOOP_INTERVAL", "60"),
+    )
+    parser.add_argument("--interval", type=float, default=float(default_interval))
     values, unknown = parser.parse_known_args(args)
     if unknown:
         raise SystemExit(f"unknown loop arguments: {' '.join(unknown)}")

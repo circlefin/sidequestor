@@ -93,6 +93,8 @@ import approval_store
 import tick_check
 from tick_state import Config, NUMERIC_KNOBS, load_environment, load_watch_manifests
 
+approval_state.configure(load_environment(REPO_ROOT))
+
 # Statuses that are genuinely finished. Everything else is shown, deliberately: the
 # queue used to ALLOWLIST pending_review/needs_reply, so `executing` and `reviewed`
 # were invisible by construction and an approval stuck mid-execution had no surface at
@@ -1033,7 +1035,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
     unacked_path = STATE_DIR / "triage" / "unacked-counts.json"
     if unacked_path.exists():
         try:
-            promote = int(os.environ.get("YAAS_UNACKED_PROMOTE", "3"))
+            promote = int(_dotenv("YAAS_UNACKED_PROMOTE", "3"))
             uc = json.loads(unacked_path.read_text())
             backoff_by_quest: dict[str, list] = {}
             for key, entry in uc.items():
@@ -1634,7 +1636,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
     if unacked_path.exists():
         try:
             uc = json.loads(unacked_path.read_text())
-            promote = int(os.environ.get("YAAS_UNACKED_PROMOTE", "3"))
+            promote = int(_dotenv("YAAS_UNACKED_PROMOTE", "3"))
             for key, entry in uc.items():
                 qid, _, wid = key.partition("|")
                 if qid == quest_id and entry.get("count", 0) >= promote:

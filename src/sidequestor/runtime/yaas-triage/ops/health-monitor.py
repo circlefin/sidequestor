@@ -71,16 +71,28 @@ sys.path.insert(0, str(_RUNTIME_ROOT / "yaas-triage"))
 from tick_state import load_environment
 
 # Thresholds. Defaults are deliberately loose enough not to cry wolf; every one is
-# overridable so a slower install can tune it.
-STALL_MIN     = float(os.environ.get("YAAS_HEALTH_STALL_MIN", "10"))
-# Must exceed YAAS_TICK_DISPATCH_BUDGET (default 3600s = 60min), because a tick that
-# dispatches several targets can legitimately run that long. 75 gives it headroom.
-HUNG_MIN      = float(os.environ.get("YAAS_HEALTH_HUNG_MIN", "75"))
-FAIL_STREAK   = int(os.environ.get("YAAS_HEALTH_FAIL_STREAK", "5"))
-CHECKER_PROMOTE = int(os.environ.get("YAAS_CHECKER_ERROR_PROMOTE", "6"))
-APPROVAL_STUCK_MIN = float(os.environ.get("YAAS_HEALTH_APPROVAL_STUCK_MIN", "45"))
-EVENT_LOOKBACK_MIN = float(os.environ.get("YAAS_HEALTH_EVENT_LOOKBACK_MIN", "60"))
-COOLDOWN_MIN  = float(os.environ.get("YAAS_HEALTH_COOLDOWN_MIN", "360"))
+# overridable so a slower install can tune it. ``configure`` refreshes them from the
+# workspace dotenv before the monitor runs; launchd does not source that file itself.
+STALL_MIN = 10.0
+HUNG_MIN = 75.0
+FAIL_STREAK = 5
+CHECKER_PROMOTE = 6
+APPROVAL_STUCK_MIN = 45.0
+EVENT_LOOKBACK_MIN = 60.0
+COOLDOWN_MIN = 360.0
+
+
+def configure(environment):
+    """Apply the effective workspace environment to the monitor thresholds."""
+    global STALL_MIN, HUNG_MIN, FAIL_STREAK, CHECKER_PROMOTE
+    global APPROVAL_STUCK_MIN, EVENT_LOOKBACK_MIN, COOLDOWN_MIN
+    STALL_MIN = float(environment.get("YAAS_HEALTH_STALL_MIN", "10"))
+    HUNG_MIN = float(environment.get("YAAS_HEALTH_HUNG_MIN", "75"))
+    FAIL_STREAK = int(environment.get("YAAS_HEALTH_FAIL_STREAK", "5"))
+    CHECKER_PROMOTE = int(environment.get("YAAS_CHECKER_ERROR_PROMOTE", "6"))
+    APPROVAL_STUCK_MIN = float(environment.get("YAAS_HEALTH_APPROVAL_STUCK_MIN", "45"))
+    EVENT_LOOKBACK_MIN = float(environment.get("YAAS_HEALTH_EVENT_LOOKBACK_MIN", "60"))
+    COOLDOWN_MIN = float(environment.get("YAAS_HEALTH_COOLDOWN_MIN", "360"))
 
 WATCHED_EVENTS = {
     "gate_watch_misconfigured":      "a watch is misconfigured and has stopped being checked",
@@ -335,9 +347,13 @@ def main():
 
 
 
-    repo = Path(opt("--repo") or os.environ.get("YAAS_HEALTH_REPO_ROOT")
+    workspace_override = (os.environ.get("SIDEQUESTOR_WORKSPACE")
+                          or os.environ.get("YAAS_WORKSPACE"))
+    repo = Path(opt("--repo") or workspace_override
                 or _repo_root(__file__))
-    notify_cmd = os.environ.get("YAAS_HEALTH_NOTIFY_CMD")
+    environment = load_environment(repo)
+    configure(environment)
+    notify_cmd = environment.get("YAAS_HEALTH_NOTIFY_CMD")
 
     h = Health(repo).run()
     healthy = not h.problems
