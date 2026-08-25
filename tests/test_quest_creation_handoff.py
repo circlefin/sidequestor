@@ -43,6 +43,12 @@ class QuestCreationBootstrapTest(unittest.TestCase):
         self.assertIn("'cd '+shellQuote(p)", self.html)
         self.assertNotIn("'cd '+p", self.html)
 
+    def test_terminal_fallback_uses_auto_discovered_creation_skill(self):
+        self.assertIn("auto-discovered Sidequestor quest-creation skill", self.html)
+        self.assertIn("via `sq new-quest`", self.html)
+        self.assertNotIn("from sidequestor.native import RUNTIME_ROOT", self.html)
+        self.assertNotIn(".yaas/engine/current/OPERATING.md", self.html)
+
     def test_field_guide_describes_dashboard_bootstrap_creation(self):
         self.assertIn("Sidequestor visibly bootstraps exact watches", self.html)
 
