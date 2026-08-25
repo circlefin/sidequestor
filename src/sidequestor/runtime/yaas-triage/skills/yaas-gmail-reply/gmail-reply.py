@@ -96,7 +96,8 @@ def main():
     # Build RFC 2822 reply
     mime = MIMEText(reply_body, "plain", "utf-8")
     mime["To"] = _hdr(from_addr)
-    mime["From"] = os.environ.get("YAAS_FROM_EMAIL", "")
+    mime["From"] = (os.environ.get("SIDEQUESTOR_FROM_EMAIL")
+                    or os.environ.get("YAAS_FROM_EMAIL", ""))
     mime["Subject"] = _hdr(subject)
     mime["In-Reply-To"] = _hdr(orig_msg_id)
     mime["References"] = _hdr(references)

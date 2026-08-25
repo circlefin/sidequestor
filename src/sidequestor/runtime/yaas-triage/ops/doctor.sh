@@ -55,7 +55,19 @@ _repo_root() {
   echo "cannot locate repo root above $1 (no ancestor has yaas-triage/)" >&2
   return 1
 }
-REPO_ROOT="$(_repo_root "$SCRIPT_DIR")" || exit 1
+_workspace_root() {
+  local candidate
+  for candidate in "${SIDEQUESTOR_WORKSPACE:-}" "${YAAS_WORKSPACE:-}" "${REPO_ROOT:-}"; do
+    [ -n "$candidate" ] || continue
+    if candidate=$(cd "$candidate" 2>/dev/null && pwd -P); then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  _repo_root "$SCRIPT_DIR"
+}
+REPO_ROOT="$(_workspace_root)" || exit 1
+RUNTIME_ROOT="${SIDEQUESTOR_RUNTIME_ROOT:-${YAAS_RUNTIME_ROOT:-$(_repo_root "$SCRIPT_DIR")}}"
 QUIET=0
 [ "${1:-}" = "--quiet" ] && QUIET=1
 
@@ -70,7 +82,7 @@ section() { [ "$QUIET" = "0" ] && printf '\n\033[1m%s\033[0m\n' "$1"; }
 # used to hard-fail on a missing `claude` even with YAAS_AGENT=codex, which contradicted
 # the README's multi-backend story and made a perfectly good install look broken.
 section "Prerequisites"
-AGENT="${YAAS_AGENT:-codex}"
+AGENT="${SIDEQUESTOR_AGENT:-${YAAS_AGENT:-codex}}"
 case "$AGENT" in
   claude) AGENT_BIN="claude" ;;
   codex)  AGENT_BIN="codex" ;;
@@ -84,7 +96,7 @@ for cmd in "$AGENT_BIN" jq perl python3 security; do
     fail "$cmd not found in PATH"
   fi
 done
-[ "$AGENT" = "claude" ] || ok "agent backend: $AGENT (YAAS_AGENT) — checking $AGENT_BIN, not claude"
+[ "$AGENT" = "claude" ] || ok "agent backend: $AGENT (SIDEQUESTOR_AGENT) — checking $AGENT_BIN, not claude"
 
 # Python floor. Checked explicitly because the failure is otherwise a TypeError on a
 # `X | None` annotation deep inside a dispatch, which reads as a code bug rather than
@@ -122,10 +134,10 @@ else
   fi
 
   set -a; source "$ENV_FILE" 2>/dev/null || true; set +a
-  SLACK_CHECKERS_ENABLED="${YAAS_SLACK_CHECKERS_ENABLED:-1}"
+  SLACK_CHECKERS_ENABLED="${SIDEQUESTOR_SLACK_CHECKERS_ENABLED:-${YAAS_SLACK_CHECKERS_ENABLED:-1}}"
   case "$SLACK_CHECKERS_ENABLED" in
-    0|1) ok "YAAS_SLACK_CHECKERS_ENABLED=$SLACK_CHECKERS_ENABLED" ;;
-    *) fail "YAAS_SLACK_CHECKERS_ENABLED=$SLACK_CHECKERS_ENABLED is invalid (expected 0 or 1)" ;;
+    0|1) ok "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=$SLACK_CHECKERS_ENABLED" ;;
+    *) fail "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=$SLACK_CHECKERS_ENABLED is invalid (expected 0 or 1)" ;;
   esac
   if [ "$SLACK_CHECKERS_ENABLED" = "0" ]; then
     SLACK_REQUIRED_VARS=""
@@ -133,8 +145,9 @@ else
   else
     SLACK_REQUIRED_VARS="SLACK_APP_ID SLACK_CLIENT_ID SLACK_WORKSPACE_NAME SLACK_WORKSPACE_DOMAIN"
   fi
-  for var in $SLACK_REQUIRED_VARS YAAS_FROM_EMAIL; do
-    if [ -n "${!var:-}" ]; then
+  for var in $SLACK_REQUIRED_VARS SIDEQUESTOR_FROM_EMAIL; do
+    legacy_var="${var/SIDEQUESTOR_/YAAS_}"
+    if [ -n "${!var:-${!legacy_var:-}}" ]; then
       ok "$var set"
     else
       fail "$var empty in .env"
@@ -148,16 +161,18 @@ else
     fi
   done
 
-  CLAUDE_PERMISSION_MODE="${YAAS_CLAUDE_PERMISSION_MODE:-${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}}"
-  ok "YAAS_CLAUDE_PERMISSION_MODE=$CLAUDE_PERMISSION_MODE"
+  # env.example ships the SIDEQUESTOR_ names; reading only YAAS_ here reported the
+  # DEFAULT for a correctly configured workspace instead of its real setting.
+  CLAUDE_PERMISSION_MODE="${SIDEQUESTOR_CLAUDE_PERMISSION_MODE:-${YAAS_CLAUDE_PERMISSION_MODE:-${SIDEQUESTOR_WORKER_PERMISSION_MODE:-${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}}}}"
+  ok "SIDEQUESTOR_CLAUDE_PERMISSION_MODE=$CLAUDE_PERMISSION_MODE"
 
-  CODEX_PERMISSION_MODE="${YAAS_CODEX_PERMISSION_MODE:-workspace-write}"
+  CODEX_PERMISSION_MODE="${SIDEQUESTOR_CODEX_PERMISSION_MODE:-${YAAS_CODEX_PERMISSION_MODE:-workspace-write}}"
   case "$CODEX_PERMISSION_MODE" in
     workspace-write|bypassPermissions)
-      ok "YAAS_CODEX_PERMISSION_MODE=$CODEX_PERMISSION_MODE"
+      ok "SIDEQUESTOR_CODEX_PERMISSION_MODE=$CODEX_PERMISSION_MODE"
       ;;
     *)
-      fail "YAAS_CODEX_PERMISSION_MODE=$CODEX_PERMISSION_MODE is invalid (expected workspace-write or bypassPermissions)"
+      fail "SIDEQUESTOR_CODEX_PERMISSION_MODE=$CODEX_PERMISSION_MODE is invalid (expected workspace-write or bypassPermissions)"
       ;;
   esac
 fi
@@ -167,32 +182,32 @@ section "Slack credentials"
 if [ "${SLACK_CHECKERS_ENABLED:-1}" = "0" ]; then
   ok "Slack OAuth token not required while local Slack checkers are disabled"
 elif security find-generic-password -s slack-oauth-token-bundle -a yaas >/dev/null 2>&1; then
-  CREDENTIAL_STATUS=$(python3 "$REPO_ROOT/yaas-triage/surfaces/slack_credentials.py" status 2>/dev/null || true)
+  CREDENTIAL_STATUS=$(python3 "$RUNTIME_ROOT/yaas-triage/surfaces/slack_credentials.py" status 2>/dev/null || true)
   CREDENTIAL_MODE=$(printf '%s' "$CREDENTIAL_STATUS" | jq -r '.mode // "error"' 2>/dev/null)
   CREDENTIAL_COMPLETE=$(printf '%s' "$CREDENTIAL_STATUS" | jq -r '.complete // false' 2>/dev/null)
   if [ "$CREDENTIAL_MODE" = "rotating" ] && [ "$CREDENTIAL_COMPLETE" = "true" ]; then
     ACCESS_REMAINING=$(printf '%s' "$CREDENTIAL_STATUS" | jq -r '.access_expires_in // 0')
     REFRESH_REMAINING=$(printf '%s' "$CREDENTIAL_STATUS" | jq -r '.refresh_expires_in // 0')
     if [ "$REFRESH_REMAINING" -le 0 ]; then
-      fail "rotating Slack credential's refresh token has also expired — rerun ./yaas-triage/setup/setup.sh"
+      fail "rotating Slack credential's refresh token has also expired — rerun bash \"$RUNTIME_ROOT/yaas-triage/setup/setup.sh\""
     elif [ "$ACCESS_REMAINING" -le 0 ]; then
       ok "rotating Slack credential bundle is complete (access token expired, will refresh on next use; refresh valid for about $(( REFRESH_REMAINING / 3600 ))h)"
     else
       ok "rotating Slack credential bundle is complete (access expires in about $(( ACCESS_REMAINING / 60 ))m)"
     fi
   else
-    fail "Slack credential bundle is incomplete or unreadable — rerun ./yaas-triage/setup/setup.sh"
+    fail "Slack credential bundle is incomplete or unreadable — rerun bash \"$RUNTIME_ROOT/yaas-triage/setup/setup.sh\""
   fi
 elif security find-generic-password -s slack-xoxp-token -a yaas >/dev/null 2>&1; then
   LEGACY_TOKEN=$(security find-generic-password -s slack-xoxp-token -a yaas -w 2>/dev/null || true)
   case "$LEGACY_TOKEN" in
     xoxp-*) ok "legacy long-lived Slack credential is installed" ;;
-    xoxe.xoxp-*) fail "rotating Slack credential has no refresh token — rerun ./yaas-triage/setup/setup.sh" ;;
-    *) fail "Slack credential has an unsupported format — rerun ./yaas-triage/setup/setup.sh" ;;
+    xoxe.xoxp-*) fail "rotating Slack credential has no refresh token — rerun bash \"$RUNTIME_ROOT/yaas-triage/setup/setup.sh\"" ;;
+    *) fail "Slack credential has an unsupported format — rerun bash \"$RUNTIME_ROOT/yaas-triage/setup/setup.sh\"" ;;
   esac
   unset LEGACY_TOKEN
 else
-  fail "Slack token not in Keychain — run ./yaas-triage/setup/setup.sh"
+  fail "Slack token not in Keychain — run bash \"$RUNTIME_ROOT/yaas-triage/setup/setup.sh\""
 fi
 
 # ── 4. State directory ──────────────────────────────────────────────────────

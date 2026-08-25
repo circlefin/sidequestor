@@ -34,7 +34,7 @@ Endpoints:
     POST /api/cancel/<id>     → cancel item
     POST /api/undo/<id>       → undo reviewed/cancelled back to pending_review
     POST /api/reclaim/<id>    → recover an expired executing lease
-    POST /api/quests          → create a draft-only quest from an operator prompt
+    POST /api/quests          → closed (410); quests are created via the terminal skill
     POST /api/workspace/open  → open this workspace in Cursor or the default app
 """
 
@@ -133,7 +133,6 @@ WORKER_STATE_FILE = STATE_DIR / "triage" / "worker-current.json"
 WORKER_HEARTBEAT_GRACE_S = 60
 LIVE_TAIL_LINES  = 60   # panel wants the fuller transcript; pill only shows the target name
 MAX_REQUEST_BODY_BYTES = 64 * 1024
-QUEST_CREATE_TIMEOUT_S = 10
 
 
 # ── Auth / hardening ──────────────────────────────────────────────────────────
@@ -2166,76 +2165,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
                          "approval_id": result["approval_id"]}, 202)
 
     def _handle_create_quest(self, payload: dict):
-        """Create a real quest through the canonical scaffolder, never by hand."""
-        fields = {name: payload.get(name) for name in ("prompt", "title", "priority")}
-        for name, value in fields.items():
-            if value is not None and not isinstance(value, str):
-                self._send_json({"error": f"{name} must be a string"}, 400)
-                return
-        prompt = (fields["prompt"] or "").strip()
-        title = (fields["title"] or "").strip()
-        priority = (fields["priority"] or "normal").strip()
-        if not prompt:
-            self._send_json({"error": "prompt is required"}, 400)
-            return
-        if len(prompt) > 4000:
-            self._send_json({"error": "prompt too long (max 4000 chars)"}, 400)
-            return
-        if len(title) > 120:
-            self._send_json({"error": "title too long (max 120 chars)"}, 400)
-            return
-        if priority not in ("high", "normal", "low"):
-            self._send_json({"error": "priority must be high, normal, or low"}, 400)
-            return
+        """Closed. Quests are created interactively through the terminal agent.
 
-        # The watch is intentionally slightly after the helper's watermark. A
-        # one-shot due timestamp of "now" would be written before last_checked_ts
-        # and therefore be considered already spent by the schedule checker.
-        initial_run_ts = str(time.time() + QUEST_CREATE_TIMEOUT_S + 5)
-        if not title:
-            first_line = next((line.strip() for line in prompt.splitlines() if line.strip()), "")
-            title = first_line[:80] or "Operator request"
-        spec = {
-            "title": title,
-            "priority": priority,
-            "allow_send": False,
-            "requires_initial_run": True,
-            "context": (
-                "## Operator request\n\n"
-                f"{prompt}\n\n"
-                "## Operating mode\n\n"
-                "Work on this request after the initial schedule fires. Draft first; "
-                "do not send anything externally without approval."
-            ),
-            "note": "Created from Quest Control",
-            "watches": [{
-                "type": "schedule",
-                "next_fire_ts": initial_run_ts,
-                "reason": "Run the operator's initial request once, then wait for follow-up instructions.",
-            }],
-        }
-        helper = SCRIPT_DIR.parent / "skills" / "yaas-quest-creation" / "new-quest.py"
-        try:
-            cp = subprocess.run(
-                [sys.executable, str(helper), json.dumps(spec)],
-                capture_output=True, text=True, timeout=QUEST_CREATE_TIMEOUT_S, cwd=str(REPO_ROOT),
-            )
-        except Exception as e:
-            self._send_json({"error": f"failed to create quest: {e}"}, 500)
-            return
-        match = re.search(r"^✓ Created ([a-z0-9-]+)$", cp.stdout or "", re.MULTILINE)
-        if cp.returncode != 0 or not match:
-            self._send_json({
-                "error": "quest could not be created",
-                "detail": ((cp.stderr or cp.stdout) or "").strip()[:500],
-            }, 500)
-            return
+        The dashboard form could only take one block of free text, so the watches a
+        quest needs — which channel, which Gmail query, whose DMs — had to be guessed
+        by the first worker run. A guess that misses scaffolds a quest with no live
+        watch, which then reads as healthy in this UI. The quest-creation skill asks
+        for those values and confirms them, so creation belongs where that
+        conversation can happen. The endpoint stays here, and refuses, so an older
+        cached dashboard cannot go on creating unarmed quests.
+        """
         self._send_json({
-            "ok": True,
-            "quest_id": match.group(1),
-            "allow_send": False,
-            "initial_run_at": initial_run_ts,
-        }, 201)
+            "error": "quest creation has moved to the terminal",
+            "detail": ("Run `claude` or `codex` in the workspace and follow "
+                       ".yaas/engine/current/skills/yaas-quest-creation/SKILL.md. "
+                       "It asks what to watch and confirms each identifier before writing the quest."),
+        }, 410)
+
 
     def _handle_review(self, approval_id: str, action: str, payload: dict):
         if not APPROVALS_FILE.exists():

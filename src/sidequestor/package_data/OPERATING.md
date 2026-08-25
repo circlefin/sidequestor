@@ -24,15 +24,21 @@ Load the matching managed skill:
 
 The workspace contains state, configuration, quests, logs, and managed engine
 resources. It intentionally does not contain a `yaas-triage/` source directory.
-The dispatch prompt supplies the packaged runtime as an absolute path. Use that
-literal path for helper commands; do not use shell-variable expansion in commands.
-
-When a skill shows a command beginning with `yaas-triage/`, run the corresponding
-path below the absolute packaged runtime root instead. For example:
+The runtime exports `$SIDEQUESTOR_RUNTIME_ROOT` and the legacy alias `$YAAS_RUNTIME_ROOT`
+to point at the packaged helper tree. Use that variable (or the resolved absolute packaged runtime root)
+for helper commands; do not use repo-relative `yaas-triage/...` paths. In an interactive
+shell outside the runtime, resolve the same path with:
 
 ```text
-python3 <runtime-root>/yaas-triage/surfaces/log-event.py '<json>'
-python3 <runtime-root>/yaas-triage/ledger/add-watch.py <quest_id> '<json>'
+python -c "from sidequestor.native import RUNTIME_ROOT; print(RUNTIME_ROOT)"
+```
+
+When a skill shows a helper command, run the corresponding path below the packaged
+runtime root. For example:
+
+```text
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/log-event.py" '<json>'
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/ledger/add-watch.py" <quest_id> '<json>'
 ```
 
 Treat the packaged runtime as read-only. Never edit, create, or delete files under

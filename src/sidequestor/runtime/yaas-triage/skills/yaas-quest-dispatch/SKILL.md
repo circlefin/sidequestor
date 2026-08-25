@@ -78,7 +78,7 @@ Never read all four as a reflex. Each file read costs a model round-trip. After 
 **Schedule watch type** (`watches[]` with `"type": "schedule"`): the cron fired. Normally there
 is no content to fetch; act based on what the quest says to do at that scheduled time.
 
-One explicit exception supports installations with `YAAS_SLACK_CHECKERS_ENABLED=0`. If the quest
+One explicit exception supports installations with `SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0`. If the quest
 context defines this schedule as a Slack sweep, read the same quest's `watch.json` and treat its
 `slack_*` entries as MCP query targets. Use the fired schedule entry's `last_checked_ts` as the
 shared lower bound, not the dormant Slack entries' frozen watermarks. Ack the schedule
@@ -127,7 +127,7 @@ Reactions are never handled here — they are their own dispatch target, see § 
 Any time you send a message or post a draft, watch the thread so the next tick picks up replies:
 
 ```bash
-python3 yaas-triage/ledger/add-watch.py <quest_id> '{"type":"slack_thread","channel_id":"C...","thread_ts":"<parent_ts>","last_checked_ts":"<response_ts>","reason":"why","watch_mode":"read_only"}'
+sq watch <quest_id> '{"type":"slack_thread","channel_id":"C...","thread_ts":"<parent_ts>","last_checked_ts":"<response_ts>","reason":"why","watch_mode":"read_only"}'
 ```
 
 `add-watch.py` is the only way to add a watch: Edit/Write on `watch.json` is blocked by a hook. It appends, validates the type's fields, assigns the `watch_id`, and prints `skip:duplicate` if the thread is already watched, so you can call it without checking first.
@@ -138,7 +138,7 @@ python3 yaas-triage/ledger/add-watch.py <quest_id> '{"type":"slack_thread","chan
 
 **DMs need a second watch, and it MUST be marked `ephemeral: true`.** When you initiate a top-level DM (not a reply inside an existing thread), append BOTH a `slack_thread` watch on your outbound `message_ts` AND a `slack_channel` watch on the DM channel itself, the latter with `"ephemeral": true`. In a 1-1 DM, the recipient's natural reply is a new top-level message in the channel, not a threaded reply, so a `slack_thread` watch alone will miss it. The `slack_channel` watch covers the top-level case. Set `last_checked_ts` to your outbound `response_ts` on both. This dual-watch rule applies only to DM channels (IM type); for public/private channels and existing threads, a single `slack_thread` watch is enough because the threading convention holds.
 
-The `ephemeral` flag is not optional and is not decoration: it is what lets `housekeep.py` retire the watch after `YAAS_RETIRE_EPHEMERAL_HOURS` (default 168, one week). You are opening an *unbounded* watch to catch a *bounded* reply, and without the flag nothing ever closes it. On 2026-08-08 two such watches were still firing 3 and 12 days after their question was answered, one of them acted on a completely unrelated message, and the same content was posted to Slack twice. Mark it, or you are creating that bug again. Conversely, do NOT mark a watch that is meant to persist (a quest whose job is monitoring a bot's DMs or a channel) — unmarked is permanent, and that is the safe default.
+The `ephemeral` flag is not optional and is not decoration: it is what lets `housekeep.py` retire the watch after `SIDEQUESTOR_RETIRE_EPHEMERAL_HOURS` (default 168, one week). You are opening an *unbounded* watch to catch a *bounded* reply, and without the flag nothing ever closes it. On 2026-08-08 two such watches were still firing 3 and 12 days after their question was answered, one of them acted on a completely unrelated message, and the same content was posted to Slack twice. Mark it, or you are creating that bug again. Conversely, do NOT mark a watch that is meant to persist (a quest whose job is monitoring a bot's DMs or a channel) — unmarked is permanent, and that is the safe default.
 
 **Filter DM channel watches by quest relevance.** When a DM `slack_channel` watch fires with a new top-level message, read the message and decide whether it is a response on the original topic that established the watch. If it is on-topic, act per the quest objective. If it is unrelated (the person DMed you about something else entirely), log it with `log-event.py` as an `info_received` event with `relevant: false` and a one-line note on what the message was about, and exit without composing a reply. A DM watch set up to track a specific outbound question is NOT an open licence to auto-reply on every future DM from that person. Scope is the specific outbound that established the watch.
 
@@ -183,7 +183,7 @@ Use this queue when you cannot or should not act immediately and the action need
 Use `yaas-triage/ledger/approval-helper.py write <json>` — it handles dedup, flock, and ID generation atomically. Pass a JSON object with: `quest_id`, `quest_title`, `action_type` (`slack_message` / `file_edit` / `remote_request`), `target` (`{channel_id, thread_ts}`), `message_text`, `context` (2-3 sentences: what triggered this, who is involved, why review is needed), `risk_reason`. The script prints the new approval ID on success, or nothing if an identical pending entry already exists (dedup by `quest_id` + target).
 
 ```bash
-APPR_ID=$(python3 yaas-triage/ledger/approval-helper.py write \
+APPR_ID=$(sq approval write \
   '{"quest_id":"...","quest_title":"...","action_type":"slack_message",
     "target":{"channel_id":"C...","thread_ts":null},
     "message_text":"...","context":"...","risk_reason":"..."}')
@@ -223,12 +223,12 @@ again. Log `blocked`, call `approval-helper.py abandon <id> "<reason>"`, and ack
 watch as `blocked`. The terminal cancellation prevents another paid dispatch; the operator can
 submit a fresh instruction after checking the outcome.
 
-1. Claim it: `python3 yaas-triage/ledger/approval-helper.py start <id>`. If it prints `skip:<status>`, another worker beat you or it was cancelled — log a `note` and exit 0.
+1. Claim it: `sq approval start <id>`. If it prints `skip:<status>`, another worker beat you or it was cancelled — log a `note` and exit 0.
 2. Read `review_note` first, then `message_text`. **`review_note` is the governing instruction and `message_text` is only a draft.** The dashboard's Approve and Request change buttons are both prompts to you; Approve differs only in that the item closes when you are done. So a note that countermands the draft wins over the draft: "send this to the other reviewer instead" means retarget the send and drop the original target, and "show me the updated draft first" means do NOT send at all, revise the text, and report back. `message_text` is what to send only when no note was given. Use your full LLM judgment.
 
    A single note can require several actions (a send, a file edit, an issue filed, a second message to someone else). Do all of them, then report **one line per action** in your reply, each naming the surface and the target, so the review conversation shows everything the prompt caused rather than just the headline action. If the note told you not to send, say plainly that nothing was sent.
 3. Execute the action through `slack-send.py`. **If the send fails because the channel is restricted (e.g., `mcp_externally_shared_channel_restricted`):** retry through `slack-send.py` with `"draft": true`, saving the draft to the actual target thread with `channel_id` + `thread_ts`; then DM the user only the permalink to that thread. Do not paste the draft text in the DM — they can open the thread, find the draft in the compose box, and send it themselves.
-4. Mark done: `python3 yaas-triage/ledger/approval-helper.py done <id> <response_ts> "<report>"`. The third argument is your per-action report (one line per action) and lands in the review conversation, so pass it whenever the instruction produced anything beyond the obvious single send. An Approve is terminal, so this closes the item even when the instruction told you not to send.
+4. Mark done: `sq approval done <id> <response_ts> "<report>"`. The third argument is your per-action report (one line per action) and lands in the review conversation, so pass it whenever the instruction produced anything beyond the obvious single send. An Approve is terminal, so this closes the item even when the instruction told you not to send.
 5. Append a `slack_thread` watch to `watch.json` with `last_checked_ts = response_ts` (per §3a).
 6. Log `executed` with `log-event.py`, including `approval_id`, `response_ts`, and a note listing every action the instruction produced. If `review_note` suppressed the send, log `executed` with an explicit "no send: <reason>" note rather than silently closing.
 
@@ -245,7 +245,7 @@ the local date is ahead of UTC, in the future — which sorts a finished action 
 everything real on the dashboard. The helper stamps the true UTC time for you.
 
 ```bash
-python3 yaas-triage/surfaces/log-event.py '{"quest_id":"<qid>","event":"note","note":"<what happened>"}'
+sq log '{"quest_id":"<qid>","event":"note","note":"<what happened>"}'
 ```
 
 `event` is one of `message_sent`, `draft_posted`, `executed`, `info_received`,
@@ -256,7 +256,7 @@ so record whatever the event needs. A `ts` you pass is ignored.
 **Send Slack messages through `slack-send.py` so the body is logged automatically.** For any quest send or draft, use the helper instead of calling `slack_send_message` / `slack_send_message_draft` (native or via `mcp-call.sh`) and then logging separately:
 
 ```bash
-python3 yaas-triage/surfaces/slack-send.py '{"quest_id":"<qid>","channel_id":"C...","message":"<verbatim body>","thread_ts":"<parent ts, optional>","note":"<short summary>"}'
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack-send.py" '{"quest_id":"<qid>","channel_id":"C...","message":"<verbatim body>","thread_ts":"<parent ts, optional>","note":"<short summary>"}'
 # add "draft": true to save a draft instead of sending; "event":"..." to override the default (message_sent / draft_posted)
 ```
 
@@ -283,12 +283,12 @@ If you **couldn't** complete an action (error, ambiguous situation, needed user 
 `claude -p` exits 0 even when you only did half the work, so triage does not commit on your exit code. It commits per item, and only for items you close:
 
 ```bash
-python3 yaas-triage/ledger/ack-watch.py ack <run_id> <item_id> handled|nothing_to_do|blocked "<one-line note>"
+sq ack ack <run_id> <item_id> handled|nothing_to_do|blocked "<one-line note>"
 ```
 
 One call per `watch_id` in `Exact dirty watches (JSON)` (item_id is `<emoji>:<msg_ts>` in a `reactions` dispatch). `handled` = you acted. `nothing_to_do` = you read it and it correctly needs no action. `blocked` = you couldn't finish. `handled` and `nothing_to_do` advance that watch's watermark; `blocked` and anything unacked hold it and come back next tick.
 
-`blocked` comes back next tick, and keeps coming back: after `YAAS_UNACKED_PROMOTE` (default 3) dispatches with no progress the watch starts backing off (5m doubling to a 24h cap) but is never parked or abandoned, and the dashboard shows it as `backing off` with the last error. That is a backstop, not a plan — the retries get rarer, so three `blocked` acks in a row means the blocker needs saying out loud now rather than in a day. Name the actual cause in the ack note and in the `blocked` timeline event, and before you conclude a tool or credential is unavailable, prove it (run the command, read the error); a wrong capability assumption strands the watch and the person waiting behind it.
+`blocked` comes back next tick, and keeps coming back: after `SIDEQUESTOR_UNACKED_PROMOTE` (default 3) dispatches with no progress the watch starts backing off (5m doubling to a 24h cap) but is never parked or abandoned, and the dashboard shows it as `backing off` with the last error. That is a backstop, not a plan — the retries get rarer, so three `blocked` acks in a row means the blocker needs saying out loud now rather than in a day. Name the actual cause in the ack note and in the `blocked` timeline event, and before you conclude a tool or credential is unavailable, prove it (run the command, read the error); a wrong capability assumption strands the watch and the person waiting behind it.
 
 Two things the ledger cannot check for you:
 

@@ -9,3 +9,8 @@ __pycache__/
 .agents/
 e2e/
 .env
+
+# slack_credentials.py compiles its Keychain helper relative to the package root
+# (surfaces/slack_credentials.py:59), so running anything that touches Slack creds from
+# a source checkout drops a binary here. It belongs in a workspace, not in the repo.
+src/sidequestor/runtime/state/

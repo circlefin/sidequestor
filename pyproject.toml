@@ -21,7 +21,7 @@ yaas = "sidequestor.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-sidequestor = ["*.json", "*.md", "*.html", "*.png", "package_data/*.md", "package_data/*.example", "package_data/skills/*/*", "runtime/**/*"]
+sidequestor = ["*.json", "*.md", "*.html", "*.png", "package_data/*.md", "package_data/*.example", "runtime/**/*"]
 
 [tool.setuptools.exclude-package-data]
 sidequestor = ["**/__pycache__/*", "**/*.pyc"]

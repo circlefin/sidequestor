@@ -32,9 +32,9 @@ def main():
     ap.add_argument("--body-file", required=True)
     args = ap.parse_args()
 
-    sender = os.environ.get("YAAS_FROM_EMAIL")
+    sender = os.environ.get("SIDEQUESTOR_FROM_EMAIL") or os.environ.get("YAAS_FROM_EMAIL")
     if not sender:
-        print("YAAS_FROM_EMAIL not set", file=sys.stderr)
+        print("SIDEQUESTOR_FROM_EMAIL not set", file=sys.stderr)
         sys.exit(1)
 
     with open(args.body_file, "r", encoding="utf-8") as f:

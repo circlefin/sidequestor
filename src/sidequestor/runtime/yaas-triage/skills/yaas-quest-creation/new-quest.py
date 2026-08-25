@@ -19,10 +19,10 @@
 new-quest.py — create a new quest folder with correctly-shaped files.
 
 Usage (model calls this via Bash):
-  python3 yaas-triage/skills/yaas-quest-creation/new-quest.py '<spec_json>'
+  sq new-quest '<spec_json>'
 
   Or pipe spec from stdin:
-  echo '<spec_json>' | python3 yaas-triage/skills/yaas-quest-creation/new-quest.py -
+  echo '<spec_json>' | sq new-quest -
 
 Spec JSON fields:
   title       (required) — display name, also used to generate the quest ID slug
@@ -110,7 +110,7 @@ def _repo_root(start):
     asserts that, because a shared module would need sys.path handling whose own path is
     depth-dependent, which is the bug being fixed.
     """
-    override = os.environ.get("YAAS_WORKSPACE")
+    override = os.environ.get("SIDEQUESTOR_WORKSPACE") or os.environ.get("YAAS_WORKSPACE")
     if override:
         return Path(override).expanduser().resolve()
     p = Path(start).resolve()
@@ -122,8 +122,10 @@ def _repo_root(start):
 
 REPO_ROOT = _repo_root(__file__)
 # The workspace owns quests; the installed package owns checker manifests.
-# This keeps direct execution correct when YAAS_RUNTIME_ROOT is not exported.
-RUNTIME_ROOT = Path(os.environ.get("YAAS_RUNTIME_ROOT", Path(__file__).resolve().parents[3]))
+# This keeps direct execution correct when SIDEQUESTOR_RUNTIME_ROOT is not exported.
+RUNTIME_ROOT = Path(os.environ.get("SIDEQUESTOR_RUNTIME_ROOT")
+                    or os.environ.get("YAAS_RUNTIME_ROOT")
+                    or Path(__file__).resolve().parents[3])
 sys.path.insert(0, str(RUNTIME_ROOT / "yaas-triage"))
 from tick_state import load_watch_manifests
 
@@ -244,7 +246,7 @@ def main():
     context    = spec.get("context", "")
     watches_in = spec.get("watches", [])
     note_raw   = spec.get("note", context[:80] if context else "Quest created")
-    retire_days = spec.get("retire_slack_threads_after_days", None)  # None → YAAS_RETIRE_DEFAULT_DAYS (14)
+    retire_days = spec.get("retire_slack_threads_after_days", None)  # None → SIDEQUESTOR_RETIRE_DEFAULT_DAYS (14)
 
     if not title:
         die("'title' is required")
@@ -350,7 +352,7 @@ _Add Slack permalinks, Coda docs, Jira tickets as they emerge._
     print(f"  Priority:   {priority}  allow_send: {allow_send}")
     print()
     print("Triage will pick this up on its next tick.")
-    print(f"Dry-run check: DRY_RUN=1 python3 yaas-triage/tick.py")
+    print(f"Dry-run check: DRY_RUN=1 sq tick")
 
 
 if __name__ == "__main__":
