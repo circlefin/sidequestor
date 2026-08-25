@@ -126,7 +126,7 @@ class Stage2BehaviorTest(unittest.TestCase):
         self.invoke("sync-resources")
         self.invoke("tick", "--dry-run")
 
-    def test_resources_are_loaded_from_package_data(self) -> None:
+    def test_resources_are_loaded_from_the_runtime_skills_tree(self) -> None:
         skill = self.workspace / ".yaas" / "engine" / "current" / "skills" / "yaas-ops" / "SKILL.md"
         self.assertTrue(skill.exists())
         self.assertIn("SIDEQUESTOR", skill.read_text())
@@ -136,7 +136,7 @@ class Stage2BehaviorTest(unittest.TestCase):
         self.assertIn("absolute packaged runtime root", operating_text)
         self.assertIn("A `reviewed` approval records the user's authorization", operating_text)
         self.assertIn("do not apply\n  `allow_send` again as a permanent veto", operating_text)
-        self.assertNotIn("$SIDEQUESTOR_RUNTIME_ROOT", operating_text)
+        self.assertIn("$SIDEQUESTOR_RUNTIME_ROOT", operating_text)
         self.assertNotIn("Never send unless the quest allows it", operating_text)
         self.assertIn("SIDEQUESTOR_CLAUDE_PERMISSION_MODE=acceptEdits", (self.workspace / ".env.example").read_text())
         self.assertIn("yaas_v2_auto_pull", (self.workspace / "settings.json.example").read_text())

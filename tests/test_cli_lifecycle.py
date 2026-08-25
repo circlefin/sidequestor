@@ -7,7 +7,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from sidequestor.cli import _cmd_start, _cmd_stop
+from sidequestor.cli import _cmd_start, _cmd_stop, _dispatch
 from sidequestor.workspace import init_workspace
 
 
@@ -45,6 +45,25 @@ class CliLifecycleTests(unittest.TestCase):
                     redirect_stdout(output):
                 self.assertEqual(_cmd_stop(workspace), 0)
             self.assertIn(f"stopped Sidequestor instance {workspace.instance_id}", output.getvalue())
+
+    def test_tick_syncs_resources_when_engine_version_drifted(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-cli-") as raw:
+            workspace = init_workspace(Path(raw))
+            with patch("sidequestor.cli.current_engine_version", return_value="0.1.0.dev0"), \
+                    patch("sidequestor.cli.sync_resources") as sync, \
+                    patch("sidequestor.cli.run_native", return_value=0) as run_native:
+                self.assertEqual(_dispatch("tick", [], str(workspace.root), None), 0)
+            sync.assert_called_once_with(workspace)
+            run_native.assert_called_once_with(workspace, "yaas-triage/tick.py", [])
+
+    def test_tick_continues_when_drift_sync_fails(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-cli-") as raw:
+            workspace = init_workspace(Path(raw))
+            with patch("sidequestor.cli.current_engine_version", return_value="0.1.0.dev0"), \
+                    patch("sidequestor.cli.sync_resources", side_effect=RuntimeError("boom")), \
+                    patch("sidequestor.cli.run_native", return_value=0) as run_native:
+                self.assertEqual(_dispatch("tick", [], str(workspace.root), None), 0)
+            run_native.assert_called_once_with(workspace, "yaas-triage/tick.py", [])
 
 
 if __name__ == "__main__":

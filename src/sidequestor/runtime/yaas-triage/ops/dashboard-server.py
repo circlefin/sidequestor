@@ -34,7 +34,7 @@ Endpoints:
     POST /api/cancel/<id>     → cancel item
     POST /api/undo/<id>       → undo reviewed/cancelled back to pending_review
     POST /api/reclaim/<id>    → recover an expired executing lease
-    POST /api/quests          → create a draft-only quest from an operator prompt
+    POST /api/quests          → create an explicitly-marked bootstrap quest
     POST /api/workspace/open  → open this workspace in Cursor or the default app
 """
 
@@ -133,7 +133,6 @@ WORKER_STATE_FILE = STATE_DIR / "triage" / "worker-current.json"
 WORKER_HEARTBEAT_GRACE_S = 60
 LIVE_TAIL_LINES  = 60   # panel wants the fuller transcript; pill only shows the target name
 MAX_REQUEST_BODY_BYTES = 64 * 1024
-QUEST_CREATE_TIMEOUT_S = 10
 
 
 # ── Auth / hardening ──────────────────────────────────────────────────────────
@@ -964,10 +963,6 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             continue
         last_action  = None
         last_blocked = None
-        # True once ANY event other than `created` exists, i.e. a worker has actually
-        # picked this quest up. Distinct from last_action, which skips note/blocked and
-        # so cannot tell "never ran" from "ran but only left a note".
-        has_run      = False
         last_seen_ts = None   # newest non-blocked event of ANY type (incl. notes):
                               # a later note means the worker recovered after a block
         timeline_path = quest_dir / "timeline.ndjson"
@@ -977,8 +972,6 @@ def build_dashboard(include_briefs: bool = False) -> dict:
                 try:
                     e = json.loads(raw)
                     ev = e.get("event", "")
-                    if ev and ev != "created":
-                        has_run = True
                     if ev == "blocked" and last_blocked is None:
                         last_blocked = {"ts": e.get("ts"), "reason": (e.get("reason") or e.get("note") or "")[:80]}
                     if ev != "blocked" and last_seen_ts is None:
@@ -1022,8 +1015,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             "last_action":   last_action,
             "last_blocked":  last_blocked,
             "last_seen_ts":  last_seen_ts,
-            "has_run":       has_run,
-            "requires_initial_run": meta.get("requires_initial_run") is True,
+            "sidequestor_bootstrap": meta.get("sidequestor_bootstrap") is True,
             "backoff_count": 0,     # filled in below
             "backoff_watches": [],  # filled in below
             "ratelimited": False,   # filled in below (transient, from run-log)
@@ -2166,7 +2158,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                          "approval_id": result["approval_id"]}, 202)
 
     def _handle_create_quest(self, payload: dict):
-        """Create a real quest through the canonical scaffolder, never by hand."""
+        """Create an empty quest that only the explicit bootstrap path may dispatch."""
         fields = {name: payload.get(name) for name in ("prompt", "title", "priority")}
         for name, value in fields.items():
             if value is not None and not isinstance(value, str):
@@ -2187,55 +2179,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if priority not in ("high", "normal", "low"):
             self._send_json({"error": "priority must be high, normal, or low"}, 400)
             return
-
-        # The watch is intentionally slightly after the helper's watermark. A
-        # one-shot due timestamp of "now" would be written before last_checked_ts
-        # and therefore be considered already spent by the schedule checker.
-        initial_run_ts = str(time.time() + QUEST_CREATE_TIMEOUT_S + 5)
         if not title:
             first_line = next((line.strip() for line in prompt.splitlines() if line.strip()), "")
             title = first_line[:80] or "Operator request"
+
         spec = {
             "title": title,
             "priority": priority,
             "allow_send": False,
-            "requires_initial_run": True,
+            "sidequestor_bootstrap": True,
             "context": (
                 "## Operator request\n\n"
                 f"{prompt}\n\n"
-                "## Operating mode\n\n"
-                "Work on this request after the initial schedule fires. Draft first; "
-                "do not send anything externally without approval."
+                "## Bootstrap safety\n\n"
+                "Resolve exact identifiers before installing watches. Never guess a channel, "
+                "person, thread, repository, or query. Draft first; do not send externally "
+                "without approval."
             ),
             "note": "Created from Quest Control",
-            "watches": [{
-                "type": "schedule",
-                "next_fire_ts": initial_run_ts,
-                "reason": "Run the operator's initial request once, then wait for follow-up instructions.",
-            }],
+            "watches": [],
         }
         helper = SCRIPT_DIR.parent / "skills" / "yaas-quest-creation" / "new-quest.py"
         try:
             cp = subprocess.run(
-                [sys.executable, str(helper), json.dumps(spec)],
-                capture_output=True, text=True, timeout=QUEST_CREATE_TIMEOUT_S, cwd=str(REPO_ROOT),
+                [sys.executable, str(helper), json.dumps(spec)], capture_output=True,
+                text=True, timeout=10, cwd=str(REPO_ROOT),
             )
         except Exception as e:
             self._send_json({"error": f"failed to create quest: {e}"}, 500)
             return
         match = re.search(r"^✓ Created ([a-z0-9-]+)$", cp.stdout or "", re.MULTILINE)
         if cp.returncode != 0 or not match:
-            self._send_json({
-                "error": "quest could not be created",
-                "detail": ((cp.stderr or cp.stdout) or "").strip()[:500],
-            }, 500)
+            self._send_json({"error": "quest could not be created",
+                             "detail": ((cp.stderr or cp.stdout) or "").strip()[:500]}, 500)
             return
-        self._send_json({
-            "ok": True,
-            "quest_id": match.group(1),
-            "allow_send": False,
-            "initial_run_at": initial_run_ts,
-        }, 201)
+        self._send_json({"ok": True, "quest_id": match.group(1),
+                         "allow_send": False, "sidequestor_bootstrap": True}, 201)
+
 
     def _handle_review(self, approval_id: str, action: str, payload: dict):
         if not APPROVALS_FILE.exists():

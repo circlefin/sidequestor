@@ -23,8 +23,9 @@ from .launchd import install as install_jobs
 from .launchd import install_production, production_is_running, production_status, uninstall_production
 from .launchd import render, status as launchd_status, uninstall as uninstall_jobs
 from .migrations import migrate_workspace
-from .resources import sync_resources
+from .resources import ENGINE_VERSION, current_engine_version, sync_resources
 from .setup import configured_agent, print_worker_instructions, run_setup
+from .upgrade import run_upgrade
 from .workspace import (
     Workspace,
     find_workspace,
@@ -50,6 +51,8 @@ COMMANDS = {
     "doctor": "validate a workspace and its engine",
     "migrate": "apply workspace schema migrations",
     "sync-resources": "refresh managed engine resources",
+    "upgrade": "upgrade the package and refresh managed resources",
+    "new-quest": "scaffold a quest folder from a JSON spec",
     "watch": "manage watches",
     "ack": "acknowledge dispatched work",
     "approval": "manage approval state",
@@ -61,12 +64,23 @@ COMMANDS = {
 }
 
 LEGACY_COMMANDS = {
+    # new-quest.py cannot self-locate from the workspace copy under
+    # .yaas/engine/current/skills/: its RUNTIME_ROOT default walks to .yaas/engine,
+    # which has no yaas-triage/. Routing it through here runs the in-package copy
+    # with SIDEQUESTOR_WORKSPACE and SIDEQUESTOR_RUNTIME_ROOT already exported.
+    "new-quest": "yaas-triage/skills/yaas-quest-creation/new-quest.py",
     "watch": "yaas-triage/ledger/add-watch.py",
     "ack": "yaas-triage/ledger/ack-watch.py",
     "approval": "yaas-triage/ledger/approval-helper.py",
     "log": "yaas-triage/surfaces/log-event.py",
 }
 
+# These four route to isolated.py, which RECORDS the call instead of performing it.
+# That matters when editing the shipped skill docs: those docs deliberately invoke
+# `python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/..."` rather than the `sq`
+# alias, because rewriting them to `sq slack-send` would look like a tidy-up and would
+# silently stop the worker from actually sending. Only LEGACY_COMMANDS above are safe
+# to reference from docs as `sq <name>`.
 ISOLATED_COMMANDS = {"slack-send", "react", "mcp-call", "jira-call"}
 
 
@@ -94,6 +108,7 @@ def _command_help(command: str) -> str:
         "loop": "sidequestor [--workspace PATH] loop [--max-ticks N]",
         "dashboard": "sidequestor [--workspace PATH] dashboard serve|url",
         "migrate": "sidequestor [--workspace PATH] migrate [NAME|--name NAME]",
+        "upgrade": "sidequestor [--workspace PATH] upgrade [--source GITHUB_URL --ref REF] [--pre] [--yes] [--no-restart]",
     }
     usage = examples.get(command, f"sidequestor [--workspace PATH] {command} [ARGS...]")
     return f"usage: {usage}\n\n{COMMANDS[command]}"
@@ -317,6 +332,27 @@ def _cmd_start(workspace: Workspace) -> int:
     return 0
 
 
+def _sync_resources_if_version_drifted(workspace: Workspace, command: str) -> None:
+    """Refresh managed runtime assets before long-lived commands if the package changed.
+
+    `start`, `tick`, and `loop` all rely on `.yaas/engine/current`; if pip upgraded the
+    package without an explicit `sync-resources`, those commands would keep executing the
+    stale tree forever. Drift detection stays cheap by reading only the symlink target.
+    """
+    if current_engine_version(workspace) == ENGINE_VERSION:
+        return
+    try:
+        sync_resources(workspace)
+    except Exception as exc:  # pragma: no cover - defensive logging seam
+        # Warn and continue rather than abort. The trade is deliberate but not free: the
+        # command proceeds against a stale engine, and tick.py points workers at
+        # `.yaas/engine/current/...`, so they may read old instructions. Failing hard
+        # instead would take the whole triage loop down for what is usually a permissions
+        # problem in one directory, and a loop that stops is a loop nobody notices. If
+        # this warning is ever seen in the wild, the sync failure is the bug to chase.
+        print(f"warning: could not refresh engine resources before {command}: {exc}", file=sys.stderr)
+
+
 def _cmd_stop(workspace: Workspace) -> int:
     from .launchd import LaunchdLifecycleError, stop_production
 
@@ -438,8 +474,12 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
     if command == "sync-resources":
         print(f"synced engine resources: {sync_resources(workspace)}")
         return 0
+    if command == "upgrade":
+        return run_upgrade(workspace, args)
     if command == "setup":
         return _cmd_setup(workspace, args)
+    if command in {"start", "tick", "loop"}:
+        _sync_resources_if_version_drifted(workspace, command)
     if command == "start":
         return _cmd_start(workspace)
     if command == "stop":

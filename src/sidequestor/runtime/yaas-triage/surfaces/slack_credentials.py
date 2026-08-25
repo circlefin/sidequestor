@@ -50,15 +50,58 @@ class HelperUnavailableError(CredentialError):
     """The Keychain helper could not be built or run on this machine."""
 
 
+def _state_root():
+    """Where this surface keeps its per-workspace state.
+
+    Both users below are workspace state, not package assets: a compiled Keychain helper
+    and the OAuth refresh lock. They were resolved as `Path(__file__).resolve().parents[2]`,
+    which WAS the repo root before this became a pip package and is the installed package
+    directory now. So an install compiled a binary into site-packages and — worse — put the
+    refresh lock there, where every workspace sharing a venv contends on one lock. Where
+    site-packages is not writable (a --user or system install, a read-only container) both
+    become hard failures, and the Keychain path reports "could not build the helper" rather
+    than the permissions problem it actually hit.
+
+    Falls back to the old location when nothing names a workspace, so running this script
+    bare behaves exactly as it did rather than guessing at a root.
+    """
+    for name in ("SIDEQUESTOR_WORKSPACE", "YAAS_WORKSPACE", "REPO_ROOT"):
+        value = os.environ.get(name)
+        if value:
+            candidate = Path(value).expanduser()
+            if candidate.is_dir():
+                return candidate.resolve()
+    return Path(__file__).resolve().parents[2]
+
+
+def _keychain_helper_path():
+    """The Keychain helper binary, preferring one that already exists.
+
+    Deliberately NOT simply `_state_root()/state/bin/...`. macOS binds a Keychain item's
+    ACL to the *binary* that reads it, so pointing an existing install at a different
+    path means a freshly compiled binary with no authorization — macOS then raises a GUI
+    trust prompt, which under launchd nobody ever sees, and the read times out. Verified:
+    switching the path on a live workspace turned a working `status` call into
+    "macOS Keychain timed out during Slack credential read".
+
+    So an install that already has an authorized helper keeps using it, wherever it sits,
+    and only a first compile goes to the workspace. New installs get the correct location;
+    existing ones keep working and are never asked to re-authorize.
+    """
+    legacy = Path(__file__).resolve().parents[2] / "state" / "bin" / "yaas-keychain-helper"
+    if legacy.is_file() and os.access(legacy, os.X_OK):
+        return legacy
+    return _state_root() / "state" / "bin" / "yaas-keychain-helper"
+
+
 class MacOSKeychain:
     """Use a stable local helper so Keychain values never enter argv."""
 
     def __init__(self):
         if sys_platform() != "darwin":
             raise CredentialError("Slack Keychain storage requires macOS")
-        root = Path(__file__).resolve().parents[2]
         self.source = Path(__file__).resolve().with_name("keychain-helper.c")
-        self.helper = root / "state" / "bin" / "yaas-keychain-helper"
+        self.helper = _keychain_helper_path()
 
     def _ensure_helper(self):
         if self.helper.is_file() and os.access(self.helper, os.X_OK):
@@ -463,7 +506,7 @@ def get_access_token(rejected_token=None):
 
 
 def _default_credentials():
-    root = Path(__file__).resolve().parents[2]
+    root = _state_root()
     return SlackCredentials(
         store=KeychainCredentialStore(MacOSKeychain()),
         oauth=SlackOAuthTransport(),
@@ -474,7 +517,7 @@ def _default_credentials():
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
-        root = Path(__file__).resolve().parents[2]
+        root = _state_root()
         store = KeychainCredentialStore(MacOSKeychain())
         lock = FileLock(root / "state" / "triage" / "slack-oauth.lock")
         if len(argv) == 2 and argv[0] == "install":

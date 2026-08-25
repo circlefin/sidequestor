@@ -112,17 +112,24 @@ sq --version
 ## How do I upgrade?
 
 ```bash
-# Stop the jobs so nothing runs mid-swap.
-sq stop
-# Upgrade to the latest stable PyPI release.
-python -m pip install --upgrade sidequestor
-# Refresh the managed engine (skills + OPERATING.md) into the workspace.
-sq sync-resources
-# Rewrite and reload the launchd jobs, then confirm the build.
-sq start
-# Print the build line for a bug report.
-sq doctor
+# Upgrade to the latest stable PyPI release, refresh resources, validate, and restart.
+sq upgrade
+
+# Or install one explicit branch, tag, or commit from GitHub.
+sq upgrade --source https://github.com/OWNER/sidequestor.git --ref BRANCH
 ```
+
+`sq upgrade` uses the same Python environment as the running `sq` command. It stops production
+jobs only when they were previously marked running, invokes pip, then uses a fresh Python process
+to sync resources and run `sq doctor`. Previously running jobs restart only after both checks
+succeed. Git installs require confirmation because they install code with the worker's permissions;
+pass `--yes` for a non-interactive run. Use `--pre` to consider PyPI pre-releases or
+`--no-restart` to leave previously running jobs stopped. Git sources are limited to HTTPS GitHub
+repository URLs and require an explicit `--ref`; a commit SHA is reproducible while a branch can
+move.
+
+If the installed command itself is broken, the equivalent recovery sequence remains
+`python -m pip install --upgrade sidequestor`, `sq sync-resources`, `sq doctor`, and `sq start`.
 
 `.env`, `settings.json`, `state/`, `logs/`, and your personal `skills/` survive. `.yaas/engine/current/` is wiped and rebuilt every sync; hand-edits there are intentionally lost. An existing `.env` never gains newly added knobs because `provision_env` fills only placeholders, so diff it against `.env.example` after upgrading. Plists embed the venv’s absolute interpreter path: upgrading in place is fine, but recreating the venv means running `sq setup` again.
 

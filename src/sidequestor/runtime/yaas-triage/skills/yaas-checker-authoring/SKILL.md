@@ -236,5 +236,5 @@ New watches start their watermark at creation time, so an existing backlog will 
 Say so explicitly when you hand the quest over — the difference between "watching" and "caught
 up" is exactly the kind of thing a user assumes the other way.
 
-Then watch the first real tick: `DRY_RUN=1 python3 yaas-triage/tick.py` proves the checker is
+Then watch the first real tick: `DRY_RUN=1 sq tick` proves the checker is
 wired in and clean; `logs/` and the dashboard show what it does once it is live.

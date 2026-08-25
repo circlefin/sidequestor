@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sidequestor.launchd import _production_jobs
-from sidequestor.resources import sync_resources
+from sidequestor.resources import ENGINE_VERSION, current_engine_version, sync_resources
 from sidequestor.setup import print_worker_instructions, provision_env
 from sidequestor.workspace import init_workspace
 from sidequestor.workspace import list_instances
@@ -101,6 +101,72 @@ class SetupTests(unittest.TestCase):
                 workspace = init_workspace(Path(raw))
                 self.assertEqual(list_instances()[0]["instance_id"], workspace.instance_id)
                 self.assertTrue((Path(canonical) / "yaas" / "instances.json").is_file())
+
+    def test_sync_resources_creates_workspace_and_claude_skill_symlinks(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+
+            destination = sync_resources(workspace)
+
+            managed_skill = workspace.root / "skills" / "yaas-ops"
+            self.assertTrue(managed_skill.is_symlink())
+            self.assertEqual(os.readlink(managed_skill), "../.yaas/engine/current/skills/yaas-ops")
+            claude_skill = workspace.root / ".claude" / "skills" / "yaas-ops"
+            self.assertTrue(claude_skill.is_symlink())
+            self.assertEqual(os.readlink(claude_skill), "../../.yaas/engine/current/skills/yaas-ops")
+            prompt = workspace.root / ".codex" / "prompts" / "new-quest.md"
+            self.assertTrue(prompt.is_file())
+            self.assertIn("sq new-quest '<spec_json>'", prompt.read_text())
+            self.assertEqual(current_engine_version(workspace), ENGINE_VERSION)
+            self.assertTrue((destination / "skills" / "yaas-ops" / "SKILL.md").is_file())
+
+    def test_sync_resources_is_idempotent_and_prunes_stale_skill_symlinks(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            sync_resources(workspace)
+            stale = workspace.root / "skills" / "yaas-stale"
+            stale.symlink_to("../.yaas/engine/current/skills/yaas-stale", target_is_directory=True)
+            wrong = workspace.root / ".claude" / "skills" / "yaas-ops"
+            wrong.unlink()
+            wrong.symlink_to("../../broken-target", target_is_directory=True)
+
+            first = sync_resources(workspace)
+            second = sync_resources(workspace)
+
+            self.assertEqual(first, second)
+            self.assertFalse(stale.exists())
+            self.assertEqual(os.readlink(workspace.root / ".claude" / "skills" / "yaas-ops"),
+                             "../../.yaas/engine/current/skills/yaas-ops")
+
+    def test_sync_resources_leaves_real_files_in_place(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            blocked = workspace.root / "skills" / "yaas-ops"
+            blocked.write_text("user-owned override\n")
+            claude_root = workspace.root / ".claude"
+            claude_root.mkdir()
+            (claude_root / "skills").mkdir()
+            blocked_claude = claude_root / "skills" / "yaas-gmail-reply"
+            blocked_claude.write_text("custom entry\n")
+
+            sync_resources(workspace)
+
+            self.assertFalse(blocked.is_symlink())
+            self.assertEqual(blocked.read_text(), "user-owned override\n")
+            self.assertFalse(blocked_claude.is_symlink())
+            self.assertEqual(blocked_claude.read_text(), "custom entry\n")
+
+    def test_sync_resources_skips_codex_or_claude_paths_blocked_by_files(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            (workspace.root / ".claude").write_text("blocked\n")
+            (workspace.root / ".codex").write_text("blocked\n")
+
+            sync_resources(workspace)
+
+            self.assertFalse((workspace.root / ".claude" / "skills").exists())
+            self.assertFalse((workspace.root / ".codex" / "prompts").exists())
+            self.assertTrue((workspace.root / "skills" / "yaas-ops").is_symlink())
 
 
 if __name__ == "__main__":

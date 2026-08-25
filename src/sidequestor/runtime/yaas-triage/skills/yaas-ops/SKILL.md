@@ -67,7 +67,7 @@ logs/
 ├── triage.out.log · triage.err.log  ← launchd stdout/stderr
 ├── worker-latest.log         ← symlink to most recent worker run (human-readable)
 ├── worker-latest.ndjson      ← symlink to most recent worker run (raw stream-json)
-└── worker-<stamp>.{log,ndjson}  ← per-run worker logs (pruned after YAAS_LOG_RETAIN_DAYS)
+└── worker-<stamp>.{log,ndjson}  ← per-run worker logs (pruned after SIDEQUESTOR_LOG_RETAIN_DAYS)
 
 .env                          ← per-install secrets + knobs (gitignored)
 .env.example                  ← template for new installs
@@ -242,11 +242,11 @@ Builds a threaded Gmail reply (RFC 2822 `In-Reply-To` + `References` headers) an
 
 ```bash
 GWS_BIN="${GWS_BIN:-$(command -v gws)}" \
-  python3 yaas-triage/skills/yaas-gmail-reply/gmail-reply.py <gmail_message_id> --body "<reply text>"
+  python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-gmail-reply/gmail-reply.py" <gmail_message_id> --body "<reply text>"
 # Prints sent message ID on success, exits 1 on failure.
 ```
 
-Reads `YAAS_FROM_EMAIL` from env for the From header. See `yaas-triage/skills/yaas-gmail-reply/SKILL.md`.
+Reads `SIDEQUESTOR_FROM_EMAIL` from env for the From header. See `yaas-triage/skills/yaas-gmail-reply/SKILL.md`.
 
 ### `yaas-triage/skills/yaas-quest-creation/new-quest.py`
 
@@ -260,10 +260,10 @@ Deterministic quest scaffolding. Takes a JSON spec on argv or stdin, creates the
 git clone <this repo>
 cd <repo>
 cp .env.example .env             # configure the adapters you use
-./yaas-triage/setup/setup.sh
-./yaas-triage/ops/doctor.sh          # is this machine configured (real creds, PATH, plist)
-python3 yaas-triage/ops/health-monitor.py   # is it working right now
-yaas-triage/tests/run-all.sh     # is the code correct (fixtures, safe any time)
+bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/setup.sh"
+bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/ops/doctor.sh"          # is this machine configured (real creds, PATH, plist)
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/ops/health-monitor.py"   # is it working right now
+bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/tests/run-all.sh"     # is the code correct (fixtures, safe any time)
 ```
 
 With local Slack checking enabled, `setup.sh` walks through Slack OAuth (PKCE flow, no client secret needed), stores the complete rotating user-token bundle
@@ -274,10 +274,10 @@ https://api.slack.com/apps from the manifest printed by `setup.sh --manifest`; t
 OAuth flow share `setup/yaas-app-config.json`, so their scopes cannot drift.
 
 The deterministic Slack adapter refreshes within five minutes of access-token expiry. It also
-refreshes and retries once after a definitive token rejection. `python3 yaas-triage/surfaces/slack_credentials.py status`
+refreshes and retries once after a definitive token rejection. `python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack_credentials.py" status`
 reports redacted credential health; `refresh-now` performs an immediate manual rotation.
 
-Set `YAAS_SLACK_CHECKERS_ENABLED=0` when no local Slack app is available. Setup and doctor then
+Set `SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0` when no local Slack app is available. Setup and doctor then
 treat Slack app fields and the Keychain token as intentionally absent. The tick skips all
 `slack_*` checker entries and the global reaction sweep without advancing their watermarks;
 schedule and non-Slack checks continue, and paid workers retain their own MCP access.
@@ -291,16 +291,16 @@ skipped. This is intentionally quest-scoped; a dispatch never scans other quests
 ### Manual launchd control
 
 ```bash
-./yaas-triage/setup/install-launchd.sh           # install + load
-./yaas-triage/setup/install-launchd.sh status    # show plist + load state
-./yaas-triage/setup/install-launchd.sh uninstall # unload + remove plist
-./yaas-triage/setup/install-launchd-heartbeat.sh  # independent dead-man switch
-./yaas-triage/setup/install-launchd-dashboard.sh  # optional always-on localhost UI
+bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd.sh"           # install + load
+bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd.sh" status    # show plist + load state
+bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd.sh" uninstall # unload + remove plist
+bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd-heartbeat.sh"  # independent dead-man switch
+bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd-dashboard.sh"  # optional always-on localhost UI
 
 launchctl unload ~/Library/LaunchAgents/com.yaas.triage.plist   # temp disable
 launchctl load   ~/Library/LaunchAgents/com.yaas.triage.plist   # temp enable
 
-DRY_RUN=1 VERBOSE=1 python3 yaas-triage/tick.py   # one tick, no dispatch
+DRY_RUN=1 VERBOSE=1 sq tick   # one tick, no dispatch
 
 tail -f logs/triage.log
 tail -f logs/worker-latest.log
@@ -315,20 +315,20 @@ come up while debugging:
 
 | Variable | Default | Effect |
 |---|---|---|
-| `YAAS_SLACK_CHECKERS_ENABLED` | 1 | `0` disables all local `slack_*` Python checks and the reaction sweep. Slack watermarks are held; schedules and worker MCP access are unaffected. |
-| `YAAS_MAX_SPEND_1H` | 40 | Hourly dollar ceiling. On breach, checks still run but the dispatch is withheld and `gate_budget_exceeded` is logged. This is the first thing to check when nothing is dispatching despite dirty quests. |
-| `YAAS_MAX_SPEND_24H` | 250 | Daily dollar ceiling. |
-| `YAAS_MAX_DISPATCH_6H` | 250 | Dispatch-count ceiling. The only ceiling that works under the codex/cursor backends, which report no cost. |
-| `YAAS_MAX_TARGET_DISPATCH_PER_HOUR` | 25 | Per-target breaker; logs `gate_target_breaker_open`. |
-| `YAAS_MAX_DISPATCH_FANOUT` | 4 | Max agent invocations per tick. Extra targets are deferred (`gate_dispatch_deferred`) with watermarks untouched. |
-| `YAAS_UNACKED_PROMOTE` | 3 | Dispatches a watch may go unacked in the ledger before it starts backing off (5m doubling to a 24h cap). It keeps retrying forever and is never parked; the dashboard shows it as `backing off` with the worker's last error. |
-| `YAAS_CHECKER_ERROR_PROMOTE` | 6 | Consecutive checker errors before backoff becomes `misconfig`. |
-| `YAAS_TRIAGE_MAX_PARALLEL` | 3 | Peak concurrent Slack calls. Raising this makes rate-limit trips much more likely. |
-| `YAAS_LOG_RETAIN_DAYS` | 14 | Per-dispatch worker logs older than N days are deleted each tick. `0` disables. |
-| `YAAS_RETIRE_DEFAULT_DAYS` | 14 | Default age threshold for retiring stale `slack_thread` watches. Per-quest override via `retire_slack_threads_after_days` in meta.json (`false` or `0` = never). |
+| `SIDEQUESTOR_SLACK_CHECKERS_ENABLED` | 1 | `0` disables all local `slack_*` Python checks and the reaction sweep. Slack watermarks are held; schedules and worker MCP access are unaffected. |
+| `SIDEQUESTOR_MAX_SPEND_1H` | 40 | Hourly dollar ceiling. On breach, checks still run but the dispatch is withheld and `gate_budget_exceeded` is logged. This is the first thing to check when nothing is dispatching despite dirty quests. |
+| `SIDEQUESTOR_MAX_SPEND_24H` | 250 | Daily dollar ceiling. |
+| `SIDEQUESTOR_MAX_DISPATCH_6H` | 250 | Dispatch-count ceiling. The only ceiling that works under the codex/cursor backends, which report no cost. |
+| `SIDEQUESTOR_MAX_TARGET_DISPATCH_PER_HOUR` | 25 | Per-target breaker; logs `gate_target_breaker_open`. |
+| `SIDEQUESTOR_MAX_DISPATCH_FANOUT` | 4 | Max agent invocations per tick. Extra targets are deferred (`gate_dispatch_deferred`) with watermarks untouched. |
+| `SIDEQUESTOR_UNACKED_PROMOTE` | 3 | Dispatches a watch may go unacked in the ledger before it starts backing off (5m doubling to a 24h cap). It keeps retrying forever and is never parked; the dashboard shows it as `backing off` with the worker's last error. |
+| `SIDEQUESTOR_CHECKER_ERROR_PROMOTE` | 6 | Consecutive checker errors before backoff becomes `misconfig`. |
+| `SIDEQUESTOR_TRIAGE_MAX_PARALLEL` | 3 | Peak concurrent Slack calls. Raising this makes rate-limit trips much more likely. |
+| `SIDEQUESTOR_LOG_RETAIN_DAYS` | 14 | Per-dispatch worker logs older than N days are deleted each tick. `0` disables. |
+| `SIDEQUESTOR_RETIRE_DEFAULT_DAYS` | 14 | Default age threshold for retiring stale `slack_thread` watches. Per-quest override via `retire_slack_threads_after_days` in meta.json (`false` or `0` = never). |
 
 Current spend against the ceilings:
-`python3 yaas-triage/dispatch/spend-window.py state/run-log.ndjson | jq .`
+`python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/dispatch/spend-window.py" state/run-log.ndjson | jq .`
 
 ---
 
@@ -336,10 +336,10 @@ Current spend against the ceilings:
 
 | Symptom | Check |
 |---|---|
-| Quest never fires | `DRY_RUN=1 VERBOSE=1 python3 yaas-triage/tick.py` — see per-type checker output |
-| Checker returns `0\|` when it should find messages | Run checker directly: `MCP_CALL=yaas-triage/surfaces/mcp-call.sh python3 yaas-triage/checkers/slack_thread.py '<entry_json>'` |
+| Quest never fires | `DRY_RUN=1 VERBOSE=1 sq tick` — see per-type checker output |
+| Checker returns `0\|` when it should find messages | Run checker directly: `MCP_CALL="$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/mcp-call.sh" python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/checkers/slack_thread.py" '<entry_json>'` |
 | Email quest misses messages | Watermark too far ahead? Check `watches[].last_checked_ts` in the quest's `watch.json`. Gmail indexes ~60s after delivery; `email.lag=120` gives a 2-min buffer |
 | Worker keeps retrying the same error | Check `logs/worker-latest.log` and the watch's checker-health entry. Never delete an existing watch by hand; resolve or archive the quest, or change its objective through the supported quest workflow. |
 | Triage lock stuck | Check `logs/triage.lock.holder`. If PID is dead, the OS releases the lock automatically on next tick |
-| `LastExitStatus = 512` on launchd | Exit code 2 — a bad `.env` knob (a spend/limit value that isn't numeric) makes the orchestrator refuse to run (`gate_bad_env_knob`). Fix the value in `.env`; run `python3 yaas-triage/tick.py` manually to see it. (The old bash orchestrator exited 2 the same way on `.env` syntax errors under `set -eu`.) |
+| `LastExitStatus = 512` on launchd | Exit code 2 — a bad `.env` knob (a spend/limit value that isn't numeric) makes the orchestrator refuse to run (`gate_bad_env_knob`). Fix the value in `.env`; run `sq tick` manually to see it. (The old bash orchestrator exited 2 the same way on `.env` syntax errors under `set -eu`.) |
 | `LastExitStatus = 36608` on launchd | Exit 143 (SIGTERM). Expected if the worker watchdog killed a runaway dispatch; or if macOS slept mid-run. |

@@ -20,7 +20,7 @@ original message metadata, builds the headers, and sends via `gws`.
 
 ```bash
 GWS_BIN=$(command -v gws || echo /opt/homebrew/bin/gws) \
-  python3 yaas-triage/skills/yaas-gmail-reply/gmail-reply.py <gmail_message_id> --body "<reply text>"
+  python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-gmail-reply/gmail-reply.py" <gmail_message_id> --body "<reply text>"
 ```
 
 - `<gmail_message_id>` — the Gmail message ID to reply to (from `messages.list` or timeline)
@@ -31,13 +31,13 @@ Prints the sent Gmail message ID on success. Exits 1 on failure.
 ## Environment
 
 - `GWS_BIN` — path to gws CLI (defaults to `gws` on PATH)
-- `YAAS_FROM_EMAIL` — sender display name + address, e.g. `Jane Smith <jane@example.com>`
+- `SIDEQUESTOR_FROM_EMAIL` — sender display name + address, e.g. `Jane Smith <jane@example.com>`
   Set in `.env` and sourced by the orchestrator.
 
 ## Example (from a quest context)
 
 ```bash
 GWS_BIN=$(command -v gws || echo /opt/homebrew/bin/gws) \
-  python3 yaas-triage/skills/yaas-gmail-reply/gmail-reply.py 19e12bf3e4bb4694 \
+  python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-gmail-reply/gmail-reply.py" 19e12bf3e4bb4694 \
   --body "Why did the webhook retry queue go to therapy? It kept showing up uninvited."
 ```

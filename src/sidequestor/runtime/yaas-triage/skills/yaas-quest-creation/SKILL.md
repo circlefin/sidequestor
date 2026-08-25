@@ -92,14 +92,14 @@ Full example: `quest-correct-eurc-usdc-mechanism-2026-04-27`
 
 ### 3. Create the folder
 
-**Always use `yaas-triage/skills/yaas-quest-creation/new-quest.py` — never write the files manually.**
+**Always use `sq new-quest` — never write the files manually.**
 
 The script handles all timestamps, ID generation, and correctly-shaped files. Manual `Write` calls have caused bugs (wrong `id` in meta.json, missing fields in watch.json). The script prevents all of that. Note: `watch_id` values are NOT in the scaffolded output — `ensure-watch-ids.py` injects them on the first triage tick. That is intentional and safe.
 
 Build a JSON spec and pass it to the script via Bash:
 
 ```bash
-python3 yaas-triage/skills/yaas-quest-creation/new-quest.py '<spec_json>'
+sq new-quest '<spec_json>'
 ```
 
 Spec fields:
@@ -107,12 +107,13 @@ Spec fields:
 - `watches` (required) — entries WITHOUT `last_checked_ts`; the script injects it
 - `priority` — `"high"` | `"normal"` | `"low"` (default: `"normal"`)
 - `allow_send` — `true` | `false` (default: `false`)
-- `requires_initial_run`: `true` only when the creation surface schedules an immediate
-  first worker request. Omit it for ordinary monitoring and recurring-schedule quests.
+- `sidequestor_bootstrap` is an internal dashboard-only flag. With `true`, `watches` must be
+  empty and triage uses its dedicated bootstrap dispatch to resolve and install exact watches.
+  Ordinary interactive creation must omit it and provide at least one confirmed watch.
 - `context` — body text for `context.md`
 - `note` — short note for the `created` timeline event (defaults to first 80 chars of context)
 - `retire_slack_threads_after_days` — non-negative int or `false`:
-  - omitted → the global default, `YAAS_RETIRE_DEFAULT_DAYS` (**14** days)
+  - omitted → the global default, `SIDEQUESTOR_RETIRE_DEFAULT_DAYS` (**14** days)
   - positive int N → drop `slack_thread` watches whose parent `thread_ts` is older than N days
   - `false` **or `0`** → never retire (use for long-lived partner conversations); `housekeep.py`
     treats both the same, along with any unparseable value
@@ -120,7 +121,7 @@ Spec fields:
 
 Example call:
 ```bash
-python3 yaas-triage/skills/yaas-quest-creation/new-quest.py '{
+sq new-quest '{
   "title": "Partner question — follow-up tracker",
   "priority": "normal",
   "allow_send": true,

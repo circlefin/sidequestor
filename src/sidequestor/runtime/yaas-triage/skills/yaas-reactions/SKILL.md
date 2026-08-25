@@ -7,7 +7,7 @@ description: The Sidequestor Reactions Fast Path — handle emoji-triggered acti
 
 Load this when dispatched with `dirty target: reactions`. It is self-contained — do NOT read any quest folder except where the configured `adopt` reaction explicitly requires it. Drive the reaction lifecycle through `surfaces/react-lifecycle.py advance` only (never hand-composed add/remove). All shared-state and draft-first rules in `.yaas/engine/current/OPERATING.md` still apply.
 
-Before interpreting any pending emoji, run `python3 yaas-triage/reaction_config.py` and use its JSON roles (`process`, `draft`, `save`, `adopt`, `loading`, `done`). `.env` may customize every one. Never infer the action from a hardcoded default when the resolved mapping differs.
+Before interpreting any pending emoji, run `python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/reaction_config.py"` and use its JSON roles (`process`, `draft`, `save`, `adopt`, `loading`, `done`). `.env` may customize every one. Never infer the action from a hardcoded default when the resolved mapping differs.
 
 ## Reactions Fast Path
 
@@ -29,11 +29,11 @@ Every reaction where you **take action** carries a visible three-state lifecycle
 1. **Marked for processing** — the user applies the trigger reaction. This is what the checker detects; it is the only lifecycle reaction the user adds.
 2. **Processing** — the moment you pick the message up (before doing the work), advance it to the configured `loading` emoji with the ONE lifecycle verb:
    ```bash
-   ./yaas-triage/surfaces/react-lifecycle.py advance <channel_id> <msg_ts> loading
+   python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/react-lifecycle.py" advance <channel_id> <msg_ts> loading
    ```
 3. **Done actioning** — once the action is complete (reply sent / draft posted / message adopted) and every in-tick commitment is done, advance to the configured `done` emoji:
    ```bash
-   ./yaas-triage/surfaces/react-lifecycle.py advance <channel_id> <msg_ts> done
+   python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/react-lifecycle.py" advance <channel_id> <msg_ts> done
    ```
 
 **Always use `react-lifecycle.py advance`, never hand-composed `slack-react.sh remove`/`add` pairs.** `advance` removes every OTHER lifecycle emoji and adds the target in one step, so the message can never show two lifecycle emojis at once, a half-applied previous run self-heals, and every transition is logged. It exits non-zero if the add fails, in which case the emoji did NOT advance and the step is not done. If the action genuinely can't complete this tick (blocked, needs a quest; or `adopt` found no owning quest and got skipped), leave it at the configured `loading` emoji — do NOT advance to `done`, since that signals completion. `slack-react.sh` still exists for one-off manual reactions, but the lifecycle goes through `advance`.
@@ -58,8 +58,8 @@ For `process` and `draft`, never call `slack_send_message` or
 quest timeline:
 
 ```bash
-python3 yaas-triage/surfaces/slack-send.py '{"channel_id":"C...","thread_ts":"...","message":"..."}'
-python3 yaas-triage/surfaces/slack-send.py '{"channel_id":"C...","thread_ts":"...","message":"...","draft":true}'
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack-send.py" '{"channel_id":"C...","thread_ts":"...","message":"..."}'
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack-send.py" '{"channel_id":"C...","thread_ts":"...","message":"...","draft":true}'
 ```
 
 Omitting `quest_id` deliberately selects send-only mode. The helper still enforces the stale

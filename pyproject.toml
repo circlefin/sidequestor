@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sidequestor"
-version = "0.1.5"
+version = "0.1.6.dev0"
 description = "Sidequestor workspace and triage command shell"
 readme = "README.md"
 license = "Apache-2.0"
@@ -21,7 +21,7 @@ yaas = "sidequestor.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-sidequestor = ["*.json", "*.md", "*.html", "*.png", "package_data/*.md", "package_data/*.example", "package_data/skills/*/*", "runtime/**/*"]
+sidequestor = ["*.json", "*.md", "*.html", "*.png", "package_data/*.md", "package_data/*.example", "runtime/**/*"]
 
 [tool.setuptools.exclude-package-data]
 sidequestor = ["**/__pycache__/*", "**/*.pyc"]
