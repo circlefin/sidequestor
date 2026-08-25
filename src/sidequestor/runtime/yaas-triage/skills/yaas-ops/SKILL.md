@@ -12,6 +12,9 @@ full architecture, see `ARCHITECTURE.md` at the repo root.
 
 ## System layout
 
+The tree below is relative to the packaged runtime root (`$SIDEQUESTOR_RUNTIME_ROOT`),
+not the user's workspace.
+
 ```
 yaas-triage/
 ├── tick.py                   ← launchd-driven main loop, one tick (every ~60s) — THE ORCHESTRATOR
@@ -81,10 +84,10 @@ ARCHITECTURE.md               ← full system design
 
 ### How it works
 
-The orchestrator's `check_quest` (`tick.py`, ported from the original shell orchestrator) iterates over every entry in a quest's `watches[]` array. For each entry it looks up `yaas-triage/checkers/<type>.py` and runs it:
+The orchestrator's `check_quest` (`tick.py`, ported from the original shell orchestrator) iterates over every entry in a quest's `watches[]` array. For each entry it looks up `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/checkers/<type>.py` and runs it:
 
 ```
-python3 checkers/<type>.py '<watch_entry_json>'
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/checkers/<type>.py" '<watch_entry_json>'
 ```
 
 The checker outputs one line to stdout:
@@ -131,7 +134,7 @@ Keep the lag as small as the source allows. Every second of lag widens the windo
 }
 ```
 
-`jira` needs the REST bridge (`yaas-triage/surfaces/jira-call.sh`, Basic-auth API token in Keychain `jira-api-token`/`yaas`) because the Atlassian MCP is interactive-OAuth only and is absent in headless dispatch. `github_pr` and `github_issue` both accept optional `search` (extra GitHub qualifiers), `limit` (default 100), and `gh_account` (a `gh` login whose token to use, for a repo the ACTIVE `gh` account cannot see; resolved per-run via `gh auth token -u`, never persisted). Read the warning in `checkers/github_pr.py`'s docstring before adding a `search`, since repeated qualifiers AND rather than OR and can silently match nothing. A `search` may contain qualifiers only: anything starting with `-` is refused as `misconfig`, because the string is spliced into argv ahead of gh's own flags and e.g. `--include-prs` would make a `github_issue` watch double-report every PR against a `github_pr` watch on the same repo.
+`jira` needs the REST bridge (`$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/jira-call.sh`, Basic-auth API token in Keychain `jira-api-token`/`yaas`) because the Atlassian MCP is interactive-OAuth only and is absent in headless dispatch. `github_pr` and `github_issue` both accept optional `search` (extra GitHub qualifiers), `limit` (default 100), and `gh_account` (a `gh` login whose token to use, for a repo the ACTIVE `gh` account cannot see; resolved per-run via `gh auth token -u`, never persisted). Read the warning in `checkers/github_pr.py`'s docstring before adding a `search`, since repeated qualifiers AND rather than OR and can silently match nothing. A `search` may contain qualifiers only: anything starting with `-` is refused as `misconfig`, because the string is spliced into argv ahead of gh's own flags and e.g. `--include-prs` would make a `github_issue` watch double-report every PR against a `github_pr` watch on the same repo.
 
 `.lag` note: `github_issue.lag = 30`, same as `github_pr` and for the same reason (GitHub's search index is eventually consistent).
 
@@ -164,7 +167,7 @@ Example: adding Telegram.
 security add-generic-password -s telegram-bot-token -a yaas -w "<BOT_TOKEN>"
 ```
 
-**2. Create `yaas-triage/checkers/telegram_chat.py`:**
+**2. In a source checkout, create `src/sidequestor/runtime/yaas-triage/checkers/telegram_chat.py`:**
 ```python
 #!/usr/bin/env python3
 # Input:  watch entry JSON as argv[1]
@@ -218,7 +221,7 @@ if __name__ == "__main__":
  "last_checked_ts": "0", "reason": "watch partner group chat"}
 ```
 
-**4. (Optional) Add `yaas-triage/checkers/telegram_chat.lag`** with integer seconds for indexing lag (Telegram is real-time, so no lag file needed).
+**4. (Optional) In a source checkout, add `src/sidequestor/runtime/yaas-triage/checkers/telegram_chat.lag`** with integer seconds for indexing lag (Telegram is real-time, so no lag file needed).
 
 **5. Document in the quest's `context.md`** how the worker should fetch full message content and reply (typically via `curl` to the Telegram Bot API).
 
@@ -228,7 +231,7 @@ That's the entire change. The orchestrator requires no modification — it autod
 
 ## Worker utilities
 
-### `yaas-triage/ledger/approval-helper.py`
+### `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/ledger/approval-helper.py`
 
 Besides ordinary review drafts, the approval ledger carries dashboard-submitted manual quest
 instructions. `enqueue-instruction <json>` durably records one distinct reviewed item without
@@ -236,7 +239,7 @@ touching `watch.json`; `tick.py` calls `arm-pending-instructions` under the glob
 the next cycle. Workers claim with `start`, close successful work with `done`, and use
 `abandon <id> <reason>` only when an expired manual-instruction lease makes the outcome uncertain.
 
-### `yaas-triage/skills/yaas-gmail-reply/gmail-reply.py`
+### `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-gmail-reply/gmail-reply.py`
 
 Builds a threaded Gmail reply (RFC 2822 `In-Reply-To` + `References` headers) and sends via `gws gmail users messages send`. Used by quests that watch email and need to reply in-thread.
 
@@ -246,11 +249,11 @@ GWS_BIN="${GWS_BIN:-$(command -v gws)}" \
 # Prints sent message ID on success, exits 1 on failure.
 ```
 
-Reads `SIDEQUESTOR_FROM_EMAIL` from env for the From header. See `yaas-triage/skills/yaas-gmail-reply/SKILL.md`.
+Reads `SIDEQUESTOR_FROM_EMAIL` from env for the From header. See `.yaas/engine/current/skills/yaas-gmail-reply/SKILL.md`.
 
-### `yaas-triage/skills/yaas-quest-creation/new-quest.py`
+### `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-quest-creation/new-quest.py`
 
-Deterministic quest scaffolding. Takes a JSON spec on argv or stdin, creates the four-file folder under `state/quests/active/`, validates fields, injects `last_checked_ts` so the worker can never forget it. See `yaas-triage/skills/yaas-quest-creation/SKILL.md`.
+Deterministic quest scaffolding. Takes a JSON spec on argv or stdin, creates the four-file folder under `state/quests/active/`, validates fields, injects `last_checked_ts` so the worker can never forget it. See `.yaas/engine/current/skills/yaas-quest-creation/SKILL.md`.
 
 ---
 
@@ -291,20 +294,18 @@ skipped. This is intentionally quest-scoped; a dispatch never scans other quests
 ### Manual launchd control
 
 ```bash
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd.sh"           # install + load
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd.sh" status    # show plist + load state
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd.sh" uninstall # unload + remove plist
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd-heartbeat.sh"  # independent dead-man switch
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd-dashboard.sh"  # optional always-on localhost UI
-
-launchctl unload ~/Library/LaunchAgents/com.yaas.triage.plist   # temp disable
-launchctl load   ~/Library/LaunchAgents/com.yaas.triage.plist   # temp enable
+sq stop                    # temporarily stop this workspace's Sidequestor jobs
+sq start                   # start triage, heartbeat, and dashboard; labels are instance-specific
+sq doctor                  # inspect all three package-owned launchd jobs
 
 DRY_RUN=1 VERBOSE=1 sq tick   # one tick, no dispatch
 
 tail -f logs/triage.log
 tail -f logs/worker-latest.log
 ```
+
+The legacy `setup/install-launchd*.sh` scripts install fixed `com.yaas.*` labels and are not
+used by the package lifecycle; do not run them for a Sidequestor workspace.
 
 ---
 
@@ -322,6 +323,7 @@ come up while debugging:
 | `SIDEQUESTOR_MAX_TARGET_DISPATCH_PER_HOUR` | 25 | Per-target breaker; logs `gate_target_breaker_open`. |
 | `SIDEQUESTOR_MAX_DISPATCH_FANOUT` | 4 | Max agent invocations per tick. Extra targets are deferred (`gate_dispatch_deferred`) with watermarks untouched. |
 | `SIDEQUESTOR_UNACKED_PROMOTE` | 3 | Dispatches a watch may go unacked in the ledger before it starts backing off (5m doubling to a 24h cap). It keeps retrying forever and is never parked; the dashboard shows it as `backing off` with the worker's last error. |
+| `SIDEQUESTOR_APPROVAL_LEASE_MIN` | 45 | Minutes a worker approval lease remains claimable before the dashboard can reclaim it. |
 | `SIDEQUESTOR_CHECKER_ERROR_PROMOTE` | 6 | Consecutive checker errors before backoff becomes `misconfig`. |
 | `SIDEQUESTOR_TRIAGE_MAX_PARALLEL` | 3 | Peak concurrent Slack calls. Raising this makes rate-limit trips much more likely. |
 | `SIDEQUESTOR_LOG_RETAIN_DAYS` | 14 | Per-dispatch worker logs older than N days are deleted each tick. `0` disables. |

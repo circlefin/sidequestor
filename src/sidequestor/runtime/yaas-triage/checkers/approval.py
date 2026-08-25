@@ -47,7 +47,8 @@ def _repo_root(start):
     asserts that, because a shared module would need sys.path handling whose own path is
     depth-dependent, which is the bug being fixed.
     """
-    override = os.environ.get("YAAS_WORKSPACE")
+    override = (os.environ.get("SIDEQUESTOR_WORKSPACE")
+                or os.environ.get("YAAS_WORKSPACE"))
     if override:
         return Path(override).expanduser().resolve()
     p = Path(start).resolve()
@@ -70,6 +71,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import approval_state
 import approval_store
 import result
+import tick_state
+
+approval_state.configure(tick_state.load_environment(REPO_ROOT))
 
 def main():
     if len(sys.argv) < 2:

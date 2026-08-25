@@ -15,10 +15,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# doctor.sh — is THIS MACHINE configured to run yaas?
+# doctor.sh — is THIS MACHINE configured to run Sidequestor?
 #
 # Three different questions, three different tools:
-#   yaas-triage/tests/run-all.sh   is the CODE correct?   (fixtures, no real state —
+#   runtime tests                   is the CODE correct?   (fixtures, no real state —
 #                                  passes on a machine with nothing set up)
 #   doctor.sh                      is this MACHINE set up? (real Keychain, real PATH,
 #                                  real .env, real plist)
@@ -122,19 +122,63 @@ done
 # ── 2. .env ─────────────────────────────────────────────────────────────────
 section ".env config"
 ENV_FILE="$REPO_ROOT/.env"
+
+# Read simple dotenv values as data. Do not source the file: command substitution
+# and redirection syntax in a workspace-owned value must never execute in doctor.
+_dotenv_value() {
+  python3 - "$ENV_FILE" "$1" <<'PY'
+from pathlib import Path
+import sys
+
+path, wanted = Path(sys.argv[1]), sys.argv[2]
+try:
+    lines = path.read_text().splitlines()
+except (OSError, UnicodeError):
+    raise SystemExit(1)
+for raw in lines:
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, _, value = line.partition("=")
+    key = key.strip()
+    if key.startswith("export "):
+        key = key[len("export "):].strip()
+    if key != wanted:
+        continue
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]
+    print(value)
+    break
+PY
+}
+
+_setting() {
+  local canonical="$1" legacy="$2" default="${3:-}" value
+  if [ "${!canonical+x}" = x ]; then
+    printf '%s' "${!canonical}"
+    return
+  fi
+  if [ "$legacy" != "$canonical" ] && [ "${!legacy+x}" = x ]; then
+    printf '%s' "${!legacy}"
+    return
+  fi
+  value="$(_dotenv_value "$canonical" 2>/dev/null || true)"
+  [ -n "$value" ] || [ "$canonical" = "$legacy" ] || value="$(_dotenv_value "$legacy" 2>/dev/null || true)"
+  printf '%s' "${value:-$default}"
+}
+
 if [ ! -f "$ENV_FILE" ]; then
   fail "$ENV_FILE missing — copy from .env.example and fill in"
 else
   ok ".env present"
-  # Source it in a subshell to catch syntax errors
-  if ( set -a && source "$ENV_FILE" && set +a ) 2>/dev/null; then
-    ok ".env parses cleanly"
+  if _dotenv_value SIDEQUESTOR_AGENT >/dev/null 2>&1; then
+    ok ".env is readable (values are parsed without shell execution)"
   else
-    fail ".env has syntax errors — try sourcing it manually for the message"
+    fail ".env could not be read"
   fi
 
-  set -a; source "$ENV_FILE" 2>/dev/null || true; set +a
-  SLACK_CHECKERS_ENABLED="${SIDEQUESTOR_SLACK_CHECKERS_ENABLED:-${YAAS_SLACK_CHECKERS_ENABLED:-1}}"
+  SLACK_CHECKERS_ENABLED="$(_setting SIDEQUESTOR_SLACK_CHECKERS_ENABLED YAAS_SLACK_CHECKERS_ENABLED 1)"
   case "$SLACK_CHECKERS_ENABLED" in
     0|1) ok "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=$SLACK_CHECKERS_ENABLED" ;;
     *) fail "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=$SLACK_CHECKERS_ENABLED is invalid (expected 0 or 1)" ;;
@@ -147,14 +191,14 @@ else
   fi
   for var in $SLACK_REQUIRED_VARS SIDEQUESTOR_FROM_EMAIL; do
     legacy_var="${var/SIDEQUESTOR_/YAAS_}"
-    if [ -n "${!var:-${!legacy_var:-}}" ]; then
+    if [ -n "$(_setting "$var" "$legacy_var")" ]; then
       ok "$var set"
     else
       fail "$var empty in .env"
     fi
   done
   for var in CODA_API_KEY CODA_MCP_PATH; do
-    if [ -n "${!var:-}" ]; then
+    if [ -n "$(_setting "$var" "$var")" ]; then
       ok "$var set (Coda MCP enabled)"
     else
       warn "$var empty (Coda MCP disabled — fine if you don't use it)"
@@ -163,10 +207,11 @@ else
 
   # env.example ships the SIDEQUESTOR_ names; reading only YAAS_ here reported the
   # DEFAULT for a correctly configured workspace instead of its real setting.
-  CLAUDE_PERMISSION_MODE="${SIDEQUESTOR_CLAUDE_PERMISSION_MODE:-${YAAS_CLAUDE_PERMISSION_MODE:-${SIDEQUESTOR_WORKER_PERMISSION_MODE:-${YAAS_WORKER_PERMISSION_MODE:-acceptEdits}}}}"
+  CLAUDE_PERMISSION_MODE="$(_setting SIDEQUESTOR_CLAUDE_PERMISSION_MODE YAAS_CLAUDE_PERMISSION_MODE \
+    "$(_setting SIDEQUESTOR_WORKER_PERMISSION_MODE YAAS_WORKER_PERMISSION_MODE acceptEdits)")"
   ok "SIDEQUESTOR_CLAUDE_PERMISSION_MODE=$CLAUDE_PERMISSION_MODE"
 
-  CODEX_PERMISSION_MODE="${SIDEQUESTOR_CODEX_PERMISSION_MODE:-${YAAS_CODEX_PERMISSION_MODE:-workspace-write}}"
+  CODEX_PERMISSION_MODE="$(_setting SIDEQUESTOR_CODEX_PERMISSION_MODE YAAS_CODEX_PERMISSION_MODE workspace-write)"
   case "$CODEX_PERMISSION_MODE" in
     workspace-write|bypassPermissions)
       ok "SIDEQUESTOR_CODEX_PERMISSION_MODE=$CODEX_PERMISSION_MODE"
@@ -222,52 +267,24 @@ done
 
 # ── 5. launchd job ──────────────────────────────────────────────────────────
 section "launchd"
-PLIST="$HOME/Library/LaunchAgents/com.yaas.triage.plist"
-if [ -f "$PLIST" ]; then
-  ok "plist installed at $PLIST"
+PRODUCTION_MANIFEST="$REPO_ROOT/.yaas/launchd/production.json"
+if [ -f "$PRODUCTION_MANIFEST" ]; then
+  for job in triage heartbeat dashboard; do
+    label=$(jq -r ".jobs.$job.label // empty" "$PRODUCTION_MANIFEST" 2>/dev/null || true)
+    plist=$(jq -r ".jobs.$job.plist // empty" "$PRODUCTION_MANIFEST" 2>/dev/null || true)
+    if [ -n "$plist" ] && [ -f "$plist" ]; then
+      ok "$job plist installed at $plist"
+    else
+      fail "Sidequestor $job plist not installed — run \`sq start\`"
+    fi
+    if [ -n "$label" ] && launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+      ok "Sidequestor $job job loaded ($label)"
+    else
+      fail "Sidequestor $job job not loaded — run \`sq start\`"
+    fi
+  done
 else
-  fail "plist not installed — run \`sq start\`"
-fi
-
-if launchctl list com.yaas.triage >/dev/null 2>&1; then
-  # Extract just the number. The old `sed 's/.*= //; s/;//'` was greedy and only
-  # dropped the FIRST semicolon, so anything trailing on the line came along for the
-  # ride ("512 };") and then matched no case arm below — the interpretation silently
-  # degraded to "Unexpected". Pulling the digits out directly cannot do that.
-  LC_OUT=$(launchctl list com.yaas.triage 2>/dev/null)
-  # Split on ';' so each key is its own record no matter how the lines are packed.
-  # Without that, grabbing "the last number on the matching line" picks up a
-  # neighbouring key's value instead.
-  _num() { printf '%s\n' "$LC_OUT" | tr ';' '\n' | grep "\"$1\"" | head -1 \
-             | grep -oE -- '-?[0-9]+' | tail -1; }
-  STATUS=$(_num LastExitStatus); PID=$(_num PID)
-  [ -n "$STATUS" ] || STATUS="unknown"
-  [ -n "$PID" ] || PID="none"
-  ok "launchd job loaded (PID=$PID, LastExitStatus=$STATUS)"
-  case "$STATUS" in
-    0)
-      ok "Last triage tick exited cleanly"
-      ;;
-    36608)
-      # 143 << 8 — SIGTERM, expected when the watchdog kills a worker
-      ok "Last exit was SIGTERM (143) — handled normally by watchdog logic"
-      ;;
-    15|-15)
-      # Raw SIGTERM, which is what `launchctl kickstart -k` leaves behind. Restarting
-      # the job is a routine thing to do (triage-loop.sh edits require it), so
-      # reporting it as "unexpected" was noise.
-      ok "Last exit was SIGTERM (15) — normal after a launchctl kickstart -k"
-      ;;
-    512)
-      # 2 << 8 — set -eu aborted
-      fail "Last exit was code 2 — a bad numeric .env knob makes the orchestrator refuse to run. Run 'sq tick' manually to see the error."
-      ;;
-    *)
-      warn "Unexpected LastExitStatus=$STATUS — check logs/triage.err.log"
-      ;;
-  esac
-else
-  fail "launchd job not loaded — run \`sq start\`"
+  fail "Sidequestor production manifest missing — run \`sq start\`"
 fi
 
 # ── 6. Runtime liveness — delegated ─────────────────────────────────────────
@@ -282,7 +299,23 @@ section "Runtime health"
 HEALTH="$REPO_ROOT/state/health-status.json"
 if [ -f "$HEALTH" ]; then
   if [ "$(jq -r '.healthy // false' "$HEALTH" 2>/dev/null)" = "true" ]; then
-    ok "health-monitor reports healthy ($(jq -r '.ts // "?"' "$HEALTH"))"
+    HEALTH_TS=$(jq -r '.ts // empty' "$HEALTH" 2>/dev/null || true)
+    if python3 - "$HEALTH_TS" <<'PY' >/dev/null 2>&1
+from datetime import datetime, timezone
+import sys
+
+try:
+    stamp = datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+    age = (datetime.now(timezone.utc) - stamp).total_seconds()
+except (IndexError, TypeError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if 0 <= age <= 900 else 1)
+PY
+    then
+      ok "health-monitor reports healthy ($HEALTH_TS)"
+    else
+      fail "health-status.json is stale or has no valid timestamp — check the heartbeat job"
+    fi
   else
     fail "health-monitor reports problems: $(jq -r '[.problems[].headline] | join("; ")' "$HEALTH" 2>/dev/null)"
     [ "$QUIET" = "0" ] && echo "    Detail: python3 \"$RUNTIME_ROOT/yaas-triage/ops/health-monitor.py\" --json"

@@ -44,7 +44,7 @@ Watch entry fields by type:
   email:         query (Gmail search string), reason
   jira:          jql (JQL string, e.g. "labels=my-label"), reason
                  Fires when any issue in the set changes (status, comment, any edit).
-                 Reads via yaas-triage/surfaces/jira-call.sh; needs the Keychain API token.
+                 Reads via the packaged runtime's surfaces/jira-call.sh; needs the Keychain API token.
                  Do NOT put ORDER BY in the jql: it disables the checker's early
                  stop and makes every tick page to the cap.
   github_pr:     repo ("owner/name"), reason  [optional: search, limit]

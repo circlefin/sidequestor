@@ -6,7 +6,7 @@
   },
 
   "sync": {
-    "_comment": "For people who just want to run the latest YAAS and not build/extend it themselves. When true, the orchestrator pulls the canonical yaas-v2 template once every 24h, fast-forward only. Set up during setup.sh (or run yaas-triage/setup/init-yaas-v2-tracking.sh yourself). If you've customized any file that yaas-v2 also ships (dashboard.html, yaas-triage/*), the pull is skipped that day rather than overwriting your changes — check state/yaas-v2-sync-status.json for the result.",
+    "_comment": "For people who want the canonical yaas-v2 template pulled without building it themselves. When true, the orchestrator pulls it once every 24h, fast-forward only. Set up during setup.sh (or run bash \"$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/init-yaas-v2-tracking.sh\" yourself). If you've customized a tracked template file, the pull is skipped that day rather than overwriting your changes — check state/yaas-v2-sync-status.json for the result.",
     "yaas_v2_auto_pull": false
   }
 }

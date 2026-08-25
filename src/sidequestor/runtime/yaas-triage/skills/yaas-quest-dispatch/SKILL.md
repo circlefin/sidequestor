@@ -87,8 +87,8 @@ fails, ack the schedule `blocked`, which holds the sweep window for retry. The S
 coordinates in this interim mode; never edit or ack them because they were not dispatched.
 
 **Jira watch type** (`jira`): fires when an issue in the entry's `jql` set changed (status transition, new comment, any field edit — Jira bumps `updated` on all of them). An interactive Atlassian MCP is typically NOT exposed in headless dispatch, so do not reach for `searchJiraIssues`; it returns `tool_not_found` there. Use the REST bridge:
-1. `yaas-triage/surfaces/jira-call.sh GET '/rest/api/3/search/jql?jql=<url-encoded>&fields=status,summary,updated&maxResults=100'` — re-read the set and diff it against what the quest last recorded.
-2. `yaas-triage/surfaces/jira-call.sh GET '/rest/api/3/issue/<KEY>/comment'` — read new comments when the change was a reply rather than a transition. A reviewer question needs an answer (draft to the approval queue unless the quest sets `allow_send`).
+1. `bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/jira-call.sh" GET '/rest/api/3/search/jql?jql=<url-encoded>&fields=status,summary,updated&maxResults=100'` — re-read the set and diff it against what the quest last recorded.
+2. `bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/jira-call.sh" GET '/rest/api/3/issue/<KEY>/comment'` — read new comments when the change was a reply rather than a transition. A reviewer question needs an answer (draft to the approval queue unless the quest sets `allow_send`).
 
 Post a comment with `POST /rest/api/3/issue/<KEY>/comment` only when the quest authorizes it. The checker already confirmed something moved; your job is to identify what and act.
 
@@ -118,7 +118,7 @@ Based on the quest's `context.md`, the watch type that fired, and the new conten
 - **Someone replied to a tracked thread** → evaluate whether the quest's objective is met. If yes, update `meta.json` status to `completed`. If not, decide if you need to reply, escalate, or keep waiting. Log it with `log-event.py`.
 - **A DM arrived from a watched partner** → read the thread context, compose a response (draft first unless quest explicitly authorizes `allow_send`), log action.
 - **A new top-level message in a watched channel** → apply the quest's `context.md` decision rules. If the common fast-path is "log and ignore," just exit without any file edits.
-- **A new email matching a watched query** → read the full message, apply the quest's `context.md` decision rules. **Always acknowledge the email** with a reply (via `yaas-triage/skills/yaas-gmail-reply/gmail-reply.py`) before or immediately after taking action — even if the action is just "request submitted, will follow up." Exception: bulk, automated, or notification emails where a human reply would be inappropriate. Log `info_received` or `message_sent` with `log-event.py`.
+- **A new email matching a watched query** → read the full message, apply the quest's `context.md` decision rules. **Always acknowledge the email** with a reply (via `python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-gmail-reply/gmail-reply.py"`) before or immediately after taking action — even if the action is just "request submitted, will follow up." Exception: bulk, automated, or notification emails where a human reply would be inappropriate. Log `info_received` or `message_sent` with `log-event.py`.
 
 Reactions are never handled here — they are their own dispatch target, see § Reactions Fast Path.
 
@@ -171,7 +171,7 @@ When you post into an internal routing or expert channel to request help on beha
 
 ### 3d. Manual review queue (general rule — all quests)
 
-Use this queue when you cannot or should not act immediately and the action needs the user's review first. The live dashboard (`dashboard.html` / `yaas-triage/ops/dashboard-server.py`) surfaces pending items; once reviewed, triage re-dispatches you to execute with the user's instructions applied.
+Use this queue when you cannot or should not act immediately and the action needs the user's review first. The live dashboard (`$SIDEQUESTOR_RUNTIME_ROOT/dashboard.html` / `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/ops/dashboard-server.py`) surfaces pending items; once reviewed, triage re-dispatches you to execute with the user's instructions applied.
 
 **When to use it:**
 1. `allow_send: false` in `meta.json` — any outbound action, regardless of channel.
@@ -180,7 +180,7 @@ Use this queue when you cannot or should not act immediately and the action need
 
 **Writing a review item:**
 
-Use `yaas-triage/ledger/approval-helper.py write <json>` — it handles dedup, flock, and ID generation atomically. Pass a JSON object with: `quest_id`, `quest_title`, `action_type` (`slack_message` / `file_edit` / `remote_request`), `target` (`{channel_id, thread_ts}`), `message_text`, `context` (2-3 sentences: what triggered this, who is involved, why review is needed), `risk_reason`. The script prints the new approval ID on success, or nothing if an identical pending entry already exists (dedup by `quest_id` + target).
+Use `sq approval write '<json>'` — it routes to the packaged approval helper and handles dedup, flock, and ID generation atomically. Pass a JSON object with: `quest_id`, `quest_title`, `action_type` (`slack_message` / `file_edit` / `remote_request`), `target` (`{channel_id, thread_ts}`), `message_text`, `context` (2-3 sentences: what triggered this, who is involved, why review is needed), `risk_reason`. The command prints the new approval ID on success, or nothing if an identical pending entry already exists (dedup by `quest_id` + target).
 
 ```bash
 APPR_ID=$(sq approval write \

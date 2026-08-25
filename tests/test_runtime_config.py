@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,167 @@ TRIAGE_ROOT = RUNTIME_ROOT / "yaas-triage"
 
 
 class RuntimeConfigTest(unittest.TestCase):
+    def test_native_children_receive_workspace_dotenv_aliases(self) -> None:
+        from sidequestor.native import _environment
+        from sidequestor.workspace import init_workspace
+
+        with tempfile.TemporaryDirectory(prefix="sidequestor-native-env-") as raw:
+            with patch.dict(os.environ, {
+                "SIDEQUESTOR_CONFIG_HOME": str(Path(raw) / "config"),
+            }, clear=False):
+                workspace = init_workspace(Path(raw) / "workspace")
+            workspace.env_file.write_text(
+                "SIDEQUESTOR_TRIAGE_INTERVAL=11\n"
+                "SIDEQUESTOR_HEARTBEAT_INTERVAL=17\n"
+                "SIDEQUESTOR_APPROVAL_LEASE_MIN=23\n"
+            )
+            environment = _environment(workspace)
+            self.assertEqual(environment["YAAS_TRIAGE_INTERVAL"], "11")
+            self.assertEqual(environment["YAAS_HEARTBEAT_INTERVAL"], "17")
+            self.assertEqual(environment["YAAS_APPROVAL_LEASE_MIN"], "23")
+            overridden = _environment(workspace, {"YAAS_AGENT": "stub"})
+            self.assertEqual(overridden["YAAS_AGENT"], "stub")
+            self.assertEqual(overridden["SIDEQUESTOR_AGENT"], "stub")
+
+    def test_explicit_legacy_environment_wins_over_canonical_dotenv(self) -> None:
+        from sidequestor.native import _environment
+        from sidequestor.workspace import init_workspace
+
+        with tempfile.TemporaryDirectory(prefix="sidequestor-native-precedence-") as raw:
+            with patch.dict(os.environ, {
+                "SIDEQUESTOR_CONFIG_HOME": str(Path(raw) / "config"),
+            }, clear=False):
+                workspace = init_workspace(Path(raw) / "workspace")
+            workspace.env_file.write_text("SIDEQUESTOR_AGENT=codex\n")
+            with patch.dict(os.environ, {"YAAS_AGENT": "stub"}, clear=False):
+                environment = _environment(workspace)
+            self.assertEqual(environment["YAAS_AGENT"], "stub")
+            self.assertEqual(environment["SIDEQUESTOR_AGENT"], "stub")
+
+    def test_canonical_dotenv_wins_regardless_of_mixed_namespace_order(self) -> None:
+        from sidequestor.native import _environment
+        from sidequestor.workspace import init_workspace
+
+        with tempfile.TemporaryDirectory(prefix="sidequestor-native-mixed-env-") as raw:
+            with patch.dict(os.environ, {
+                "SIDEQUESTOR_CONFIG_HOME": str(Path(raw) / "config"),
+            }, clear=False):
+                workspace = init_workspace(Path(raw) / "workspace")
+            workspace.env_file.write_text(
+                "YAAS_AGENT=legacy\nSIDEQUESTOR_AGENT=codex\n"
+            )
+            environment = _environment(workspace)
+            self.assertEqual(environment["YAAS_AGENT"], "codex")
+            self.assertEqual(environment["SIDEQUESTOR_AGENT"], "codex")
+
+    def test_shell_loop_preserves_exports_and_does_not_execute_dotenv(self) -> None:
+        script = TRIAGE_ROOT / "triage-loop.sh"
+        with tempfile.TemporaryDirectory(prefix="sidequestor-loop-env-") as raw:
+            root = Path(raw)
+            workspace = root / "workspace"
+            (workspace / "state" / "triage").mkdir(parents=True)
+            (workspace / ".yaas").mkdir()
+            (workspace / ".yaas" / "instance.json").write_text("{}\n")
+            marker = root / "executed"
+            (workspace / ".env").write_text(
+                "SIDEQUESTOR_TRIAGE_INTERVAL=0.03\n"
+                f"SIDEQUESTOR_DANGEROUS=$(touch {marker})\n"
+            )
+            capture = root / "capture"
+            fake_python = root / "python3"
+            fake_python.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = \"-\" ]; then\n"
+                "  printf '%s\\n' \"$2\"\n"
+                "  exit 0\n"
+                "fi\n"
+                f"printf '%s\\n' \"${{SIDEQUESTOR_TRIAGE_INTERVAL-}}|${{YAAS_TRIAGE_INTERVAL-}}\" > \"{capture}\"\n"
+            )
+            fake_python.chmod(0o755)
+            environment = {
+                "PATH": str(root) + os.pathsep + os.environ.get("PATH", ""),
+                "SIDEQUESTOR_WORKSPACE": str(workspace),
+                "YAAS_TRIAGE_INTERVAL": "0.02",
+            }
+            process = subprocess.Popen(
+                ["bash", str(script)], env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            try:
+                for _ in range(100):
+                    if capture.exists():
+                        break
+                    import time
+                    time.sleep(0.02)
+            finally:
+                process.terminate()
+                stdout, stderr = process.communicate(timeout=5)
+            self.assertFalse(marker.exists())
+            self.assertTrue(capture.exists(), f"loop output={stdout!r} stderr={stderr!r}")
+            self.assertEqual(capture.read_text().strip(), "|0.02")
+
+    def test_shell_loops_read_only_their_dotenv_interval(self) -> None:
+        for script_name, key, expected in (
+            ("triage-loop.sh", "SIDEQUESTOR_TRIAGE_INTERVAL", "0.03"),
+            ("ops/heartbeat-loop.sh", "SIDEQUESTOR_HEARTBEAT_INTERVAL", "0.04"),
+        ):
+            with self.subTest(script_name=script_name):
+                with tempfile.TemporaryDirectory(prefix="sidequestor-loop-dotenv-") as raw:
+                    root = Path(raw)
+                    workspace = root / "workspace"
+                    (workspace / "state" / "triage").mkdir(parents=True)
+                    (workspace / ".yaas").mkdir()
+                    (workspace / ".yaas" / "instance.json").write_text("{}\n")
+                    (workspace / ".env").write_text(f"{key}={expected}\n")
+                    capture = root / "capture"
+                    fake_python = root / "python3"
+                    fake_python.write_text(
+                        "#!/bin/sh\n"
+                        "if [ \"$1\" = \"-\" ]; then\n"
+                        "  case \"$2\" in\n"
+                        f"    */.env) printf '%s\\n' \"{expected}\" ;;\n"
+                        "    *) printf '%s\\n' \"$2\" ;;\n"
+                        "  esac\n"
+                        "  exit 0\n"
+                        "fi\n"
+                        f"printf '%s\\n' \"${{{key}-}}\" > \"{capture}\"\n"
+                    )
+                    fake_python.chmod(0o755)
+                    process = subprocess.Popen(
+                        ["bash", str(TRIAGE_ROOT / script_name)],
+                        env={
+                            "PATH": str(root) + os.pathsep + os.environ.get("PATH", ""),
+                            "SIDEQUESTOR_WORKSPACE": str(workspace),
+                        },
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    )
+                    try:
+                        for _ in range(100):
+                            if capture.exists():
+                                break
+                            import time
+                            time.sleep(0.02)
+                    finally:
+                        process.terminate()
+                        stdout, stderr = process.communicate(timeout=5)
+                    self.assertTrue(capture.exists(), f"loop output={stdout!r} stderr={stderr!r}")
+                    self.assertEqual(capture.read_text().strip(), expected)
+
+    def test_cli_loop_validates_and_forwards_interval(self) -> None:
+        from sidequestor.cli import _cmd_loop
+        from sidequestor.workspace import init_workspace
+
+        with tempfile.TemporaryDirectory(prefix="sidequestor-cli-interval-") as raw:
+            with patch.dict(os.environ, {
+                "SIDEQUESTOR_CONFIG_HOME": str(Path(raw) / "config"),
+            }, clear=False):
+                workspace = init_workspace(Path(raw) / "workspace")
+            with patch("sidequestor.cli.run_native", return_value=0) as run:
+                self.assertEqual(_cmd_loop(workspace, ["--interval", "7"]), 0)
+            self.assertEqual(run.call_args.kwargs["extra_env"], {"YAAS_TRIAGE_INTERVAL": "7.0"})
+            with self.assertRaises(SystemExit):
+                _cmd_loop(workspace, ["--interval", "0"])
+
     def test_legacy_environment_aliases_reach_canonical_consumers(self) -> None:
         from sidequestor.native import _apply_env_aliases
 
@@ -34,6 +196,7 @@ class RuntimeConfigTest(unittest.TestCase):
             (workspace / ".env").write_text(
                 "SIDEQUESTOR_AGENT=codex\n"
                 "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+                "SIDEQUESTOR_UNACKED_PROMOTE=9\n"
             )
             with patch.dict(os.environ, {"YAAS_WORKSPACE": str(workspace)}, clear=False):
                 import sys
@@ -53,6 +216,7 @@ class RuntimeConfigTest(unittest.TestCase):
             (workspace / ".env").write_text(
                 "SIDEQUESTOR_AGENT=codex\n"
                 "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+                "SIDEQUESTOR_UNACKED_PROMOTE=9\n"
             )
             environment = {
                 "YAAS_WORKSPACE": str(workspace),
@@ -71,6 +235,7 @@ class RuntimeConfigTest(unittest.TestCase):
                     with patch.object(sys, "argv", ["dashboard-server.py"]):
                         spec.loader.exec_module(module)
                     config = module.build_config()
+                    self.assertEqual(module._dotenv("YAAS_UNACKED_PROMOTE", "3"), "9")
                 finally:
                     sys.path.pop(0)
 
@@ -83,6 +248,65 @@ class RuntimeConfigTest(unittest.TestCase):
             self.assertTrue(items["YAAS_AGENT"]["set"])
             self.assertEqual(items["YAAS_SLACK_CHECKERS_ENABLED"]["value"], "0")
             self.assertTrue(items["YAAS_SLACK_CHECKERS_ENABLED"]["set"])
+
+    def test_health_monitor_configures_thresholds_from_workspace_dotenv(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-health-config-") as raw:
+            workspace = Path(raw)
+            (workspace / ".env").write_text(
+                "SIDEQUESTOR_HEALTH_STALL_MIN=21\n"
+                "SIDEQUESTOR_HEALTH_HUNG_MIN=81\n"
+                "SIDEQUESTOR_APPROVAL_LEASE_MIN=33\n"
+            )
+            import sys
+            sys.path.insert(0, str(TRIAGE_ROOT))
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    "sidequestor_health_test",
+                    TRIAGE_ROOT / "ops" / "health-monitor.py",
+                )
+                module = importlib.util.module_from_spec(spec)
+                assert spec.loader is not None
+                with patch.dict(os.environ, {
+                    "SIDEQUESTOR_WORKSPACE": str(workspace),
+                    "SIDEQUESTOR_RUNTIME_ROOT": str(RUNTIME_ROOT),
+                }, clear=False):
+                    spec.loader.exec_module(module)
+                module.configure(module.load_environment(workspace))
+            finally:
+                sys.path.pop(0)
+            self.assertEqual(module.STALL_MIN, 21.0)
+            self.assertEqual(module.HUNG_MIN, 81.0)
+
+    def test_numeric_runtime_settings_fall_back_on_invalid_values(self) -> None:
+        import sys
+
+        sys.path.insert(0, str(TRIAGE_ROOT))
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "sidequestor_health_invalid_test",
+                TRIAGE_ROOT / "ops" / "health-monitor.py",
+            )
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            module.configure({
+                "YAAS_HEALTH_STALL_MIN": "not-a-number",
+                "YAAS_HEALTH_FAIL_STREAK": "nan",
+            })
+            self.assertEqual(module.STALL_MIN, 10.0)
+            self.assertEqual(module.FAIL_STREAK, 5)
+
+            approval_spec = importlib.util.spec_from_file_location(
+                "sidequestor_approval_invalid_test",
+                TRIAGE_ROOT / "approval_state.py",
+            )
+            approval = importlib.util.module_from_spec(approval_spec)
+            assert approval_spec.loader is not None
+            approval_spec.loader.exec_module(approval)
+            approval.configure({"SIDEQUESTOR_APPROVAL_LEASE_MIN": "bad"})
+            self.assertEqual(approval.LEASE_MINUTES, 45)
+        finally:
+            sys.path.pop(0)
 
     def test_dashboard_build_info_honors_launch_environment(self) -> None:
         environment = {

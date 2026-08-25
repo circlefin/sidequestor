@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -11,7 +12,7 @@ from pathlib import Path
 
 from . import __version__
 from .build_info import build_info
-from .native import dry_tick, run_native, run_native_loop, run_native_tick
+from .native import _environment, dry_tick, run_native, run_native_loop, run_native_tick
 from .dashboard import (
     read_dashboard_url,
     serve as serve_dashboard,
@@ -373,14 +374,40 @@ def _cmd_loop(workspace: Workspace, args: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="yaas loop")
     parser.add_argument("--max-ticks", type=int)
     parser.add_argument("--isolated", action="store_true")
-    parser.add_argument("--interval", type=float, default=float(os.environ.get("YAAS_LOOP_INTERVAL", "60")))
+    configured_env = _environment(workspace)
+    default_interval = configured_env.get(
+        "YAAS_TRIAGE_INTERVAL",
+        configured_env.get("YAAS_LOOP_INTERVAL", "60"),
+    )
+    try:
+        parsed_default = float(default_interval)
+        if not math.isfinite(parsed_default) or parsed_default <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        parsed_default = 60.0
+
+    def positive_interval(value: str) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise argparse.ArgumentTypeError("interval must be a positive number") from exc
+        if not math.isfinite(parsed) or parsed <= 0:
+            raise argparse.ArgumentTypeError("interval must be a positive number")
+        return parsed
+
+    parser.add_argument("--interval", type=positive_interval, default=parsed_default)
     values, unknown = parser.parse_known_args(args)
     if unknown:
         raise SystemExit(f"unknown loop arguments: {' '.join(unknown)}")
     if values.isolated and values.max_ticks is None:
         return run_native_loop(workspace, max(0.01, values.interval))
     if values.max_ticks is None:
-        return run_native(workspace, "yaas-triage/triage-loop.sh", [])
+        return run_native(
+            workspace,
+            "yaas-triage/triage-loop.sh",
+            [],
+            extra_env={"YAAS_TRIAGE_INTERVAL": str(values.interval)},
+        )
     try:
         for _ in range(max(0, values.max_ticks)):
             code = run_native_tick(workspace) if values.isolated else dry_tick(workspace)

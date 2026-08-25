@@ -12,15 +12,24 @@ from sidequestor.workspace import init_workspace
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DOCTOR = PACKAGE_ROOT / "src" / "sidequestor" / "runtime" / "yaas-triage" / "ops" / "doctor.sh"
+TRIAGE_ROOT = PACKAGE_ROOT / "src" / "sidequestor" / "runtime" / "yaas-triage"
 SKILLS_ROOT = PACKAGE_ROOT / "src" / "sidequestor" / "runtime" / "yaas-triage" / "skills"
 ENV_EXAMPLE = PACKAGE_ROOT / "src" / "sidequestor" / "package_data" / "env.example"
 OPERATING = PACKAGE_ROOT / "src" / "sidequestor" / "package_data" / "OPERATING.md"
+SETTINGS_EXAMPLE = PACKAGE_ROOT / "src" / "sidequestor" / "package_data" / "settings.json.example"
 FORBIDDEN_SKILL_PATTERNS = (
     "python3 yaas-triage/",
     "bash yaas-triage/",
     "./yaas-triage/",
     "MCP_CALL=yaas-triage/",
     "\nyaas-triage/tests/",
+    "`yaas-triage/surfaces/jira-call.sh",
+    "via `yaas-triage/skills/yaas-gmail-reply/gmail-reply.py`",
+    "`yaas-triage/ledger/approval-helper.py write",
+    "yaas-triage/tests/behaviour/doc-contracts.test.sh",
+    "python3 checkers/",
+    "com.yaas.triage.plist",
+    "com.yaas.heartbeat",
 )
 
 
@@ -63,7 +72,7 @@ class RuntimeDocsTest(unittest.TestCase):
         # spelled relative to it fails the moment a user copy-pastes it. The skills were
         # swept for this; env.example and OPERATING.md ship to the same workspaces and
         # were missed the first time, which is why they are pinned here too.
-        offenders = self._offenders([ENV_EXAMPLE, OPERATING])
+        offenders = self._offenders([ENV_EXAMPLE, OPERATING, SETTINGS_EXAMPLE])
         self.assertEqual(offenders, [], "\n".join(offenders))
 
     def test_doctor_remediation_advice_is_runnable_from_a_workspace(self) -> None:
@@ -74,6 +83,16 @@ class RuntimeDocsTest(unittest.TestCase):
                      "./setup/install-launchd-heartbeat.sh",
                      "python3 yaas-triage/"):
             self.assertNotIn(dead, text, f"doctor.sh still advises {dead!r}")
+
+    def test_runtime_operator_advice_has_no_legacy_launchd_labels(self) -> None:
+        for path in (DOCTOR, TRIAGE_ROOT / "ops" / "health-monitor.py"):
+            text = path.read_text()
+            self.assertNotIn("com.yaas.triage", text, str(path))
+            self.assertNotIn("com.yaas.heartbeat", text, str(path))
+
+    def test_doctor_does_not_source_workspace_dotenv(self) -> None:
+        self.assertNotIn('source "$ENV_FILE"', DOCTOR.read_text())
+        self.assertNotIn('. "$ENV_FILE"', DOCTOR.read_text())
 
 
 if __name__ == "__main__":
