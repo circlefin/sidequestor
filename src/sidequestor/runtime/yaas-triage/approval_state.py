@@ -31,7 +31,11 @@ def configure(environment=None):
     raw = (environment.get("SIDEQUESTOR_APPROVAL_LEASE_MIN")
            or environment.get("YAAS_APPROVAL_LEASE_MIN")
            or "45")
-    LEASE_MINUTES = int(raw)
+    try:
+        lease = int(raw)
+    except (TypeError, ValueError):
+        lease = 45
+    LEASE_MINUTES = lease if lease > 0 else 45
 
 
 configure()

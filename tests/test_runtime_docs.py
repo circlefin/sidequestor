@@ -12,6 +12,7 @@ from sidequestor.workspace import init_workspace
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DOCTOR = PACKAGE_ROOT / "src" / "sidequestor" / "runtime" / "yaas-triage" / "ops" / "doctor.sh"
+TRIAGE_ROOT = PACKAGE_ROOT / "src" / "sidequestor" / "runtime" / "yaas-triage"
 SKILLS_ROOT = PACKAGE_ROOT / "src" / "sidequestor" / "runtime" / "yaas-triage" / "skills"
 ENV_EXAMPLE = PACKAGE_ROOT / "src" / "sidequestor" / "package_data" / "env.example"
 OPERATING = PACKAGE_ROOT / "src" / "sidequestor" / "package_data" / "OPERATING.md"
@@ -82,6 +83,16 @@ class RuntimeDocsTest(unittest.TestCase):
                      "./setup/install-launchd-heartbeat.sh",
                      "python3 yaas-triage/"):
             self.assertNotIn(dead, text, f"doctor.sh still advises {dead!r}")
+
+    def test_runtime_operator_advice_has_no_legacy_launchd_labels(self) -> None:
+        for path in (DOCTOR, TRIAGE_ROOT / "ops" / "health-monitor.py"):
+            text = path.read_text()
+            self.assertNotIn("com.yaas.triage", text, str(path))
+            self.assertNotIn("com.yaas.heartbeat", text, str(path))
+
+    def test_doctor_does_not_source_workspace_dotenv(self) -> None:
+        self.assertNotIn('source "$ENV_FILE"', DOCTOR.read_text())
+        self.assertNotIn('. "$ENV_FILE"', DOCTOR.read_text())
 
 
 if __name__ == "__main__":

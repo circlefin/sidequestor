@@ -294,20 +294,18 @@ skipped. This is intentionally quest-scoped; a dispatch never scans other quests
 ### Manual launchd control
 
 ```bash
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd.sh"           # install + load
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd.sh" status    # show plist + load state
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd.sh" uninstall # unload + remove plist
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd-heartbeat.sh"  # independent dead-man switch
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/install-launchd-dashboard.sh"  # optional always-on localhost UI
-
 sq stop                    # temporarily stop this workspace's Sidequestor jobs
-sq start                   # start them again; labels are instance-specific
+sq start                   # start triage, heartbeat, and dashboard; labels are instance-specific
+sq doctor                  # inspect all three package-owned launchd jobs
 
 DRY_RUN=1 VERBOSE=1 sq tick   # one tick, no dispatch
 
 tail -f logs/triage.log
 tail -f logs/worker-latest.log
 ```
+
+The legacy `setup/install-launchd*.sh` scripts install fixed `com.yaas.*` labels and are not
+used by the package lifecycle; do not run them for a Sidequestor workspace.
 
 ---
 

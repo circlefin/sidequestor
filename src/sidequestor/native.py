@@ -36,8 +36,9 @@ def _load_workspace_env(environment: dict[str, str], workspace: Workspace) -> di
     env_file = workspace.env_file
     try:
         lines = env_file.read_text().splitlines()
-    except OSError:
+    except (OSError, UnicodeError):
         return environment
+    dotenv: dict[str, str] = {}
     for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -51,7 +52,20 @@ def _load_workspace_env(environment: dict[str, str], workspace: Workspace) -> di
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
             value = value[1:-1]
-        environment.setdefault(key, value)
+        if key not in dotenv:
+            dotenv[key] = value
+    for key, value in dotenv.items():
+        peer = ("YAAS_" + key[len("SIDEQUESTOR_"):]
+                if key.startswith("SIDEQUESTOR_")
+                else "SIDEQUESTOR_" + key[len("YAAS_"):]
+                if key.startswith("YAAS_") else None)
+        # An explicitly exported value wins even when the dotenv file uses the
+        # other namespace. Canonical dotenv names win over legacy names regardless
+        # of line order; alias expansion happens after this merge.
+        if key.startswith("YAAS_") and "SIDEQUESTOR_" + key[len("YAAS_"):] in dotenv:
+            continue
+        if key not in environment and (peer is None or peer not in environment):
+            environment[key] = value
     return environment
 
 

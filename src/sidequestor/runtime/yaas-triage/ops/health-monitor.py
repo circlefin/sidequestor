@@ -30,7 +30,7 @@ ways that happens:
     it). Same outcome: nothing looks wrong.
 
 Both share a property: a health check living inside triage cannot detect triage being
-dead. So this runs as its own launchd job (`com.yaas.heartbeat`), shares no code path
+dead. So this runs as its own package-owned launchd job, shares no code path
 with the triage loop, and is deliberately dependency-free: it reads state files and
 shells out to `osascript`. Nothing it does can be broken by the thing it watches.
 
@@ -60,13 +60,17 @@ fault does not shout every five minutes.
 """
 
 import json
+import math
 import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-_RUNTIME_ROOT = Path(os.environ.get("YAAS_RUNTIME_ROOT", Path(__file__).resolve().parents[2]))
+_RUNTIME_ROOT = Path(
+    os.environ.get("SIDEQUESTOR_RUNTIME_ROOT")
+    or os.environ.get("YAAS_RUNTIME_ROOT", Path(__file__).resolve().parents[2])
+)
 sys.path.insert(0, str(_RUNTIME_ROOT / "yaas-triage"))
 from tick_state import load_environment
 
@@ -86,13 +90,25 @@ def configure(environment):
     """Apply the effective workspace environment to the monitor thresholds."""
     global STALL_MIN, HUNG_MIN, FAIL_STREAK, CHECKER_PROMOTE
     global APPROVAL_STUCK_MIN, EVENT_LOOKBACK_MIN, COOLDOWN_MIN
-    STALL_MIN = float(environment.get("YAAS_HEALTH_STALL_MIN", "10"))
-    HUNG_MIN = float(environment.get("YAAS_HEALTH_HUNG_MIN", "75"))
-    FAIL_STREAK = int(environment.get("YAAS_HEALTH_FAIL_STREAK", "5"))
-    CHECKER_PROMOTE = int(environment.get("YAAS_CHECKER_ERROR_PROMOTE", "6"))
-    APPROVAL_STUCK_MIN = float(environment.get("YAAS_HEALTH_APPROVAL_STUCK_MIN", "45"))
-    EVENT_LOOKBACK_MIN = float(environment.get("YAAS_HEALTH_EVENT_LOOKBACK_MIN", "60"))
-    COOLDOWN_MIN = float(environment.get("YAAS_HEALTH_COOLDOWN_MIN", "360"))
+
+    def number(key, default, integer=False):
+        try:
+            value = float(environment.get(key, default))
+        except (TypeError, ValueError):
+            return int(default) if integer else float(default)
+        if not math.isfinite(value) or value <= 0:
+            return int(default) if integer else float(default)
+        if integer and value != int(value):
+            return int(default)
+        return int(value) if integer else value
+
+    STALL_MIN = number("YAAS_HEALTH_STALL_MIN", 10)
+    HUNG_MIN = number("YAAS_HEALTH_HUNG_MIN", 75)
+    FAIL_STREAK = max(1, number("YAAS_HEALTH_FAIL_STREAK", 5, integer=True))
+    CHECKER_PROMOTE = max(1, number("YAAS_CHECKER_ERROR_PROMOTE", 6, integer=True))
+    APPROVAL_STUCK_MIN = number("YAAS_HEALTH_APPROVAL_STUCK_MIN", 45)
+    EVENT_LOOKBACK_MIN = number("YAAS_HEALTH_EVENT_LOOKBACK_MIN", 60)
+    COOLDOWN_MIN = number("YAAS_HEALTH_COOLDOWN_MIN", 360)
 
 WATCHED_EVENTS = {
     "gate_watch_misconfigured":      "a watch is misconfigured and has stopped being checked",
@@ -169,7 +185,7 @@ class Health:
             self.flag("triage_stalled", f"{int(comp_age)}m",
                       "triage is not running",
                       f"no tick has completed for {int(comp_age)} minutes "
-                      f"(threshold {int(STALL_MIN)}m). Check: launchctl list com.yaas.triage")
+                      f"(threshold {int(STALL_MIN)}m). Check: sq doctor")
         else:
             self.notes.append(f"last tick completed {comp_age:.1f}m ago")
 
@@ -305,7 +321,7 @@ def _should_notify(alerts: dict, prob: dict) -> bool:
 
 
 def _notify(headline, detail, cmd=None):
-    title, subtitle, body = "YAAS health", headline, detail[:200]
+    title, subtitle, body = "Sidequestor health", headline, detail[:200]
     if cmd:
         subprocess.run([cmd, title, subtitle, body], check=False)
         return
@@ -330,7 +346,8 @@ def _repo_root(start):
     asserts that, because a shared module would need sys.path handling whose own path is
     depth-dependent, which is the bug being fixed.
     """
-    override = os.environ.get("YAAS_WORKSPACE")
+    override = (os.environ.get("SIDEQUESTOR_WORKSPACE")
+                or os.environ.get("YAAS_WORKSPACE"))
     if override:
         return Path(override).expanduser().resolve()
     p = Path(start).resolve()
@@ -348,7 +365,8 @@ def main():
 
 
     workspace_override = (os.environ.get("SIDEQUESTOR_WORKSPACE")
-                          or os.environ.get("YAAS_WORKSPACE"))
+                          or os.environ.get("YAAS_WORKSPACE")
+                          or os.environ.get("YAAS_HEALTH_REPO_ROOT"))
     repo = Path(opt("--repo") or workspace_override
                 or _repo_root(__file__))
     environment = load_environment(repo)

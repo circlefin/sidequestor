@@ -29,14 +29,65 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WORKSPACE_ROOT="${SIDEQUESTOR_WORKSPACE:-${YAAS_WORKSPACE:-$SCRIPT_DIR/../..}}"
-if [ -f "$WORKSPACE_ROOT/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$WORKSPACE_ROOT/.env"
-  set +a
+WORKSPACE_ROOT="${SIDEQUESTOR_WORKSPACE:-${YAAS_WORKSPACE:-${PWD:-$SCRIPT_DIR/../..}}}"
+if [ ! -f "$WORKSPACE_ROOT/.yaas/instance.json" ]; then
+  echo "Sidequestor workspace is not set or is missing .yaas/instance.json: $WORKSPACE_ROOT" >&2
+  exit 2
 fi
+
+# Read only the pacing key, inertly. Never source the workspace .env: inherited
+# launchd and `sq` values must remain authoritative, and dotenv values are data.
+_dotenv_value() {
+  python3 - "$WORKSPACE_ROOT/.env" "$1" <<'PY'
+from pathlib import Path
+import sys
+
+path, wanted = Path(sys.argv[1]), sys.argv[2]
+try:
+    lines = path.read_text().splitlines()
+except (OSError, UnicodeError):
+    raise SystemExit(0)
+for raw in lines:
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, _, value = line.partition("=")
+    key = key.strip()
+    if key.startswith("export "):
+        key = key[len("export "):].strip()
+    if key != wanted:
+        continue
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]
+    print(value)
+    break
+PY
+}
+
+if [ -z "${SIDEQUESTOR_HEARTBEAT_INTERVAL:-}" ] && [ -z "${YAAS_HEARTBEAT_INTERVAL:-}" ]; then
+  _dotenv_interval="$(_dotenv_value SIDEQUESTOR_HEARTBEAT_INTERVAL)"
+  [ -n "$_dotenv_interval" ] || _dotenv_interval="$(_dotenv_value YAAS_HEARTBEAT_INTERVAL)"
+  if [ -n "$_dotenv_interval" ]; then
+    export SIDEQUESTOR_HEARTBEAT_INTERVAL="$_dotenv_interval"
+  fi
+fi
+
 INTERVAL="${SIDEQUESTOR_HEARTBEAT_INTERVAL:-${YAAS_HEARTBEAT_INTERVAL:-300}}"
+INTERVAL="$(python3 - "$INTERVAL" <<'PY'
+import math
+import sys
+
+try:
+    value = float(sys.argv[1])
+except (TypeError, ValueError):
+    value = 300.0
+if not math.isfinite(value) or value <= 0:
+    value = 300.0
+print(value)
+PY
+)"
+[ -n "$INTERVAL" ] || INTERVAL=300
 
 while true; do
   # Non-zero just means "something is unhealthy" — that is the normal reporting path,

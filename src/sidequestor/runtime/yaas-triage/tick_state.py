@@ -56,7 +56,8 @@ def _repo_root(start):
     asserts that, because a shared module would need sys.path handling whose own path is
     depth-dependent, which is the bug being fixed.
     """
-    override = os.environ.get("YAAS_WORKSPACE")
+    override = (os.environ.get("SIDEQUESTOR_WORKSPACE")
+                or os.environ.get("YAAS_WORKSPACE"))
     if override:
         return Path(override).expanduser().resolve()
     p = Path(start).resolve()
@@ -130,7 +131,12 @@ def _load_env_file(repo_root, environ):
     envf = Path(repo_root) / ".env"
     if not envf.exists():
         return apply_namespace_aliases(env)
-    for raw in envf.read_text().splitlines():
+    try:
+        lines = envf.read_text().splitlines()
+    except (OSError, UnicodeError):
+        return apply_namespace_aliases(env)
+    dotenv = {}
+    for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -143,7 +149,19 @@ def _load_env_file(repo_root, environ):
         val = val.strip()
         if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
             val = val[1:-1]
-        env.setdefault(key, val)
+        if key not in dotenv:
+            dotenv[key] = val
+    for key, val in dotenv.items():
+        peer = ("YAAS_" + key[len("SIDEQUESTOR_"):]
+                if key.startswith("SIDEQUESTOR_")
+                else "SIDEQUESTOR_" + key[len("YAAS_"):]
+                if key.startswith("YAAS_") else None)
+        # A real process variable wins even if .env uses the other namespace.
+        # Canonical dotenv names win over legacy names regardless of line order.
+        if key.startswith("YAAS_") and "SIDEQUESTOR_" + key[len("YAAS_"):] in dotenv:
+            continue
+        if key not in env and (peer is None or peer not in env):
+            env[key] = val
     return apply_namespace_aliases(env)
 
 

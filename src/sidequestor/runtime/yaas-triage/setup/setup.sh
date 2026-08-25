@@ -368,49 +368,11 @@ if [ "$OAUTH_ONLY" = "1" ]; then
   exit 0
 fi
 
-# ── Offer launchd install ───────────────────────────────────────────────────
+# Launchd installation is owned by the package CLI. The legacy installer scripts
+# create fixed com.yaas.* labels and can race an instance-scoped Sidequestor job.
 echo
-read -p "Install the launchd job to run the triage loop (tick.py) every 60 seconds? [y/N]: " INSTALL_LAUNCHD
-if [[ "$INSTALL_LAUNCHD" =~ ^[Yy] ]]; then
-  if [ -x "$SCRIPT_DIR/install-launchd.sh" ]; then
-    "$SCRIPT_DIR/install-launchd.sh"
-  else
-    echo "install-launchd.sh not found yet — skipping. Run it later when available."
-  fi
-else
-  echo "Skipped. You can run the orchestrator manually any time:"
-  echo "  python3 $TRIAGE_DIR/tick.py"
-fi
-
-# ── Offer launchd install for the heartbeat monitor ─────────────────────────
-# Watches the triage loop from OUTSIDE it — a health check inside the loop can't
-# notice the loop being dead. Strongly recommended alongside the triage job.
-echo
-read -p "Install the heartbeat monitor that watches the triage loop from outside? (recommended) [y/N]: " INSTALL_HEARTBEAT
-if [[ "$INSTALL_HEARTBEAT" =~ ^[Yy] ]]; then
-  if [ -x "$SCRIPT_DIR/install-launchd-heartbeat.sh" ]; then
-    "$SCRIPT_DIR/install-launchd-heartbeat.sh"
-  else
-    echo "install-launchd-heartbeat.sh not found yet — skipping. Run it later when available."
-  fi
-else
-  echo "Skipped. Without it, a dead triage loop can go unnoticed. Install later with:"
-  echo "  $SCRIPT_DIR/install-launchd-heartbeat.sh"
-fi
-
-# ── Offer launchd install for the dashboard ─────────────────────────────────
-echo
-read -p "Install the launchd job to keep the dashboard running continuously? [y/N]: " INSTALL_DASHBOARD
-if [[ "$INSTALL_DASHBOARD" =~ ^[Yy] ]]; then
-  if [ -x "$SCRIPT_DIR/install-launchd-dashboard.sh" ]; then
-    "$SCRIPT_DIR/install-launchd-dashboard.sh"
-  else
-    echo "install-launchd-dashboard.sh not found yet — skipping. Run it later when available."
-  fi
-else
-  echo "Skipped. You can start the dashboard manually any time:"
-  echo "  $TRIAGE_DIR/ops/dashboard-start.sh"
-fi
+echo "Launchd installation is managed by 'sq start' for this workspace."
+echo "Run 'sq start' after setup to install triage, heartbeat, and dashboard together."
 
 # ── Offer daily yaas-v2 auto-sync ───────────────────────────────────────────
 # For people who just want to run the latest YAAS and not build/extend it
