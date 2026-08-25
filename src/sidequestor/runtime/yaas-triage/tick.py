@@ -615,7 +615,16 @@ def run_tick(t):
                         str(t.repo_root), str(t.pending_reactions)))
         react_out = (cp.stdout or "") + (cp.stderr or "")
         if cp.returncode != 0:
-            t.log("REACTIONS checker failed to execute (non-fatal) — reaction sweep skipped this cycle")
+            # Log the cause, do not change what happens. The sweep still skips this cycle
+            # and the next one retries, which is correct — but the message used to say only
+            # that it failed, so a run of these was unattributable after the fact. The
+            # checker prints a taxonomy line (REACTIONS_AUTH_ERROR / TRANSIENT / BAD_ARGS)
+            # plus detail on stderr; surface the first line of it and the exit code.
+            detail = next((line.strip() for line in react_out.splitlines() if line.strip()), "")
+            t.log(f"REACTIONS checker failed to execute (non-fatal) — reaction sweep skipped "
+                  f"this cycle (exit {cp.returncode}{': ' + detail[:200] if detail else ''})")
+            t.event({"event": "gate_reactions_checker_failed",
+                     "exit_code": cp.returncode, "detail": detail[:500]})
         if "REACTIONS_TRUNCATED=1" in react_out:
             t.log("REACTIONS TRUNCATED — the emoji search hit its page cap; older reacted messages were not seen.")
             t.event({"event": "gate_watch_backlog", "quest": "reactions",
@@ -1230,6 +1239,47 @@ def _return_approval_for_review(t, approval_id, reason):
     return True
 
 
+def _initial_run_incomplete(t, qid):
+    """True when a bootstrap quest finished its first run still watching nothing.
+
+    A quest created with `requires_initial_run` carries one placeholder watch: a one-shot
+    `schedule` whose only job is to wake the worker once so it can install the watches the
+    quest actually needs. Nothing enforced that. A worker that read the fired schedule as
+    an ordinary sweep could ack `nothing_to_do`, commit.py would advance the watermark past
+    `next_fire_ts`, and housekeep.retire_schedule() would then delete the spent one-shot —
+    leaving an active quest with `watches: []`, un-fireable forever and looking healthy.
+    That happened in production on 2026-08-25.
+
+    Holding the watermark is what fixes it: `last_checked_ts` stays below `next_fire_ts`,
+    so the one-shot is not retired, the schedule checker finds it due again, and the quest
+    redispatches instead of dying. The caller records no progress, so the existing unacked
+    backoff bounds the retries (5m doubling to a 24h cap) and the dashboard shows it as
+    backing off rather than looping hot.
+
+    Two ways to pass, and the second matters: either the worker appended a real watch, or
+    it moved the quest out of `active`. A genuinely one-shot quest ("do this once") SHOULD
+    end with no watches — but it has to say so by completing, not by sitting active and
+    empty. That is the distinction the old code could not draw.
+    """
+    quest_dir = t.quests_dir / qid
+    meta = t._read_json(quest_dir / "meta.json", None)
+    if not isinstance(meta, dict) or meta.get("requires_initial_run") is not True:
+        return False
+    if meta.get("status") != "active":
+        return False
+    doc = t._read_json(quest_dir / "watch.json", None)
+    watches = (doc or {}).get("watches") if isinstance(doc, dict) else None
+    if not isinstance(watches, list):
+        return False          # unreadable watch.json is watch-guard's problem, not ours
+    for w in watches:
+        if not isinstance(w, dict):
+            continue
+        bootstrap = (w.get("type") == "schedule" and "cron" not in w and "next_fire_ts" in w)
+        if not bootstrap:
+            return False      # a real watch exists: the quest is armed
+    return True
+
+
 def _record_progress(t, scope, committed_ids):
     """Bump the no-progress counter for every manifest item NOT in committed_ids; clear it for
     those that were. Mirrors the original shell orchestrator _record_progress."""
@@ -1392,6 +1442,14 @@ def commit_quest(t, qid, dirty_watches_json):
         _record_progress(t, qid, [])
         return
     acked = [x for x in (cpa.stdout or "").splitlines() if x.strip()]
+
+    if _initial_run_incomplete(t, qid):
+        t.log(f"INIT INCOMPLETE [{qid}] — bootstrap run installed no watch and the quest is "
+              f"still active; watermarks held so the one-shot schedule is not retired.")
+        t.event({"event": "gate_initial_run_incomplete", "quest": qid,
+                 "run_id": t.dispatch_run_id})
+        _record_progress(t, qid, [])
+        return
 
     decision_in = {"quest_id": qid, "acked": acked, "dirty_watches": dirty_watches_json}
     cpd = t.run(t.py(t.helper("ledger", "commit.py"), json.dumps(decision_in)))

@@ -226,7 +226,7 @@ PLIST="$HOME/Library/LaunchAgents/com.yaas.triage.plist"
 if [ -f "$PLIST" ]; then
   ok "plist installed at $PLIST"
 else
-  fail "plist not installed — run ./setup/install-launchd.sh"
+  fail "plist not installed — run \`sq start\`"
 fi
 
 if launchctl list com.yaas.triage >/dev/null 2>&1; then
@@ -260,14 +260,14 @@ if launchctl list com.yaas.triage >/dev/null 2>&1; then
       ;;
     512)
       # 2 << 8 — set -eu aborted
-      fail "Last exit was code 2 — a bad numeric .env knob makes the orchestrator refuse to run. Run 'python3 yaas-triage/tick.py' manually to see the error."
+      fail "Last exit was code 2 — a bad numeric .env knob makes the orchestrator refuse to run. Run 'sq tick' manually to see the error."
       ;;
     *)
       warn "Unexpected LastExitStatus=$STATUS — check logs/triage.err.log"
       ;;
   esac
 else
-  fail "launchd job not loaded — run ./setup/install-launchd.sh"
+  fail "launchd job not loaded — run \`sq start\`"
 fi
 
 # ── 6. Runtime liveness — delegated ─────────────────────────────────────────
@@ -285,10 +285,10 @@ if [ -f "$HEALTH" ]; then
     ok "health-monitor reports healthy ($(jq -r '.ts // "?"' "$HEALTH"))"
   else
     fail "health-monitor reports problems: $(jq -r '[.problems[].headline] | join("; ")' "$HEALTH" 2>/dev/null)"
-    [ "$QUIET" = "0" ] && echo "    Detail: python3 yaas-triage/ops/health-monitor.py --json"
+    [ "$QUIET" = "0" ] && echo "    Detail: python3 \"$RUNTIME_ROOT/yaas-triage/ops/health-monitor.py\" --json"
   fi
 else
-  warn "no health-status.json — install the heartbeat: ./setup/install-launchd-heartbeat.sh"
+  warn "no health-status.json — install the heartbeat: \`sq start\`"
 fi
 
 # ── 7. Quest folder sanity ──────────────────────────────────────────────────

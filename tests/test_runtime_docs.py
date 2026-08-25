@@ -13,6 +13,8 @@ from sidequestor.workspace import init_workspace
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DOCTOR = PACKAGE_ROOT / "src" / "sidequestor" / "runtime" / "yaas-triage" / "ops" / "doctor.sh"
 SKILLS_ROOT = PACKAGE_ROOT / "src" / "sidequestor" / "runtime" / "yaas-triage" / "skills"
+ENV_EXAMPLE = PACKAGE_ROOT / "src" / "sidequestor" / "package_data" / "env.example"
+OPERATING = PACKAGE_ROOT / "src" / "sidequestor" / "package_data" / "OPERATING.md"
 FORBIDDEN_SKILL_PATTERNS = (
     "python3 yaas-triage/",
     "bash yaas-triage/",
@@ -43,14 +45,35 @@ class RuntimeDocsTest(unittest.TestCase):
         self.assertIn(str(workspace.root / ".env"), result.stdout)
         self.assertNotIn("src/sidequestor/runtime/.env", result.stdout)
 
-    def test_shipped_skills_do_not_use_workspace_relative_helper_commands(self) -> None:
+    def _offenders(self, paths) -> list[str]:
         offenders: list[str] = []
-        for path in sorted(SKILLS_ROOT.rglob("SKILL.md")):
+        for path in paths:
             text = path.read_text()
             for pattern in FORBIDDEN_SKILL_PATTERNS:
                 if pattern in text:
                     offenders.append(f"{path.relative_to(PACKAGE_ROOT)}: {pattern}")
+        return offenders
+
+    def test_shipped_skills_do_not_use_workspace_relative_helper_commands(self) -> None:
+        offenders = self._offenders(sorted(SKILLS_ROOT.rglob("SKILL.md")))
         self.assertEqual(offenders, [], "\n".join(offenders))
+
+    def test_shipped_config_and_operating_docs_use_resolvable_commands(self) -> None:
+        # `<workspace>/yaas-triage/` does not exist in a pip install, so any command
+        # spelled relative to it fails the moment a user copy-pastes it. The skills were
+        # swept for this; env.example and OPERATING.md ship to the same workspaces and
+        # were missed the first time, which is why they are pinned here too.
+        offenders = self._offenders([ENV_EXAMPLE, OPERATING])
+        self.assertEqual(offenders, [], "\n".join(offenders))
+
+    def test_doctor_remediation_advice_is_runnable_from_a_workspace(self) -> None:
+        # doctor.sh tells the user how to fix what it found. Advice naming a path that
+        # cannot exist is worse than no advice: it reads as authoritative.
+        text = DOCTOR.read_text()
+        for dead in ("./setup/install-launchd.sh",
+                     "./setup/install-launchd-heartbeat.sh",
+                     "python3 yaas-triage/"):
+            self.assertNotIn(dead, text, f"doctor.sh still advises {dead!r}")
 
 
 if __name__ == "__main__":
