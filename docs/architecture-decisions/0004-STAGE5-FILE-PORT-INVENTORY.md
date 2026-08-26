@@ -235,11 +235,11 @@ runtime files. Their accepted behavior is:
   `SIDEQUESTOR_RUNTIME_ROOT` names and their YAAS runtime aliases. Registry
   storage similarly gives `SIDEQUESTOR_CONFIG_HOME` precedence over
   `YAAS_CONFIG_HOME`.
-- The dashboard production job requests port `0`; the adapter allocates a free
-  loopback port and writes `state/dashboard-url.txt` only after the server has
-  bound successfully. `sq start` waits for this readiness marker and prints the
-  selected URL; `sq dashboard url` is the later lookup path. It removes the
-  readiness file when the server exits.
+- The dashboard production job requests port `0`; the adapter scans for the
+  first free loopback port starting at `8877` and writes `state/dashboard-url.txt`
+  only after the server has bound successfully. `sq start` waits for this
+  readiness marker and prints the selected URL; `sq dashboard url` is the later
+  lookup path. It removes the readiness file when the server exits.
 - Dashboard control and full snapshots expose the selected workspace's display
   name, canonical path, and instance ID. The top bar shows the name and an
   ellipsized path, retains the full path as a tooltip, and hides only the path
