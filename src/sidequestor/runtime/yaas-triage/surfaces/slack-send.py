@@ -44,6 +44,8 @@ Usage
     reply_broadcast  (optional)  bool; also post a thread reply to the channel
     draft            (optional)  bool; save a draft via slack_send_message_draft
                                  (nothing is sent; logged as draft_posted)
+    approval_id       (optional)  reviewed approval being executed; its reviewed_at
+                                  participates in the stale-reply freshness check
     quest_id         (optional)  quest to log under. If omitted, nothing is
                                  logged (send-only; e.g. reactions fast path).
     event            (optional)  timeline event name. Default "message_sent"
@@ -70,6 +72,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 def _repo_root(start):
@@ -100,7 +103,9 @@ def _repo_root(start):
 
 REPO_ROOT = _repo_root(__file__)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from timeline_io import utc_now, quest_dir, append_timeline
+import approval_store
 MCP_CALL = os.environ.get("MCP_CALL", str(Path(__file__).parent / "mcp-call.sh"))
 
 
@@ -155,7 +160,26 @@ def _thread_last_activity(channel_id: str, thread_ts: str):
     return newest
 
 
-def _stale_reason(channel_id, thread_ts, now=None):
+def _approval_reviewed_timestamp(approval_id):
+    """Return the approval's reviewed_at epoch, if it is available."""
+    if not approval_id:
+        return None
+    try:
+        item = next(
+            (i for i in approval_store.read_queue().get("items", [])
+             if i.get("id") == approval_id),
+            None,
+        )
+        value = item.get("reviewed_at") if item else None
+        if not value:
+            return None
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (AttributeError, TypeError, ValueError, OSError, OverflowError, json.JSONDecodeError):
+        # A missing or malformed approval timestamp must not weaken the guard.
+        return None
+
+
+def _stale_reason(channel_id, thread_ts, now=None, approval_id=None):
     """Should this send be held for review? Returns a reason string, or None to send.
 
     Fails CLOSED: if the thread cannot be read, we cannot show the conversation is
@@ -171,7 +195,9 @@ def _stale_reason(channel_id, thread_ts, now=None):
     newest = _thread_last_activity(channel_id, thread_ts)
     if newest is None:
         return "could not read the thread to confirm it is still live"
-    age_h = (now - newest) / 3600.0
+    reviewed_at = _approval_reviewed_timestamp(approval_id)
+    freshest = max(newest, reviewed_at) if reviewed_at is not None else newest
+    age_h = (now - freshest) / 3600.0
     if age_h > STALE_HOURS:
         return (f"newest message in the thread is {age_h:.1f}h old "
                 f"(limit {STALE_HOURS:.0f}h), so the conversation has moved on")
@@ -215,6 +241,7 @@ def _parse_args(argv):
     parser.add_argument("--channel-id", "--channel", dest="channel_id", required=True)
     parser.add_argument("--message", "--text", dest="message", required=True)
     parser.add_argument("--thread-ts")
+    parser.add_argument("--approval-id")
     parser.add_argument("--reply-broadcast", action="store_true")
     parser.add_argument("--draft", action="store_true")
     parser.add_argument("--quest-id")
@@ -229,6 +256,8 @@ def _parse_args(argv):
     }
     if ns.thread_ts:
         p["thread_ts"] = ns.thread_ts
+    if ns.approval_id:
+        p["approval_id"] = ns.approval_id
     if ns.reply_broadcast:
         p["reply_broadcast"] = True
     if ns.draft:
@@ -280,7 +309,7 @@ def main():
     #    Enforced here, in the only sanctioned send path, rather than as a rule in
     #    CLAUDE.md, because a rule the model can forget is not a guard.
     if not is_draft:
-        reason = _stale_reason(channel_id, thread_ts)
+        reason = _stale_reason(channel_id, thread_ts, approval_id=p.get("approval_id"))
         if reason:
             appr_id = _queue_for_review(p, reason)
             quest_dir_path = quest_dir(REPO_ROOT, quest_id) if quest_id else None
