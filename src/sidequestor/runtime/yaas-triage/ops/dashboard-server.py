@@ -877,7 +877,7 @@ def build_config() -> dict:
             knob("YAAS_CHECKER_ERROR_PROMOTE", 6, "Consecutive checker errors before a watch is held as misconfig."),
         ]},
         {"title": "Timing", "items": [
-            knob("YAAS_STALE_REPLY_HOURS", 24, "Replies older than this are drafted, not sent (stale-reply guard)."),
+            knob("YAAS_STALE_REPLY_HOURS", 168, "Replies older than this are drafted, not sent (stale-reply guard)."),
             knob("YAAS_RETIRE_DEFAULT_DAYS", 14, "Default age at which a stale slack_thread watch is retired."),
             knob("YAAS_RETIRE_EPHEMERAL_HOURS", 168, "Lifetime of a watch marked ephemeral (a DM reply-catcher). Unmarked watches never expire."),
         ]},

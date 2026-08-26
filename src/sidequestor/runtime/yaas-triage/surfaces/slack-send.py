@@ -126,7 +126,7 @@ def _call_slack(tool: str, args: dict) -> str:
 
 
 # How old the conversation may be before a reply needs human review, in hours.
-STALE_HOURS = float(os.environ.get("YAAS_STALE_REPLY_HOURS", "24"))
+STALE_HOURS = float(os.environ.get("YAAS_STALE_REPLY_HOURS", "168"))
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
