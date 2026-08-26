@@ -85,8 +85,8 @@ the venv interpreter path instead of resolving through its symlink to a global
 Python. This keeps a persistent installation independent of the invoking
 shell and source checkout.
 
-The production dashboard does not assume port 8877. It requests a free
-loopback port and publishes the selected URL only after successful bind.
+The production dashboard starts scanning at port 8877, skips occupied ports,
+and publishes the selected loopback URL only after successful bind.
 Its header identifies the selected workspace by configured display name and
 canonical path; the path truncates visually but remains available as a tooltip,
 and the compact mobile layout keeps the name while hiding the path.

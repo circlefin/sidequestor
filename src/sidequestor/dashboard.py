@@ -16,6 +16,7 @@ from .workspace import Workspace
 
 
 DASHBOARD_READY_TIMEOUT = 6.0
+DASHBOARD_PORT_START = 8877
 
 
 def _dashboard_process_file(workspace: Workspace) -> Path:
@@ -92,9 +93,19 @@ def stop_dashboard_process(workspace: Workspace) -> bool:
 
 
 def _ephemeral_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
+    """Return the first available loopback port at or above the default."""
+    for port in range(DASHBOARD_PORT_START, 65536):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind(("127.0.0.1", port))
+            return port
+        except PermissionError:
+            # Preserve the existing diagnostic so callers can distinguish a
+            # sandbox or host policy from ordinary port occupancy.
+            raise
+        except OSError:
+            continue
+    raise OSError(f"no available dashboard port from {DASHBOARD_PORT_START} upward")
 
 
 def serve(workspace: Workspace, port: int = 8877) -> int:
