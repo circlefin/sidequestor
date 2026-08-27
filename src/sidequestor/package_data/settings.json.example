@@ -1,0 +1,12 @@
+{
+  "_comment": "Copy to settings.json and customize. settings.json is gitignored — personal, not published back to yaas-v2.",
+
+  "user_profile": {
+    "tone": {}
+  },
+
+  "sync": {
+    "_comment": "For people who want the canonical yaas-v2 template pulled without building it themselves. When true, the orchestrator pulls it once every 24h, fast-forward only. Set up during setup.sh (or run bash \"$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/init-yaas-v2-tracking.sh\" yourself). If you've customized a tracked template file, the pull is skipped that day rather than overwriting your changes — check state/yaas-v2-sync-status.json for the result.",
+    "yaas_v2_auto_pull": false
+  }
+}
