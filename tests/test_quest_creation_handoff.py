@@ -52,6 +52,18 @@ class QuestCreationBootstrapTest(unittest.TestCase):
     def test_field_guide_describes_dashboard_bootstrap_creation(self):
         self.assertIn("Sidequestor visibly bootstraps exact watches", self.html)
 
+    def test_reaction_guide_renders_shortcode_before_other_panels(self):
+        poll_start = self.html.index("async function poll()")
+        poll_end = self.html.index("\nasync function post", poll_start)
+        render_start = self.html.index("function render(){")
+        render_end = self.html.index("\nasync function poll()", render_start)
+        poll_body = self.html[poll_start:poll_end]
+        render_body = self.html[render_start:render_end]
+        self.assertIn("renderReactionGuide()", poll_body)
+        self.assertNotIn("renderReactionGuide()", render_body)
+        self.assertIn("state.control?.reaction_emojis", self.html)
+        self.assertIn("name?`:${name}:`:'unavailable'", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()
