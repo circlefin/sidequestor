@@ -4,6 +4,17 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.13 - 2026-08-31
+
+### Added
+- Cursor is now a first-class worker backend in `sq setup`, with optional
+  `SIDEQUESTOR_CURSOR_MODEL` pinning and Cursor's account/CLI model default when unset.
+
+### Changed
+- The setup template and README document `claude`, `codex`, and `cursor` consistently.
+- Cursor setup no longer creates Claude/Codex-only reasoning-effort or permission-mode settings.
+- Setup rejects an invalid existing worker backend instead of silently carrying it forward.
+
 ## 0.1.6.dev0 - 2026-08-25
 
 ### Changed
