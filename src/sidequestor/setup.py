@@ -15,6 +15,12 @@ from .workspace import Workspace
 
 
 _PLACEHOLDERS = {None, "", "<set>", "CHANGE_ME", "TODO"}
+_BACKENDS = {"claude", "codex", "cursor"}
+_MODEL_DEFAULTS = {
+    "claude": "claude-opus-4-6",
+    "codex": "gpt-5.6-luna",
+    "cursor": "",
+}
 _ENV_LINE = re.compile(r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$")
 _INTERACTIVE_INSTRUCTIONS = (
     "Before acting on a triage dispatch, read `.yaas/engine/current/OPERATING.md`.\n"
@@ -97,7 +103,7 @@ def provision_env(workspace: Workspace, *, input_fn=input, interactive: bool = T
 
     existing = {key: _value(lines, key) for key in (
         "SIDEQUESTOR_SLACK_CHECKERS_ENABLED", "SIDEQUESTOR_AGENT",
-        "SIDEQUESTOR_CLAUDE_MODEL", "SIDEQUESTOR_CODEX_MODEL",
+        "SIDEQUESTOR_CLAUDE_MODEL", "SIDEQUESTOR_CODEX_MODEL", "SIDEQUESTOR_CURSOR_MODEL",
         "SIDEQUESTOR_CLAUDE_EFFORT", "SIDEQUESTOR_CODEX_EFFORT",
         "SIDEQUESTOR_CLAUDE_PERMISSION_MODE", "SIDEQUESTOR_CODEX_PERMISSION_MODE",
         "SLACK_APP_ID", "SLACK_CLIENT_ID", "SLACK_WORKSPACE_NAME", "SLACK_WORKSPACE_DOMAIN",
@@ -115,29 +121,38 @@ def provision_env(workspace: Workspace, *, input_fn=input, interactive: bool = T
 
     agent = existing["SIDEQUESTOR_AGENT"]
     if agent in _PLACEHOLDERS:
-        agent = _prompt("Worker backend (claude or codex)", "codex", input_fn=input_fn) if interactive else "codex"
-        if agent not in {"claude", "codex"}:
-            raise SystemExit("worker backend must be claude or codex")
+        agent = _prompt("Worker backend (claude, codex, or cursor)", "codex", input_fn=input_fn) if interactive else "codex"
+        if agent not in _BACKENDS:
+            raise SystemExit("worker backend must be claude, codex, or cursor")
         values["SIDEQUESTOR_AGENT"] = agent
     else:
         if interactive:
             print(f"Preserving existing worker backend: {agent}")
+    if agent not in _BACKENDS:
+        raise SystemExit("worker backend must be claude, codex, or cursor")
 
     model_key = f"SIDEQUESTOR_{agent.upper()}_MODEL"
-    effort_key = f"SIDEQUESTOR_{agent.upper()}_EFFORT"
-    permission_key = f"SIDEQUESTOR_{agent.upper()}_PERMISSION_MODE"
+    model_default = _MODEL_DEFAULTS[agent]
     model = existing.get(model_key)
     if model in _PLACEHOLDERS:
-        model = _prompt("Worker model", "claude-opus-4-6" if agent == "claude" else "gpt-5.6-luna", input_fn=input_fn) if interactive else ("claude-opus-4-6" if agent == "claude" else "gpt-5.6-luna")
-        values[model_key] = model
-    effort = existing.get(effort_key)
-    if effort in _PLACEHOLDERS:
-        effort = _prompt("Reasoning effort", "high", input_fn=input_fn) if interactive else "high"
-        values[effort_key] = effort
-    permission = existing.get(permission_key)
-    if permission in _PLACEHOLDERS:
-        permission = _prompt("Worker permission mode", "workspace-write", input_fn=input_fn) if interactive else "workspace-write"
-        values[permission_key] = permission
+        prompt = "Worker model (blank uses Cursor's default)" if agent == "cursor" else "Worker model"
+        model = _prompt(prompt, model_default, input_fn=input_fn) if interactive else model_default
+        if model:
+            values[model_key] = model
+
+    # Cursor's CLI has its own execution mode and does not expose the Claude/Codex
+    # effort or permission flags used by the other backends.
+    if agent != "cursor":
+        effort_key = f"SIDEQUESTOR_{agent.upper()}_EFFORT"
+        permission_key = f"SIDEQUESTOR_{agent.upper()}_PERMISSION_MODE"
+        effort = existing.get(effort_key)
+        if effort in _PLACEHOLDERS:
+            effort = _prompt("Reasoning effort", "high", input_fn=input_fn) if interactive else "high"
+            values[effort_key] = effort
+        permission = existing.get(permission_key)
+        if permission in _PLACEHOLDERS:
+            permission = _prompt("Worker permission mode", "workspace-write", input_fn=input_fn) if interactive else "workspace-write"
+            values[permission_key] = permission
 
     if enabled:
         for key in ("SLACK_APP_ID", "SLACK_CLIENT_ID", "SLACK_WORKSPACE_NAME", "SLACK_WORKSPACE_DOMAIN"):

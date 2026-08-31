@@ -59,6 +59,37 @@ class SetupTests(unittest.TestCase):
             self.assertIn("SIDEQUESTOR_CODEX_MODEL=gpt-5.6-luna", content)
             self.assertIn("SIDEQUESTOR_CODEX_EFFORT=high", content)
 
+    def test_cursor_provisioning_uses_cursor_defaults_without_foreign_knobs(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            sync_resources(workspace)
+            workspace.env_file.write_text(
+                "SIDEQUESTOR_AGENT=cursor\n"
+                "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+            )
+
+            provision_env(workspace, interactive=False)
+
+            content = workspace.env_file.read_text()
+            self.assertNotIn("SIDEQUESTOR_CURSOR_MODEL=", content)
+            self.assertNotIn("SIDEQUESTOR_CURSOR_EFFORT", content)
+            self.assertNotIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE", content)
+
+    def test_interactive_setup_accepts_cursor(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            sync_resources(workspace)
+            workspace.env_file.write_text("SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n")
+            answers = iter(["cursor", "sonnet-4-thinking"])
+
+            provision_env(workspace, input_fn=lambda _prompt: next(answers), interactive=True)
+
+            content = workspace.env_file.read_text()
+            self.assertIn("SIDEQUESTOR_AGENT=cursor", content)
+            self.assertIn("SIDEQUESTOR_CURSOR_MODEL=sonnet-4-thinking", content)
+            self.assertNotIn("SIDEQUESTOR_CURSOR_EFFORT", content)
+            self.assertNotIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE", content)
+
     def test_interactive_instructions_target_selected_backend_without_writing(self):
         from contextlib import redirect_stdout
         from io import StringIO

@@ -38,7 +38,7 @@ Exit code is the AGENT's exit code, with 124 for a watchdog kill (matching timeo
 convention, which triage already treats specially: acks written before the kill are
 still trustworthy, so they still commit).
 
-Env passed through to dispatch-agent.sh: YAAS_AGENT, YAAS_CLAUDE_*, YAAS_CODEX_*,
+Env passed through to dispatch-agent.sh: YAAS_AGENT, YAAS_CLAUDE_*, YAAS_CODEX_*, YAAS_CURSOR_*,
 REPO_ROOT.
 """
 
