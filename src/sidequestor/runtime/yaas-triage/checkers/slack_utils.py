@@ -204,6 +204,11 @@ def drain(fetch_page, since: float, filter_user_ids=None, filter_keywords=None,
     return total, preview, None, False, None
 
 
+_MESSAGE_HEADER = re.compile(
+    r"^=== Message from .+\(([A-Z0-9]+)(?:,\s*external:\s*[^\r\n]+)?\) at .+ ==="
+)
+
+
 def parse_slack_messages(
     text: str,
     since: float,
@@ -220,6 +225,7 @@ def parse_slack_messages(
 
     The MCP header format is:
         === Message from NAME <email> (USER_ID) at DATETIME ===
+        === Message from NAME <email> (USER_ID, external: ORGANIZATION) at DATETIME ===
         Message TS: NUMERIC_TS
         body lines...
     """
@@ -228,7 +234,7 @@ def parse_slack_messages(
     current_user_id = None
     i = 0
     while i < len(lines):
-        header_m = re.match(r"=== Message from .+\(([A-Z0-9]+)\) at .+ ===", lines[i])
+        header_m = _MESSAGE_HEADER.match(lines[i])
         if header_m:
             current_user_id = header_m.group(1)
             i += 1
@@ -243,7 +249,7 @@ def parse_slack_messages(
         # `=== Message from ... ===` and its `Message TS:` line — that is inherent to
         # the Slack MCP returning unescaped delimited text and is only fully closed
         # by structured (per-message) MCP output.
-        if ts_m and i > 0 and re.match(r"=== Message from .+\(([A-Z0-9]+)\) at .+ ===", lines[i - 1]):
+        if ts_m and i > 0 and _MESSAGE_HEADER.match(lines[i - 1]):
             # current_user_id is only valid for the message right after its
             # header; capture then clear so a TS block with no preceding header
             # can't inherit (and mis-attribute to) the previous message's author.
@@ -300,7 +306,7 @@ def _parse_page(text, since, filter_user_ids=None, filter_keywords=None):
     current_user_id = None
     i = 0
     while i < len(lines):
-        header_m = re.match(r"=== Message from .+\(([A-Z0-9]+)\) at .+ ===", lines[i])
+        header_m = _MESSAGE_HEADER.match(lines[i])
         if header_m:
             current_user_id = header_m.group(1)
             i += 1
@@ -319,8 +325,7 @@ def _parse_page(text, since, filter_user_ids=None, filter_keywords=None):
             # ponytail: an adjacent forged header+TS pair typed into a body remains
             # indistinguishable in this text format; only structured MCP output
             # closes that fully.
-            header_adjacent = i > 0 and re.match(
-                r"=== Message from .+\(([A-Z0-9]+)\) at .+ ===", lines[i - 1])
+            header_adjacent = i > 0 and _MESSAGE_HEADER.match(lines[i - 1])
             if ts <= since:
                 saw_old = True
                 i += 1
@@ -361,7 +366,12 @@ _THREAD_RECORD_START = re.compile(
     r"^(?:=== THREAD PARENT MESSAGE ===|--- Reply \d+ of \d+ ---)$",
     re.MULTILINE,
 )
-_THREAD_FROM = re.compile(r"^From: .*\(([A-Z0-9]+)\)$", re.MULTILINE)
+# Slack Connect appends organization metadata inside the author parentheses.
+# Capture only the stable user ID so author filters behave identically for both forms.
+_THREAD_FROM = re.compile(
+    r"^From: .*\(([A-Z0-9]+)(?:,\s*external:\s*[^\r\n]+)?\)$",
+    re.MULTILINE,
+)
 _THREAD_TS = re.compile(r"^Message TS:\s*([0-9]+\.[0-9]+)$", re.MULTILINE)
 
 

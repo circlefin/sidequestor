@@ -924,31 +924,7 @@ def housekeep(t, quest_dirs):
                t.env.get("YAAS_MANIFEST_RETAIN_DAYS", "7")))
     t.run(t.py(t.helper("ledger", "checker-health.py"), "prune",
                t.env.get("YAAS_CHECKER_HEALTH_RETAIN_DAYS", "30")))
-    _prune_reaction_state(t)
     _prune_worker_logs(t)
-
-
-def _prune_reaction_state(t):
-    """Cap each reaction state file to its newest 1000 timestamps. Mirrors the original shell orchestrator: without
-    this the replied/saved arrays grow unbounded and every reaction sweep pays to read them."""
-    for name in ("claude_intensifies_replied.json", "writing_hand_replied.json",
-                 "floppy_disk_saved.json", "incoming_envelope_adopted.json"):
-        p = t.repo_root / "state" / name
-        data = t._read_json(p, None)
-        if not isinstance(data, dict) or not data:
-            continue
-        key = next(iter(data))  # replied_timestamps or saved_timestamps
-        arr = data.get(key)
-        if isinstance(arr, list) and len(arr) > 1000:
-            data[key] = sorted(arr)[-1000:]
-            try:
-                tmp = str(p) + ".tmp"
-                with open(tmp, "w") as f:
-                    json.dump(data, f, indent=2)
-                os.replace(tmp, p)
-                t.log(f"Pruned {p} to 1000 entries (was {len(arr)})")
-            except OSError:
-                pass
 
 
 def _prune_worker_logs(t):

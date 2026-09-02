@@ -4,6 +4,18 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.15 - 2026-09-02
+
+### Fixed
+- Slack Connect author metadata is accepted by thread and channel-style message parsers, so
+  external replies no longer enter safe backoff or get silently skipped.
+
+## 0.1.14 - 2026-08-31
+
+### Fixed
+- Slack Connect process reactions now fall back to an in-thread draft when direct sending is
+  restricted, and blocked reaction work is retained across checker sweeps instead of being lost.
+
 ## 0.1.13 - 2026-08-31
 
 ### Added

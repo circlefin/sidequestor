@@ -31,12 +31,76 @@ Message TS: 102.000000
 second reply
 """
 
+EXTERNAL_THREAD = """=== THREAD PARENT MESSAGE ===
+From: External Parent <parent@partner.example> (UEXT1, external: Partner Org (Singapore))
+Time: 2026-08-27 10:00:00 +07
+Message TS: 100.000000
+external parent
+
+=== THREAD REPLIES (2 total) ===
+
+--- Reply 1 of 2 ---
+From: Internal Reply <internal@example.com> (UINT1)
+Time: 2026-08-27 10:01:00 +07
+Message TS: 101.000000
+internal reply
+
+--- Reply 2 of 2 ---
+From: External Reply <reply@another.example> (UEXT2, external: Another Organization (APAC))
+Time: 2026-08-27 10:02:00 +07
+Message TS: 102.000000
+external reply
+"""
+
+MIXED_CHANNEL = """=== Message from External Author <external@partner.example> (UEXT3, external: Partner Org (APAC)) at 2026-08-27 10:03:00 +07 ===
+Message TS: 103.000000
+external channel message
+=== Message from Internal Author <internal@example.com> (UINT2) at 2026-08-27 10:04:00 +07 ===
+Message TS: 104.000000
+internal channel message
+"""
+
+
+class SlackMessageParserTest(unittest.TestCase):
+    def test_external_channel_author_is_counted_and_filterable(self):
+        got = slack_utils.parse_slack_messages(MIXED_CHANNEL, 100.0, ["UEXT3"])
+        self.assertEqual(got, (1, "external channel message"))
+
+    def test_external_channel_author_advances_page_coverage(self):
+        got = slack_utils._parse_page(MIXED_CHANNEL, 100.0, ["UEXT3"])
+        self.assertEqual(got, (1, "external channel message", 103.0, False, 2))
+
+    def test_channel_header_tolerates_trailing_whitespace_and_crlf(self):
+        text = MIXED_CHANNEL.replace(" ===\n", " === \r\n")
+        got = slack_utils._parse_page(text, 100.0, ["UEXT3"])
+        self.assertEqual(got, (1, "external channel message", 103.0, False, 2))
+
 
 class SlackThreadParserTest(unittest.TestCase):
-    def test_thread_replies_are_counted(self):
+    def test_internal_only_thread_replies_are_counted(self):
         got = slack_utils._parse_thread_page(THREAD, 100.0)
         self.assertEqual(got[:3], (2, "second reply", 102.0))
         self.assertEqual(got[3:], (True, 3))
+
+    def test_external_parent_is_parsed_but_never_counted(self):
+        parent = EXTERNAL_THREAD.split("=== THREAD REPLIES", 1)[0]
+        got = slack_utils._parse_thread_page(parent, 0.0)
+        self.assertEqual(got, (0, "", 0.0, False, 1))
+
+    def test_external_reply_is_counted_and_filterable_by_user_id(self):
+        got = slack_utils._parse_thread_page(EXTERNAL_THREAD, 100.0, ["UEXT2"])
+        self.assertEqual(got, (1, "external reply", 102.0, True, 3))
+
+    def test_mixed_internal_and_external_authors_are_counted(self):
+        got = slack_utils._parse_thread_page(EXTERNAL_THREAD, 100.0)
+        self.assertEqual(got, (2, "external reply", 102.0, True, 3))
+
+    def test_unknown_author_annotation_still_fails_closed(self):
+        malformed = EXTERNAL_THREAD.replace(
+            ", external: Another Organization (APAC)", ", guest: Another Organization (APAC)"
+        )
+        with self.assertRaisesRegex(ValueError, r"incomplete slack thread response record$"):
+            slack_utils._parse_thread_page(malformed, 100.0)
 
     def test_thread_author_filter_is_applied_to_replies(self):
         got = slack_utils._parse_thread_page(THREAD, 100.0, ["U1"])

@@ -67,6 +67,15 @@ class RuntimeDocsTest(unittest.TestCase):
         offenders = self._offenders(sorted(SKILLS_ROOT.rglob("SKILL.md")))
         self.assertEqual(offenders, [], "\n".join(offenders))
 
+    def test_process_reaction_has_slack_connect_draft_fallback(self) -> None:
+        skill = (SKILLS_ROOT / "yaas-reactions" / "SKILL.md").read_text()
+        process_row = next(
+            line for line in skill.splitlines() if line.startswith("| `process` |")
+        )
+        self.assertIn("mcp_externally_shared_channel_restricted", process_row)
+        self.assertIn('"draft": true', process_row)
+        self.assertIn("ack it `blocked`", process_row)
+
     def test_shipped_config_and_operating_docs_use_resolvable_commands(self) -> None:
         # `<workspace>/yaas-triage/` does not exist in a pip install, so any command
         # spelled relative to it fails the moment a user copy-pastes it. The skills were
