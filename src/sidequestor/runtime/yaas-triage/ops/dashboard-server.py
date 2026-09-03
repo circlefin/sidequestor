@@ -971,11 +971,22 @@ def build_dashboard(include_briefs: bool = False) -> dict:
         timeline_path = quest_dir / "timeline.ndjson"
         if timeline_path.exists():
             lines = [l for l in timeline_path.read_text().splitlines() if l.strip()]
+            li_block = li_other = -1
+            for idx, raw in enumerate(lines):
+                try:
+                    ev = json.loads(raw).get("event", "")
+                except Exception:
+                    continue
+                if ev == "blocked":
+                    li_block = idx
+                else:
+                    li_other = idx
+            blocked_now = li_block >= 0 and li_block > li_other
             for raw in reversed(lines[-20:]):
                 try:
                     e = json.loads(raw)
                     ev = e.get("event", "")
-                    if ev == "blocked" and last_blocked is None:
+                    if blocked_now and ev == "blocked" and last_blocked is None:
                         last_blocked = {"ts": e.get("ts"), "reason": (e.get("reason") or e.get("note") or "")[:80]}
                     if ev != "blocked" and last_seen_ts is None:
                         last_seen_ts = e.get("ts")
@@ -986,7 +997,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
                             "event": ev,
                             "note":  (e.get("note") or "")[:80],
                         }
-                    if last_action and last_blocked and last_seen_ts:
+                    if last_action and last_seen_ts and (last_blocked or not blocked_now):
                         break
                 except Exception:
                     continue

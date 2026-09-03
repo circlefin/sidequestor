@@ -336,6 +336,46 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertEqual(build["commit_full"], "abcdef0123456789")
         self.assertEqual(build["ref"], "package/sidequestor-0.1.0")
 
+    def test_dashboard_only_surfaces_a_block_as_the_latest_timeline_state(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-dashboard-blocked-") as raw:
+            workspace = Path(raw)
+            quest = workspace / "state" / "quests" / "active" / "quest-one"
+            quest.mkdir(parents=True)
+            (quest / "meta.json").write_text('{"title":"Quest one","status":"active"}')
+            timeline = quest / "timeline.ndjson"
+            environment = {
+                "YAAS_WORKSPACE": str(workspace),
+                "YAAS_RUNTIME_ROOT": str(RUNTIME_ROOT),
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                import sys
+                sys.path.insert(0, str(TRIAGE_ROOT))
+                try:
+                    spec = importlib.util.spec_from_file_location(
+                        "sidequestor_dashboard_blocked_test",
+                        TRIAGE_ROOT / "ops" / "dashboard-server.py",
+                    )
+                    module = importlib.util.module_from_spec(spec)
+                    assert spec.loader is not None
+                    with patch.object(sys, "argv", ["dashboard-server.py"]):
+                        spec.loader.exec_module(module)
+
+                    timeline.write_text(
+                        '{"ts":"2026-09-01T00:00:00Z","event":"blocked","reason":"waiting"}\n'
+                        '{"ts":"2026-09-02T00:00:00Z","event":"note","note":"recovered"}\n'
+                    )
+                    recovered = module.build_dashboard()["quests"][0]
+                    self.assertIsNone(recovered["last_blocked"])
+
+                    timeline.write_text(
+                        timeline.read_text()
+                        + '{"ts":"2026-09-03T00:00:00Z","event":"blocked","reason":"new block"}\n'
+                    )
+                    blocked = module.build_dashboard()["quests"][0]
+                    self.assertEqual(blocked["last_blocked"]["reason"], "new block")
+                finally:
+                    sys.path.pop(0)
+
     def test_dashboard_reaction_guide_resolves_defaults_and_overrides(self) -> None:
         """The guide must show the real emoji. Seeding the canonical key with an empty
         string shadowed both the legacy value and the default, failing every role."""

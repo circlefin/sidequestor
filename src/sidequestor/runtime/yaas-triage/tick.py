@@ -38,6 +38,7 @@ the original shell orchestrator has been retired to archive/.
 """
 
 import errno
+import fcntl
 import json
 import math
 import os
@@ -237,29 +238,82 @@ def advance_watches(t, qid, moves):
     watch = t.quests_dir / qid / "watch.json"
     if not watch.exists() or not moves:
         return True
-    data = t._read_json(watch, None)
-    if not isinstance(data, dict):
-        t.log(f"WATCH WRITE FAILED: {qid} — unreadable watch.json")
-        return False
-    by_id = {m["watch_id"]: m for m in moves}
-    for w in data.get("watches", []) or []:
-        m = by_id.get(w.get("watch_id"))
-        if m is None:
-            continue
-        adv = m.get("advance_to")
-        if adv is not None and str(adv) != "":
-            w["last_checked_ts"] = slack_ts(adv)
-        else:
-            lag = t.lag_map.get(w.get("type"), 0)
-            w["last_checked_ts"] = slack_ts(t.now_ts - lag)
     try:
-        tmp = watch.parent / f".watch.{os.getpid()}.tmp"
-        tmp.write_text(json.dumps(data, indent=2) + "\n")
-        os.replace(tmp, watch)
-    except OSError:
+        lock_path = watch.with_name(watch.name + ".lock")
+        with open(lock_path, "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            data = t._read_json(watch, None)
+            if not isinstance(data, dict):
+                raise ValueError("unreadable watch.json")
+            by_id = {m["watch_id"]: m for m in moves}
+            for w in data.get("watches", []) or []:
+                m = by_id.get(w.get("watch_id"))
+                if m is None:
+                    continue
+                adv = m.get("advance_to")
+                if adv is not None and str(adv) != "":
+                    w["last_checked_ts"] = slack_ts(adv)
+                else:
+                    lag = t.lag_map.get(w.get("type"), 0)
+                    w["last_checked_ts"] = slack_ts(t.now_ts - lag)
+            tmp = watch.parent / f".watch.{os.getpid()}.tmp"
+            tmp.write_text(json.dumps(data, indent=2) + "\n")
+            os.replace(tmp, watch)
+    except (OSError, ValueError):
         t.log(f"WATCH WRITE FAILED: {qid} — {len(moves)} watermark(s) not advanced")
         return False
     return True
+
+
+def record_thread_activity(t):
+    """Persist newest observed message timestamps before age-based housekeeping.
+
+    This is deliberately independent of worker acknowledgement: acknowledgement owns the
+    processing watermark, while the checker has already proved that the thread was active.
+    Returns quest IDs whose activity could not be persisted so retirement can fail closed.
+    """
+    by_quest = {}
+    for move in t.dirty_watches:
+        if move.get("type") != "slack_thread":
+            continue
+        try:
+            activity = float(move.get("advance_to"))
+        except (TypeError, ValueError):
+            continue
+        if not (activity > 0 and math.isfinite(activity) and activity <= t.now_ts + 300):
+            continue
+        by_quest.setdefault(move["quest_id"], {})[move["watch_id"]] = activity
+
+    failed = set()
+    for qid, activity_by_id in by_quest.items():
+        watch = t.quests_dir / qid / "watch.json"
+        lock_path = watch.with_name(watch.name + ".lock")
+        try:
+            with open(lock_path, "a+") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                data = t._read_json(watch, None)
+                if not isinstance(data, dict):
+                    raise ValueError("unreadable watch.json")
+                changed = False
+                for entry in data.get("watches", []) or []:
+                    activity = activity_by_id.get(entry.get("watch_id"))
+                    if activity is None:
+                        continue
+                    try:
+                        current = float(entry.get("last_activity_ts") or 0)
+                    except (TypeError, ValueError):
+                        current = 0.0
+                    if not math.isfinite(current) or activity > current:
+                        entry["last_activity_ts"] = slack_ts(activity)
+                        changed = True
+                if changed:
+                    tmp = watch.parent / f".watch-activity.{os.getpid()}.tmp"
+                    tmp.write_text(json.dumps(data, indent=2) + "\n")
+                    os.replace(tmp, watch)
+        except (OSError, ValueError) as exc:
+            failed.add(qid)
+            t.log(f"WATCH ACTIVITY WRITE FAILED: {qid} — housekeeping held ({exc})")
+    return failed
 
 
 # ── Per-quest check ───────────────────────────────────────────────────────────
@@ -748,6 +802,8 @@ def run_tick(t):
     for qid, moves in clean_by_quest.items():
         advance_watches(t, qid, moves)
 
+    activity_write_failures = record_thread_activity(t)
+
     # ── Update check-phase counters + housekeeping ──────────────────────────────
     dirty_count = len(t.dirty_quests)
     clean_count = sum(1 for r in t.results if r["status"] == "clean")
@@ -764,7 +820,7 @@ def run_tick(t):
                      "watches_misconfigured": watches_misconfigured,
                      "watches_in_backoff": watches_backoff,
                      "watches_truncated": watches_truncated})
-    housekeep(t, quest_dirs)
+    housekeep(t, quest_dirs, skip_quests=activity_write_failures)
 
     # ── Decide: idle? ────────────────────────────────────────────────────────────
     if dirty_count == 0 and not t.reactions_dirty:
@@ -908,9 +964,12 @@ def _bump_unacked(t, key, wtype, status):
         pass
 
 
-def housekeep(t, quest_dirs):
+def housekeep(t, quest_dirs, skip_quests=None):
     """Retire dead watches (housekeep.py owns the predicate) + prune ledgers. Best-effort."""
+    skip_quests = skip_quests or set()
     for qd in quest_dirs:
+        if qd.name in skip_quests:
+            continue
         watch = qd / "watch.json"
         meta = qd / "meta.json"
         if not watch.exists():
@@ -924,31 +983,7 @@ def housekeep(t, quest_dirs):
                t.env.get("YAAS_MANIFEST_RETAIN_DAYS", "7")))
     t.run(t.py(t.helper("ledger", "checker-health.py"), "prune",
                t.env.get("YAAS_CHECKER_HEALTH_RETAIN_DAYS", "30")))
-    _prune_reaction_state(t)
     _prune_worker_logs(t)
-
-
-def _prune_reaction_state(t):
-    """Cap each reaction state file to its newest 1000 timestamps. Mirrors the original shell orchestrator: without
-    this the replied/saved arrays grow unbounded and every reaction sweep pays to read them."""
-    for name in ("claude_intensifies_replied.json", "writing_hand_replied.json",
-                 "floppy_disk_saved.json", "incoming_envelope_adopted.json"):
-        p = t.repo_root / "state" / name
-        data = t._read_json(p, None)
-        if not isinstance(data, dict) or not data:
-            continue
-        key = next(iter(data))  # replied_timestamps or saved_timestamps
-        arr = data.get(key)
-        if isinstance(arr, list) and len(arr) > 1000:
-            data[key] = sorted(arr)[-1000:]
-            try:
-                tmp = str(p) + ".tmp"
-                with open(tmp, "w") as f:
-                    json.dump(data, f, indent=2)
-                os.replace(tmp, p)
-                t.log(f"Pruned {p} to 1000 entries (was {len(arr)})")
-            except OSError:
-                pass
 
 
 def _prune_worker_logs(t):

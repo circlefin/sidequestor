@@ -67,6 +67,15 @@ class RuntimeDocsTest(unittest.TestCase):
         offenders = self._offenders(sorted(SKILLS_ROOT.rglob("SKILL.md")))
         self.assertEqual(offenders, [], "\n".join(offenders))
 
+    def test_process_reaction_has_slack_connect_draft_fallback(self) -> None:
+        skill = (SKILLS_ROOT / "yaas-reactions" / "SKILL.md").read_text()
+        process_row = next(
+            line for line in skill.splitlines() if line.startswith("| `process` |")
+        )
+        self.assertIn("mcp_externally_shared_channel_restricted", process_row)
+        self.assertIn('"draft": true', process_row)
+        self.assertIn("ack it `blocked`", process_row)
+
     def test_shipped_config_and_operating_docs_use_resolvable_commands(self) -> None:
         # `<workspace>/yaas-triage/` does not exist in a pip install, so any command
         # spelled relative to it fails the moment a user copy-pastes it. The skills were
@@ -89,6 +98,15 @@ class RuntimeDocsTest(unittest.TestCase):
             text = path.read_text()
             self.assertNotIn("com.yaas.triage", text, str(path))
             self.assertNotIn("com.yaas.heartbeat", text, str(path))
+
+    def test_quest_docs_keep_summary_in_context_and_history_in_timeline(self) -> None:
+        dispatch = (SKILLS_ROOT / "yaas-quest-dispatch" / "SKILL.md").read_text()
+        creation = (SKILLS_ROOT / "yaas-quest-creation" / "SKILL.md").read_text()
+        scaffold = (SKILLS_ROOT / "yaas-quest-creation" / "new-quest.py").read_text()
+        for text in (dispatch, creation, scaffold, OPERATING.read_text()):
+            self.assertIn("latest summary of things", text)
+        self.assertIn("timeline.ndjson` is the chronological record", dispatch)
+        self.assertIn("Do not append dated updates", dispatch)
 
     def test_doctor_does_not_source_workspace_dotenv(self) -> None:
         self.assertNotIn('source "$ENV_FILE"', DOCTOR.read_text())

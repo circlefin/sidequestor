@@ -140,6 +140,11 @@ Keep the lag as small as the source allows. Every second of lag widens the windo
 
 `last_checked_ts` is always a Unix epoch float string. The orchestrator is the sole owner of this field — the worker must never modify existing entries (it may only append new ones).
 
+In an interactive session, retire an obsolete entry by persistent ID with
+`sq watch retire <quest_id> <watch_id> "<reason>"`. The helper shares the triage lock, removes
+exactly one watch atomically, and records `watch_retired` in the quest timeline. It refuses to
+run during a tick. There is no replace command; retire the old watch, then add the new one.
+
 Old quests may carry six dead arrays at the bottom (`threads`, `dm_partners`, `channels`, `schedules`, `emails`, `reactions`) — harmless legacy. New quests created via `new-quest.py` only have `watches[]`.
 
 ### meta.json schema

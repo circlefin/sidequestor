@@ -74,12 +74,18 @@ Ask the user for, in order:
    expert channel (`#help-*`, `#cpn-se-questions`, `#cpn-*`, `#api-key-permissions`, any
    `#oncall-*` or `#eng-*` escalation channel). It tells the worker to read replies and relay
    outcomes, but never post back into that thread. Without it, the bot will reply in expert
-   channels and annoy the humans there. `new-quest.py` validates that the only legal value is
-   `"read_only"` — any typo is caught at creation time.
+   channels and annoy the humans there. It applies to **`slack_thread` watches only**: the send
+   helper enforces it by matching the exact channel and thread, so a channel- or DM-level watch
+   cannot carry it. `new-quest.py` validates both rules — the only legal value is `"read_only"`,
+   only on a `slack_thread` — so a typo or a misplaced mode is caught at creation time.
 
    **Note:** reaction-workflow triggers (`process`, `draft`, `save`, and `adopt`) are tracked globally by the triage orchestrator and are NOT a per-quest watch input. Do not include them in `watches[]`.
 3. **Priority** — high / normal / low. Default to normal if unspecified.
-4. **Context** — ask the user to paste or describe what this quest is about. This becomes the body of `context.md`. If they already gave context earlier in the conversation, use that; don't re-ask.
+4. **Context** — ask the user to paste or describe what this quest is about. Turn it into a
+   compact mission brief: objective, durable decision rules, important links, and the
+   latest summary of things. Do not seed `context.md` with a conversation transcript or chronological
+   updates; those belong in `timeline.ndjson`. If they already gave context earlier in the
+   conversation, use that; don't re-ask.
 
 ### 2. Generate the quest ID
 

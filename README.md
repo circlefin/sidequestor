@@ -8,7 +8,7 @@ you can always see exactly what it did.
 - 🎯 **Quests, not chores** — you describe the mission once; the triage loop watches for what changes.
 - 🏠 **Local-first** — your machine, your Slack token, your files. Nothing to host.
 - 🔍 **Nothing hidden** — every dispatch leaves a transcript, a timeline entry and a run log.
-- 🤖 **Your agent, your call** — `codex` out of the box, `claude` if you prefer.
+- 🤖 **Your agent, your call** — `codex` out of the box, or `claude` and `cursor` if you prefer.
 
 ## Before you start
 
@@ -16,7 +16,7 @@ A short checklist, so nothing surprises you halfway through:
 
 - macOS with launchd (that is what runs the loop) and Python ≥ 3.11.
 - The command-line tools `jq`, `curl`, `openssl`, `security` and `open`.
-- An already-authenticated `claude` **or** `codex` CLI. Sidequestor never logs in for you.
+- An already-authenticated `claude`, `codex`, **or** `cursor-agent` CLI. Sidequestor never logs in for you.
 
 Sidequestor installs zero Python dependencies, so pip cannot check the list above for you.
 The Slack setup script checks the tools it needs before it runs, and
@@ -40,7 +40,7 @@ python -m pip install sidequestor
 sidequestor init .
 # Save the ready-to-paste Slack YAML manifest.
 sq setup --manifest > slack-app-manifest.yaml
-# Run interactive onboarding; choose bypassPermissions for the worker backend.
+# Run interactive onboarding; choose bypassPermissions when using the Codex backend.
 sq setup
 # Start triage, heartbeat, and the dashboard and print the dashboard URL.
 sq start
@@ -61,11 +61,11 @@ Commands use the current directory when it is an initialized workspace. From els
 5. If you grant a scope later, reinstall the app and run `sq setup` again.
 6. In Basic Information, copy the App ID and Client ID into `.env`, then complete OAuth.
 
-The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-5.6-luna` at `high` effort.
+The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-5.6-luna` at `high` effort. You can select `cursor` to use the authenticated `cursor-agent` CLI; leave `SIDEQUESTOR_CURSOR_MODEL` unset to use Cursor's default model, or set it to pin a model.
 
 ## What permissions does the worker need?
 
-For unattended work, choose `bypassPermissions` at the Worker permission mode prompt. This lets the selected agent execute filesystem, shell, and network/MCP operations without per-action approval, so use it only in a workspace where that behavior is acceptable.
+For unattended Codex work, choose `bypassPermissions` at the Worker permission mode prompt. This lets Codex execute filesystem, shell, and network/MCP operations without per-action approval. Cursor uses its own CLI execution mode and Sidequestor auto-approves its MCP calls; Claude uses its native permission mode. Use unattended backends only in a workspace where that behavior is acceptable.
 
 ```bash
 # Allow Claude workers to execute unattended tool actions.

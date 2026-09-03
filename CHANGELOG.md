@@ -4,6 +4,43 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.17 - 2026-09-03
+
+### Fixed
+- Production upgrades now snapshot and drain every process in each launchd job before installing
+  or restarting, including detached worker and dashboard child processes.
+
+## 0.1.16 - 2026-09-03
+
+### Fixed
+- Slack approvals authorize only their reviewed channel and thread, including when a recent review
+  refreshes the stale-reply guard; an approval for another destination cannot bypass either check.
+- Read-only monitoring is limited to exact Slack threads, completed quests cannot send, and watch
+  retirement replays tolerate malformed timeline records without losing an earlier audit event.
+
+## 0.1.15 - 2026-09-02
+
+### Fixed
+- Slack Connect author metadata is accepted by thread and channel-style message parsers, so
+  external replies no longer enter safe backoff or get silently skipped.
+
+## 0.1.14 - 2026-08-31
+
+### Fixed
+- Slack Connect process reactions now fall back to an in-thread draft when direct sending is
+  restricted, and blocked reaction work is retained across checker sweeps instead of being lost.
+
+## 0.1.13 - 2026-08-31
+
+### Added
+- Cursor is now a first-class worker backend in `sq setup`, with optional
+  `SIDEQUESTOR_CURSOR_MODEL` pinning and Cursor's account/CLI model default when unset.
+
+### Changed
+- The setup template and README document `claude`, `codex`, and `cursor` consistently.
+- Cursor setup no longer creates Claude/Codex-only reasoning-effort or permission-mode settings.
+- Setup rejects an invalid existing worker backend instead of silently carrying it forward.
+
 ## 0.1.6.dev0 - 2026-08-25
 
 ### Changed

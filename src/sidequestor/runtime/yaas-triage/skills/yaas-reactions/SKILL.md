@@ -17,10 +17,10 @@ Reactions are their own dispatch target, **handled independently from quests**. 
 
 | Reaction | Behavior | State file |
 |---|---|---|
-| `process` | The user's "process this" trigger. Research the thread, then reply through `surfaces/slack-send.py` without a `quest_id` (send-only mode) and with the parent `thread_ts`. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/claude_intensifies_replied.json` |
+| `process` | The user's "process this" trigger. Research the thread, then reply through `surfaces/slack-send.py` without a `quest_id` (send-only mode) and with the parent `thread_ts`. If the send fails with `mcp_externally_shared_channel_restricted`, retry through the same helper with `"draft": true` in the actual target thread, then DM the user only the draft permalink. Mark the item handled only after the reply or draft succeeds; if both fail, leave the reaction at `:loading:` and ack it `blocked`. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/claude_intensifies_replied.json` |
 | `draft` | Research, then create a draft through `surfaces/slack-send.py` with `"draft": true` and no `quest_id`. Drive the reaction lifecycle as you go (see § Reaction lifecycle). If the draft fails with `mcp_externally_shared_channel_restricted`, save it to the actual target thread through the same helper, then DM the user only the permalink to that thread — not the draft text. They'll open the thread, find the draft in the compose box, and send it themselves. | `state/writing_hand_replied.json` |
 | `save` | Save context silently to `state/context-memory/` (see § Context memory). Do not reply. No lifecycle (one-shot, no emoji swaps). | `state/floppy_disk_saved.json` |
-| `adopt` | Adopt the message into its owning quest: find the active quest watching this channel/thread, append a `slack_thread` watch on it, log to that quest's timeline with `log-event.py` (never hand-write the line: it stamps the real UTC time, which you cannot know). Do not reply. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/incoming_envelope_adopted.json` |
+| `adopt` | Adopt the message into its owning quest: find the active quest watching this channel/thread, add a `slack_thread` watch on it with `"refresh_activity": true`, and log to that quest's timeline with `log-event.py` (never hand-write the line: it stamps the real UTC time, which you cannot know). The helper re-arms an existing duplicate watch without creating a second entry. Do not reply. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/incoming_envelope_adopted.json` |
 
 ### Reaction lifecycle (action reactions)
 
@@ -85,7 +85,9 @@ reply guard and keeps every backend on the same Slack identity.
 
 ### Thread tracking
 
-The § 3a "Track what you touched" rule applies only to quest work. Reactions do NOT append to any `watch.json`. The state file (`*_replied.json`) is the sole record that the reaction was handled.
+The § 3a "Track what you touched" rule applies only to quest work. The `adopt` role is the
+sole exception: it adds or re-arms the owning quest's thread watch. Other reaction roles do
+not append to any `watch.json`; their state file (`*_replied.json`) is the sole handling record.
 
 ### Context memory structure (`save`)
 
