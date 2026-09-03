@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 import subprocess
 import sys
@@ -66,6 +67,22 @@ class Stage2BehaviorTest(unittest.TestCase):
         watch_id = result.stdout.strip()
         self.assertTrue(watch_id.startswith("watch-"))
 
+        retired = self.invoke(
+            "watch", "retire", "quest-stage2", watch_id, "schedule is obsolete",
+        )
+        self.assertEqual(json.loads(retired.stdout)["watch_id"], watch_id)
+        self.assertEqual(
+            json.loads((quest / "watch.json").read_text())["watches"], [],
+        )
+        timeline = [json.loads(line) for line in (quest / "timeline.ndjson").read_text().splitlines()]
+        self.assertEqual(timeline[-1]["event"], "watch_retired")
+        self.assertEqual(timeline[-1]["reason"], "schedule is obsolete")
+
+        retried = self.invoke(
+            "watch", "retire", "quest-stage2", watch_id, "schedule is obsolete",
+        )
+        self.assertEqual(retried.stdout.strip(), f"skip:already_retired:{watch_id}")
+
         result = self.invoke("log", json.dumps({
             "quest_id": "quest-stage2",
             "event": "note",
@@ -96,6 +113,64 @@ class Stage2BehaviorTest(unittest.TestCase):
         })).stdout.strip()
         self.assertTrue(approval.startswith("appr-"))
         self.assertTrue((quest / "timeline.ndjson").exists())
+
+    def test_watch_retire_refuses_an_active_dispatch(self) -> None:
+        quest = self._quest("quest-active-dispatch")
+        watch = json.dumps({
+            "type": "schedule",
+            "cron": "* * * * *",
+            "tz": "UTC",
+            "reason": "Stage 2 active dispatch test",
+        })
+        watch_id = self.invoke("watch", "quest-active-dispatch", watch).stdout.strip()
+        tick_lock = self.workspace / "logs" / "triage.lock"
+        tick_lock.parent.mkdir(parents=True, exist_ok=True)
+        with open(tick_lock, "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = self.invoke(
+                "watch", "retire", "quest-active-dispatch", watch_id, "not now", check=False,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("active_dispatch", result.stderr)
+        self.assertEqual(len(json.loads((quest / "watch.json").read_text())["watches"]), 1)
+
+    def test_watch_retire_survives_a_corrupt_timeline_line(self) -> None:
+        """A malformed NDJSON line must not hide the watch_retired event from a replay."""
+        quest = self._quest("quest-corrupt-timeline")
+        watch = json.dumps({
+            "type": "schedule",
+            "cron": "* * * * *",
+            "tz": "UTC",
+            "reason": "Stage 2 corrupt timeline test",
+        })
+        watch_id = self.invoke("watch", "quest-corrupt-timeline", watch).stdout.strip()
+        self.invoke("watch", "retire", "quest-corrupt-timeline", watch_id, "obsolete")
+        timeline = quest / "timeline.ndjson"
+        timeline.write_text("{not json at all\nnull\n[]\n" + timeline.read_text())
+        replay = self.invoke(
+            "watch", "retire", "quest-corrupt-timeline", watch_id, "obsolete",
+        )
+        self.assertEqual(replay.stdout.strip(), f"skip:already_retired:{watch_id}")
+
+    def test_read_only_is_rejected_on_a_non_thread_watch(self) -> None:
+        """read_only is enforced per-thread, so a channel watch must not claim it."""
+        self._quest("quest-read-only-scope")
+        rejected = self.invoke("watch", "quest-read-only-scope", json.dumps({
+            "type": "slack_channel",
+            "channel_id": "C0AAAA0",
+            "reason": "Stage 2 read_only scope test",
+            "watch_mode": "read_only",
+        }), check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("read_only_needs_slack_thread", rejected.stderr)
+        accepted = self.invoke("watch", "quest-read-only-scope", json.dumps({
+            "type": "slack_thread",
+            "channel_id": "C0AAAA0",
+            "thread_ts": "1.000001",
+            "reason": "Stage 2 read_only scope test",
+            "watch_mode": "read_only",
+        }))
+        self.assertTrue(accepted.stdout.strip().startswith("watch-"))
 
     def test_external_surfaces_are_isolated_and_recorded(self) -> None:
         self.invoke("slack-send", "--channel-id", "D0AAAA0", "--message", "hello", "--draft")
@@ -135,7 +210,8 @@ class Stage2BehaviorTest(unittest.TestCase):
         self.assertIn("Sidequestor Worker Operating Instructions", operating_text)
         self.assertIn("absolute packaged runtime root", operating_text)
         self.assertIn("A `reviewed` approval records the user's authorization", operating_text)
-        self.assertIn("do not apply\n  `allow_send` again as a permanent veto", operating_text)
+        self.assertIn("A claimed `slack_message` approval can authorize", operating_text)
+        self.assertIn("`manual_instruction` does not override", operating_text)
         self.assertIn("$SIDEQUESTOR_RUNTIME_ROOT", operating_text)
         self.assertNotIn("Never send unless the quest allows it", operating_text)
         self.assertIn("SIDEQUESTOR_CLAUDE_PERMISSION_MODE=acceptEdits", (self.workspace / ".env.example").read_text())

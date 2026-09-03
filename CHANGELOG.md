@@ -4,6 +4,14 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.16 - 2026-09-03
+
+### Fixed
+- Slack approvals authorize only their reviewed channel and thread, including when a recent review
+  refreshes the stale-reply guard; an approval for another destination cannot bypass either check.
+- Read-only monitoring is limited to exact Slack threads, completed quests cannot send, and watch
+  retirement replays tolerate malformed timeline records without losing an earlier audit event.
+
 ## 0.1.15 - 2026-09-02
 
 ### Fixed

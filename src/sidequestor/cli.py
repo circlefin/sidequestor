@@ -110,6 +110,7 @@ def _command_help(command: str) -> str:
         "dashboard": "sidequestor [--workspace PATH] dashboard serve|url",
         "migrate": "sidequestor [--workspace PATH] migrate [NAME|--name NAME]",
         "upgrade": "sidequestor [--workspace PATH] upgrade [--source GITHUB_URL --ref REF] [--pre] [--yes] [--no-restart]",
+        "watch": "sidequestor [--workspace PATH] watch QUEST_ID WATCH_JSON\n       sidequestor [--workspace PATH] watch retire QUEST_ID WATCH_ID REASON",
     }
     usage = examples.get(command, f"sidequestor [--workspace PATH] {command} [ARGS...]")
     return f"usage: {usage}\n\n{COMMANDS[command]}"

@@ -15,7 +15,7 @@ The loop owns watermark advancement in both modes: never edit an existing `watch
 
 ### ⚠️ Invariant: you do NOT modify existing `watch.json` entries
 
-The triage orchestrator is the **sole owner** of watermark state. It advances `last_checked_ts` for clean watches immediately, and for a dispatched watch only when you closed it in the ack ledger (§ 4a) AND the checker proved it drained its window. Your exit code alone advances nothing. **Never edit an existing entry in `watch.json`** (never change a `last_checked_ts`, never remove an entry). If you do, you'll corrupt the termination-safety guarantee.
+The triage orchestrator is the **sole owner** of watermark state. It advances `last_checked_ts` for clean watches immediately, and for a dispatched watch only when you closed it in the ack ledger (§ 4a) AND the checker proved it drained its window. Your exit code alone advances nothing. **Never edit an existing entry in `watch.json`** (never change a `last_checked_ts`, never remove an entry by hand). If you do, you'll corrupt the termination-safety guarantee. In Mode B, retire an obsolete watch only through `sq watch retire <quest_id> <watch_id> "<reason>"`; it refuses to run during an active dispatch.
 
 You **may** append new entries to `watch.json` — see the "Track what you touched" rule below. New entries start with `last_checked_ts` set to the response_ts of your reply so triage looks forward from there.
 
@@ -24,7 +24,7 @@ You may:
 - **Append new entries** to `watch.json` `watches[]` — never modify existing ones
 - **Write** `meta.json` (to change quest status / priority)
 - **Append** to `timeline.ndjson` via `log-event.py` (to log actions)
-- **Write or edit** `context.md` (to update narrative)
+- **Write or edit** `context.md` (to update the latest summary of things)
 - **Move** the quest folder (`active/` → `completed/` or `archived/`)
 
 ---
@@ -36,13 +36,19 @@ For each dirty quest ID passed to you:
 Quest folder:
 ```
 state/quests/active/<quest_id>/
-├── context.md      ← why this quest exists + state      (you may write)
+├── context.md      ← objective, rules, latest summary   (you may write)
 ├── meta.json       ← status, priority, allow_send       (you may write)
 ├── watch.json      ← watermarks — READ ONLY for you     (the orchestrator owns)
 └── timeline.ndjson ← append-only log of prior actions   (append via log-event.py)
 ```
 
 **Default: read only `context.md`.** It tells you the objective and the per-quest decision rules. That is usually enough to know what to do with the new activity.
+
+`context.md` is the compact working summary, not the history. Keep the objective, durable
+decision rules, important links, and the latest summary of things there. Rewrite that summary
+in place when the situation changes. `timeline.ndjson` is the chronological record of facts,
+actions, messages, and milestones. Do not append dated updates, copied conversations, tool
+output, or timeline-style log dumps to `context.md`.
 
 Read the other files **only when a specific decision requires them**:
 
@@ -160,13 +166,16 @@ If the commitment genuinely needs to wait (e.g., "after my call with X tomorrow"
 
 When you post into an internal routing or expert channel to request help on behalf of a user, the resulting thread is for **outcome monitoring only**. Those channels are staffed by humans who want a single crisp ask — continued bot presence is noise.
 
-**Always set `"watch_mode": "read_only"`** when adding a `slack_thread` watch on a thread you posted into any internal help or routing channel (e.g. `#help-*`, `#oncall-*`, `#eng-*`, or any internal escalation channel in your org).
+**Always set `"watch_mode": "read_only"`** when adding a `slack_thread` watch on a thread you posted into any internal help or routing channel (e.g. `#help-*`, `#oncall-*`, `#eng-*`, or any internal escalation channel in your org). It is a `slack_thread`-only mode, enforced by an exact channel + thread match, so it gags that one thread and nothing else in the channel — and the helpers reject it on a `slack_channel` or `slack_dm` watch rather than silently blocking every send to that destination.
 
 **When triage fires on a `read_only` watch:**
-1. Read the new replies and update `context.md` with the latest state.
-2. Log it with `log-event.py` (§4).
+1. Read the new replies and log the new information with `log-event.py` (§4).
+2. Update `context.md` with the latest summary of things, replacing the previous summary rather
+   than appending the replies or another dated update.
 3. Do NOT post back into the thread. No follow-ups, no re-summaries, no "thanks."
-4. **Exception:** a human in the thread asks you a direct question by name. One reply is appropriate.
+4. **If a human asks you a direct question by name:** draft the reply for approval. The send
+   helper enforces read-only mode, so only a claimed `slack_message` approval reviewed for
+   *that* channel and thread can post it — an approval for anywhere else will not.
 5. **If a resolution arrives:** draft the relay message to the customer, but do NOT post it in the escalation thread. Log `draft_posted` with `log-event.py` and surface under Attention needed in the Output Contract.
 
 ### 3d. Manual review queue (general rule — all quests)
@@ -224,9 +233,9 @@ watch as `blocked`. The terminal cancellation prevents another paid dispatch; th
 submit a fresh instruction after checking the outcome.
 
 1. Claim it: `sq approval start <id>`. If it prints `skip:<status>`, another worker beat you or it was cancelled — log a `note` and exit 0.
-2. Read `review_note` first, then `message_text`. **`review_note` is the governing instruction and `message_text` is only a draft.** The dashboard's Approve and Request change buttons are both prompts to you; Approve differs only in that the item closes when you are done. So a note that countermands the draft wins over the draft: "send this to the other reviewer instead" means retarget the send and drop the original target, and "show me the updated draft first" means do NOT send at all, revise the text, and report back. `message_text` is what to send only when no note was given. Use your full LLM judgment.
+2. Read `review_note` first, then `message_text`. **`review_note` is the governing instruction and `message_text` is only a draft.** The dashboard's Approve and Request change buttons are both prompts to you; Approve differs only in that the item closes when you are done. So a note that countermands the draft wins over the draft: "send this to the other reviewer instead" means queue the retargeted action for a fresh review because the send helper binds approval to the original channel and thread, and "show me the updated draft first" means do NOT send at all, revise the text, and report back. `message_text` is what to send only when no note was given. Use your full LLM judgment.
 
-   A single note can require several actions (a send, a file edit, an issue filed, a second message to someone else). Do all of them, then report **one line per action** in your reply, each naming the surface and the target, so the review conversation shows everything the prompt caused rather than just the headline action. If the note told you not to send, say plainly that nothing was sent.
+   A single note can require several actions (a send, a file edit, an issue filed, a second message to someone else). Do all actions covered by the reviewed targets; queue any send to a new target for fresh review. Then report **one line per action** in your reply, each naming the surface and the target, so the review conversation shows everything the prompt caused rather than just the headline action. If the note told you not to send, say plainly that nothing was sent.
 3. Execute the action through `slack-send.py`, passing the current `approval_id` in the JSON payload. **If the send fails because the channel is restricted (e.g., `mcp_externally_shared_channel_restricted`):** retry through `slack-send.py` with `"draft": true`, saving the draft to the actual target thread with `channel_id` + `thread_ts`; then DM the user only the permalink to that thread. Do not paste the draft text in the DM — they can open the thread, find the draft in the compose box, and send it themselves.
 4. Mark done: `sq approval done <id> <response_ts> "<report>"`. The third argument is your per-action report (one line per action) and lands in the review conversation, so pass it whenever the instruction produced anything beyond the obvious single send. An Approve is terminal, so this closes the item even when the instruction told you not to send.
 5. Append a `slack_thread` watch to `watch.json` with `last_checked_ts = response_ts` (per §3a).
@@ -243,6 +252,9 @@ line, and never write a `ts` yourself: you have no clock. Your context carries a
 local date with no time of day, so a hand-written stamp lands hours off and, when
 the local date is ahead of UTC, in the future — which sorts a finished action above
 everything real on the dashboard. The helper stamps the true UTC time for you.
+
+Logging is separate from summarizing. The timeline records what happened on every activation;
+`context.md` only changes when the latest summary of things has materially changed.
 
 ```bash
 sq log '{"quest_id":"<qid>","event":"note","note":"<what happened>"}'

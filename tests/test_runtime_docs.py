@@ -99,6 +99,15 @@ class RuntimeDocsTest(unittest.TestCase):
             self.assertNotIn("com.yaas.triage", text, str(path))
             self.assertNotIn("com.yaas.heartbeat", text, str(path))
 
+    def test_quest_docs_keep_summary_in_context_and_history_in_timeline(self) -> None:
+        dispatch = (SKILLS_ROOT / "yaas-quest-dispatch" / "SKILL.md").read_text()
+        creation = (SKILLS_ROOT / "yaas-quest-creation" / "SKILL.md").read_text()
+        scaffold = (SKILLS_ROOT / "yaas-quest-creation" / "new-quest.py").read_text()
+        for text in (dispatch, creation, scaffold, OPERATING.read_text()):
+            self.assertIn("latest summary of things", text)
+        self.assertIn("timeline.ndjson` is the chronological record", dispatch)
+        self.assertIn("Do not append dated updates", dispatch)
+
     def test_doctor_does_not_source_workspace_dotenv(self) -> None:
         self.assertNotIn('source "$ENV_FILE"', DOCTOR.read_text())
         self.assertNotIn('. "$ENV_FILE"', DOCTOR.read_text())

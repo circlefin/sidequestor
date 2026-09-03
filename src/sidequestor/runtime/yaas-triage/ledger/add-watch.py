@@ -41,6 +41,12 @@ Usage
 Prints the assigned watch_id, or `skip:duplicate` if an equivalent watch already
 exists (idempotent, so a retry is safe). Exits non-zero on a validation failure, so a
 malformed watch is loud rather than silently appended and never checked.
+
+Retire an existing watch by persistent ID:
+  add-watch.py retire <quest_id> <watch_id> '<reason>'
+
+Retirement is atomic, refuses to race an active dispatch, and appends a
+`watch_retired` event to the quest timeline. Repeating the same retirement is safe.
 """
 
 import fcntl
@@ -80,6 +86,9 @@ def _repo_root(start):
 
 REPO_ROOT  = _repo_root(__file__)
 QUESTS_DIR = REPO_ROOT / "state" / "quests"
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "surfaces"))
+from timeline_io import append_timeline, utc_now
 
 
 def _load_watch_manifests():
@@ -139,6 +148,12 @@ def validate(entry):
     mode = entry.get("watch_mode")
     if mode is not None and mode != "read_only":
         die(f"bad_watch_mode:{mode}:only read_only is meaningful")
+    if mode == "read_only" and wtype != "slack_thread":
+        # read_only means "do not reply in THIS thread", and slack-send.py enforces it by
+        # matching channel_id + thread_ts. A channel- or DM-level watch has no thread_ts,
+        # so accepting it here would gag every send to that destination instead of one
+        # thread. Reject it rather than silently widening the block.
+        die(f"read_only_needs_slack_thread:{wtype}:read_only applies to one thread")
     eph = entry.get("ephemeral")
     if eph is not None and not isinstance(eph, bool):
         # Strict: housekeep retires on `is True`, so a string "false" would be truthy to a
@@ -147,7 +162,132 @@ def validate(entry):
         die(f"bad_ephemeral:{eph!r}:must be JSON true or false, not a string")
 
 
+def _write_atomic(path, data):
+    tmp = str(path) + ".tmp"
+    with open(tmp, "w") as out:
+        json.dump(data, out, indent=2)
+        out.write("\n")
+        out.flush()
+        os.fsync(out.fileno())
+    os.replace(tmp, path)
+
+
+def _already_retired(quest_dir, watch_id):
+    """Whether the timeline already records this retirement, so a replay is a no-op.
+
+    Skips malformed lines rather than aborting the scan: one bad NDJSON line must not
+    make an earlier real `watch_retired` invisible and turn a safe replay into
+    `unknown_watch_id`.
+    """
+    timeline = quest_dir / "timeline.ndjson"
+    try:
+        lines = timeline.read_text().splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("event") == "watch_retired" and event.get("watch_id") == watch_id:
+            return True
+    return False
+
+
+def retire(quest_id, watch_id, reason):
+    """Retire only while the triage loop is not inspecting quest state."""
+    log_dir = REPO_ROOT / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with open(log_dir / "triage.lock", "a+") as tick_lock:
+        try:
+            fcntl.flock(tick_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            die(f"active_dispatch:{quest_id}:retry after the tick finishes")
+        try:
+            return _retire_without_tick(quest_id, watch_id, reason)
+        finally:
+            fcntl.flock(tick_lock, fcntl.LOCK_UN)
+
+
+def _retire_without_tick(quest_id, watch_id, reason):
+    if not watch_id or "/" in watch_id or ".." in watch_id:
+        die(f"bad_watch_id:{watch_id}")
+    reason = reason.strip()
+    if not reason:
+        die("retire_reason_required")
+
+    path = find_watch(quest_id)
+    quest_dir = path.parent
+    lock_path = path.with_name(path.name + ".lock")
+    with open(lock_path, "a+") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            try:
+                data = json.loads(path.read_text())
+            except Exception as exc:
+                die(f"unreadable_watch_json:{exc}")
+            watches = data.get("watches")
+            if not isinstance(watches, list):
+                die("watches_is_not_a_list")
+            index = next(
+                (i for i, watch in enumerate(watches)
+                 if isinstance(watch, dict) and watch.get("watch_id") == watch_id),
+                None,
+            )
+            if index is None:
+                if _already_retired(quest_dir, watch_id):
+                    print(f"skip:already_retired:{watch_id}")
+                    return 0
+                die(f"unknown_watch_id:{watch_id}")
+            retired = watches.pop(index)
+            _write_atomic(path, data)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+    _, identities = _watch_shapes()
+    identity = {
+        field: retired.get(field)
+        for field in identities.get(retired.get("type"), ())
+        if retired.get(field) is not None
+    }
+    event = {
+        "ts": utc_now(),
+        "event": "watch_retired",
+        "watch_id": watch_id,
+        "watch_type": retired.get("type", ""),
+        "watch_identity": identity,
+        "reason": reason,
+    }
+    # watch.json is already written, so a failure here loses only the audit record --
+    # never the removal. Replay is no longer safe (with no `watch_retired` line, a second
+    # attempt reports unknown_watch_id), so print the event and its replay command rather
+    # than exiting quietly: the operator can restore the record by hand.
+    try:
+        append_timeline(quest_dir, event)
+    except Exception as exc:
+        print(f"error:retired_but_unlogged:{exc}", file=sys.stderr)
+        print(f"  the watch IS removed from {path}; log it with:", file=sys.stderr)
+        # log-event.py stamps its own ts and ignores a caller-supplied one, so drop it.
+        replay = {k: v for k, v in event.items() if k != "ts"}
+        print(f"  sq log '{json.dumps(dict(replay, quest_id=quest_id))}'", file=sys.stderr)
+        return 3
+    print(json.dumps({
+        "quest_id": quest_id,
+        "watch_id": watch_id,
+        "watch_type": retired.get("type", ""),
+        "retired": True,
+    }))
+    return 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "retire":
+        if len(sys.argv) != 5:
+            print("usage: add-watch.py retire <quest_id> <watch_id> '<reason>'", file=sys.stderr)
+            return 1
+        return retire(sys.argv[2], sys.argv[3], sys.argv[4])
     if len(sys.argv) < 3:
         print(__doc__)
         return 1
@@ -229,13 +369,7 @@ def main():
             # APPEND ONLY. Every pre-existing entry is written back byte-identical,
             # which is the whole point of routing through this script.
             watches.append(entry)
-            tmp = str(path) + ".tmp"
-            with open(tmp, "w") as out:
-                json.dump(data, out, indent=2)
-                out.write("\n")
-                out.flush()
-                os.fsync(out.fileno())
-            os.replace(tmp, path)
+            _write_atomic(path, data)
             print(entry["watch_id"])
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)

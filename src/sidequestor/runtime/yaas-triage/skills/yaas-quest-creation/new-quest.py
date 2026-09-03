@@ -70,7 +70,9 @@ Optional watch behaviour:
   watch_mode:  "read_only"  — monitor only; worker must not reply in this thread.
                Use for internal escalation threads (#help-*, #cpn-se-questions, etc.)
                where you post a question and want outcome notifications without bot chatter.
-               Any value other than "read_only" is rejected by this script.
+               slack_thread only: it is enforced per-thread, so a channel or DM watch
+               would block every send to that destination. Any value other than
+               "read_only", or read_only on another type, is rejected by this script.
 
 Example spec:
   {
@@ -226,6 +228,11 @@ def validate_watches(watches, *, allow_empty=False):
             die(f"watches[{i}] (type={t!r}) is missing required fields")
         if "watch_mode" in w and w["watch_mode"] not in ("read_only",):
             die(f"watches[{i}] watch_mode must be 'read_only' if set, got: {w['watch_mode']!r}")
+        if w.get("watch_mode") == "read_only" and t != "slack_thread":
+            # read_only is enforced per-thread by slack-send.py (channel_id + thread_ts).
+            # On a channel or DM watch there is no thread_ts, so it would block every send
+            # to that destination. Mirrors add-watch.py's check.
+            die(f"watches[{i}] watch_mode 'read_only' applies to slack_thread only, got type={t!r}")
         if "last_checked_ts" in w:
             die(f"watches[{i}] must not include 'last_checked_ts' — this script sets it")
 
@@ -339,6 +346,8 @@ def main():
 ## Current state
 
 _Quest just created._
+
+_Keep the latest summary of things here. Replace this summary as the situation changes; do not append chronological logs._
 
 ## Links
 
