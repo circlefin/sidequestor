@@ -4,6 +4,12 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.17 - 2026-09-03
+
+### Fixed
+- Production upgrades now snapshot and drain every process in each launchd job before installing
+  or restarting, including detached worker and dashboard child processes.
+
 ## 0.1.16 - 2026-09-03
 
 ### Fixed

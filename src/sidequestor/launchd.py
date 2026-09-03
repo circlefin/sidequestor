@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import json
+import re
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -19,6 +21,10 @@ JOB_NAMES = ("triage", "dashboard")
 PRODUCTION_JOB_NAMES = ("triage", "heartbeat", "dashboard")
 _BOOTOUT_ATTEMPTS = 5
 _BOOTOUT_DELAY_SECONDS = 0.2
+_PROCESS_DRAIN_GRACE_SECONDS = 2.0
+_PROCESS_DRAIN_TERM_SECONDS = 3.0
+_PROCESS_DRAIN_KILL_SECONDS = 1.0
+_PROCESS_DRAIN_POLL_SECONDS = 0.05
 
 
 class LaunchdLifecycleError(RuntimeError):
@@ -164,9 +170,101 @@ def _service_loaded(target: str) -> bool:
     return result.returncode == 0
 
 
+def _service_root_pid(target: str) -> int | None:
+    """Return launchd's current root PID for a loaded service."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", target],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.search(r"^\s*pid = (\d+)\s*$", result.stdout or "", re.MULTILINE)
+    return int(match.group(1)) if match else None
+
+
+def _process_tree(root_pid: int) -> set[int]:
+    """Snapshot a process and all descendants before launchd severs the tree."""
+    found = {root_pid}
+    pending = [root_pid]
+    while pending:
+        parent = pending.pop()
+        try:
+            result = subprocess.run(
+                ["pgrep", "-P", str(parent)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            continue
+        for value in (result.stdout or "").split():
+            try:
+                child = int(value)
+            except ValueError:
+                continue
+            if child not in found:
+                found.add(child)
+                pending.append(child)
+    return found
+
+
+def _alive_processes(pids: set[int]) -> set[int]:
+    alive = set()
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            alive.add(pid)
+            continue
+        alive.add(pid)
+    return alive
+
+
+def _wait_for_processes(pids: set[int], timeout: float) -> set[int]:
+    deadline = time.monotonic() + timeout
+    remaining = _alive_processes(pids)
+    while remaining and time.monotonic() < deadline:
+        time.sleep(_PROCESS_DRAIN_POLL_SECONDS)
+        remaining = _alive_processes(remaining)
+    return remaining
+
+
+def _signal_processes(pids: set[int], signum: signal.Signals) -> None:
+    for pid in sorted(pids, reverse=True):
+        try:
+            os.kill(pid, signum)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def _drain_processes(pids: set[int], label: str) -> None:
+    """Wait for launchd teardown, then stop any captured descendants it left."""
+    remaining = _wait_for_processes(pids, _PROCESS_DRAIN_GRACE_SECONDS)
+    if remaining:
+        _signal_processes(remaining, signal.SIGTERM)
+        remaining = _wait_for_processes(remaining, _PROCESS_DRAIN_TERM_SECONDS)
+    if remaining:
+        _signal_processes(remaining, signal.SIGKILL)
+        remaining = _wait_for_processes(remaining, _PROCESS_DRAIN_KILL_SECONDS)
+    if remaining:
+        values = ", ".join(str(pid) for pid in sorted(remaining))
+        raise LaunchdLifecycleError(
+            f"launchd service processes remain after unload: {label} ({values})"
+        )
+
+
 def _bootout_job(uid: str, label: str) -> None:
-    """Unload one exact package service and verify launchd removed it."""
+    """Unload one exact package service and drain its original process tree."""
     target = f"gui/{uid}/{label}"
+    root_pid = _service_root_pid(target)
+    processes = _process_tree(root_pid) if root_pid is not None else set()
     diagnostics = []
     for attempt in range(_BOOTOUT_ATTEMPTS):
         result = subprocess.run(
@@ -176,6 +274,7 @@ def _bootout_job(uid: str, label: str) -> None:
             text=True,
         )
         if not _service_loaded(target):
+            _drain_processes(processes, label)
             return
         detail = (result.stderr or result.stdout or "").strip()
         if detail:
