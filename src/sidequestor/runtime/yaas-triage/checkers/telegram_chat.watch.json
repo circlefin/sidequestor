@@ -1,0 +1,14 @@
+{
+  "_comment": "checker_example is a minimal checker input; peer is resolved through the authorized user's dialogs.",
+  "schema_version": 1,
+  "required": [["peer"]],
+  "identity": ["credential_id", "peer", "from_user", "filter_sender_ids", "filter_keywords", "filter_kinds", "include_outgoing"],
+  "checker_example": {
+    "type": "telegram_chat",
+    "peer": "@telegram",
+    "last_checked_ts": "1"
+  },
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "telegram"
+}

@@ -10,6 +10,9 @@ from unittest.mock import patch
 
 from sidequestor.launchd import (
     LaunchdLifecycleError,
+    _production_jobs,
+    _alive_processes,
+    _bootout_job,
     install as install_shadow,
     install_production,
     production_status,
@@ -47,6 +50,7 @@ class ProductionLaunchdLifecycleTest(unittest.TestCase):
 
     def test_install_stop_restart_and_uninstall_are_instance_bound(self) -> None:
         python = self.root / "venv" / "bin" / "python"
+        jobs = _production_jobs(self.workspace, python)
         manifest = install_production(self.workspace, python)
 
         self.assertEqual(manifest["schema"], 2)
@@ -55,6 +59,10 @@ class ProductionLaunchdLifecycleTest(unittest.TestCase):
         self.assertEqual(set(manifest["jobs"]), {"triage", "heartbeat", "dashboard"})
         self.assertEqual(manifest["jobs"]["dashboard"]["arguments"][-1], "0")
         self.assertEqual(manifest["jobs"]["triage"]["arguments"][0], str(python))
+        for job in jobs.values():
+            environment = job["values"]["EnvironmentVariables"]
+            self.assertEqual(environment["SIDEQUESTOR_PYTHON"], str(python))
+            self.assertEqual(environment["YAAS_PYTHON"], str(python))
         self.assertTrue(all(Path(job["plist"]).is_file() for job in manifest["jobs"].values()))
 
         self.assertTrue(stop_production(self.workspace))
@@ -114,6 +122,19 @@ class ProductionLaunchdLifecycleTest(unittest.TestCase):
         with self.assertRaises(LaunchdLifecycleError):
             stop_production(self.workspace)
         self.assertTrue(production_status(self.workspace)["running"])
+
+    def test_bootout_drains_the_original_process_tree_before_returning(self) -> None:
+        with patch("sidequestor.launchd._service_root_pid", return_value=101), \
+                patch("sidequestor.launchd._process_tree", return_value={101, 102}) as tree, \
+                patch("sidequestor.launchd._drain_processes") as drain:
+            _bootout_job("501", "com.sidequestor.test")
+
+        tree.assert_called_once_with(101)
+        drain.assert_called_once_with({101, 102}, "com.sidequestor.test")
+
+    def test_permission_error_does_not_treat_a_process_as_gone(self) -> None:
+        with patch("sidequestor.launchd.os.kill", side_effect=PermissionError):
+            self.assertEqual(_alive_processes({101}), {101})
 
     def test_rekey_refuses_to_orphan_installed_launchd_labels(self) -> None:
         install_production(self.workspace, self.root / "venv" / "bin" / "python")

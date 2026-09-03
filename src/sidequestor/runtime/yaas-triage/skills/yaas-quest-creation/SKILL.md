@@ -41,8 +41,15 @@ Ask the user for, in order:
    - **`github_pr`** — a `repo` as `owner/name`. Fires on any PR update in that repo: new PR, new commit, review, comment, or merge. Use it alongside `jira` when a fix lands as a PR, because **a PR review comment does not bump the linked Jira issue**, so the `jira` watch cannot see it. Optional `search` (extra GitHub qualifiers) and `limit` (default 100). Two traps before you add a `search`: repeated qualifiers AND rather than OR (`author:a author:b` matches nothing and the watch reports clean forever), and full-text terms only match what a PR happens to say. Also avoid `is:open`, which hides merges. Verify recall against a known PR set first; the details are in `checkers/github_pr.py`'s docstring.
 
    - **`github_issue`** — a `repo` as `owner/name`. Fires on any issue update in that repo: new issue, comment, label change, close. Pull requests are excluded (`gh search issues` omits them unless asked), so it never double-reports with `github_pr` — pair the two when you want both halves. Optional `search` (extra qualifiers, same AND-not-OR trap as `github_pr`), `limit` (default 100), and `gh_account` (a `gh` login whose token to use, for a private repo the ACTIVE `gh` account cannot see; resolved per-run via `gh auth token -u`, never persisted).
+   - **`telegram_chat`** — a Telegram cloud-chat `peer`: use its `@username`/public link when available, or its numeric dialog ID for private chats. Reads as the user authorized by `sq telegram-auth`, not as a bot. Optional `credential_id`, `from_user` (an `@username`), `filter_sender_ids`, `filter_keywords`, `filter_kinds`, `include_outgoing`, and `limit`. Detects new messages only; it cannot see Secret Chats or reliably detect later edits, deletions, or reactions.
+   - **`telegram_search`** — a `peer` plus non-empty `query`, with the same optional filters as `telegram_chat` and optional `from_user`. Search is index-backed and deliberately trails the current time by 30 seconds.
+   - **`x_search`** — an X recent-search `query` (maximum 1024 characters). Use `@handle` for mentions or `from:handle` for an author's posts. Optional `credential_id`, `filter_keywords`, and `exclude_user_ids`. Broad searches incur API read charges; narrow at the source and with checker filters.
 
-   All three of the above are repo/project-wide by nature, so they can fire on items unrelated to the quest. Say so in the `reason`, and make the quest's `context.md` tell the worker to exit immediately without acting when the changed item is out of scope.
+   External watches run only when their connector is present in
+   `SIDEQUESTOR_CHECKER_CONNECTORS`. The default is `slack,email,github,jira`; adding a Telegram
+   or X watch without enabling its connector intentionally leaves its watermark frozen.
+
+   GitHub and broad Telegram/X searches can fire on items unrelated to the quest. Say so in the `reason`, and make the quest's `context.md` tell the worker to exit immediately without acting when the changed item is out of scope.
    - **`approval`** — effectively runtime-only: the worker appends one itself when it queues a manual-review item (§3d of the `yaas-quest-dispatch` skill). Do not put one in a creation spec — there is no approval to track before the quest exists. `new-quest.py` does accept the type (with a required `approval_id`) so its type list matches `checkers/`, so this is a rule you follow, not one the script enforces.
    - **Anything else** — there is no other type. `new-quest.py` rejects a type with no
      `checkers/<type>.py`, because an unknown type would otherwise scaffold cleanly and then be
@@ -74,12 +81,18 @@ Ask the user for, in order:
    expert channel (`#help-*`, `#cpn-se-questions`, `#cpn-*`, `#api-key-permissions`, any
    `#oncall-*` or `#eng-*` escalation channel). It tells the worker to read replies and relay
    outcomes, but never post back into that thread. Without it, the bot will reply in expert
-   channels and annoy the humans there. `new-quest.py` validates that the only legal value is
-   `"read_only"` — any typo is caught at creation time.
+   channels and annoy the humans there. It applies to **`slack_thread` watches only**: the send
+   helper enforces it by matching the exact channel and thread, so a channel- or DM-level watch
+   cannot carry it. `new-quest.py` validates both rules — the only legal value is `"read_only"`,
+   only on a `slack_thread` — so a typo or a misplaced mode is caught at creation time.
 
    **Note:** reaction-workflow triggers (`process`, `draft`, `save`, and `adopt`) are tracked globally by the triage orchestrator and are NOT a per-quest watch input. Do not include them in `watches[]`.
 3. **Priority** — high / normal / low. Default to normal if unspecified.
-4. **Context** — ask the user to paste or describe what this quest is about. This becomes the body of `context.md`. If they already gave context earlier in the conversation, use that; don't re-ask.
+4. **Context** — ask the user to paste or describe what this quest is about. Turn it into a
+   compact mission brief: objective, durable decision rules, important links, and the
+   latest summary of things. Do not seed `context.md` with a conversation transcript or chronological
+   updates; those belong in `timeline.ndjson`. If they already gave context earlier in the
+   conversation, use that; don't re-ask.
 
 ### 2. Generate the quest ID
 

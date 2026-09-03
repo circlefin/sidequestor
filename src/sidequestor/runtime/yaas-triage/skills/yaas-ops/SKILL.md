@@ -28,6 +28,8 @@ yaas-triage/
 │   ├── jira.py               ← Jira issues via ../surfaces/jira-call.sh (no MCP needed)
 │   ├── github_pr.py          ← PR activity via `gh search prs`
 │   ├── github_issue.py       ← issue activity via `gh search issues` (excludes PRs)
+│   ├── telegram_chat.py · telegram_search.py  ← MTProto user-session history/search
+│   ├── x_search.py                    ← official X recent-search polling
 │   ├── reactions.py          ← global reaction sweep (not per-quest)
 │   ├── result.py             ← the outcome contract every checker returns
 │   ├── slack_utils.py        ← shared drain()/parse helpers
@@ -38,8 +40,8 @@ yaas-triage/
 ├── ledger/                   ← "owns a state file, atomically": ack-watch.py, commit.py,
 │                               housekeep.py, checker-health.py, watch-guard.py, add-watch.py,
 │                               approval-helper.py, ensure-watch-ids.py
-├── surfaces/                 ← "talk to the outside": mcp-call.sh, jira-call.sh,
-│                               slack-send.py, slack-react.sh, react-lifecycle.py
+├── surfaces/                 ← "talk to the outside": client.py, telegram-call.py, x-call.py,
+│                               credential helpers, slack-send.py, react-lifecycle.py
 ├── ops/                      ← "keep it alive and visible": dashboard-server.py, health-monitor.py,
 │                               rotate-logs.py, notify.py, doctor.sh, sync-yaas-v2.sh
 ├── tests/                    ← unit/ + behaviour/ + differential/ (goldens + mutations)
@@ -112,7 +114,10 @@ Environment variables available to all checkers (exported by the orchestrator af
 
 If a channel type has indexing latency (e.g. Gmail's search index takes ~60s to reflect new mail), create a companion file `checkers/<type>.lag` containing the lag in integer seconds. the orchestrator reads these at startup and subtracts the lag when advancing watermarks, so clean ticks never claim "I've seen everything up to now" when the source hasn't indexed it yet.
 
-Currently: `email.lag = 120` (Gmail's index is slow), `slack_mention.lag = 90`, `github_pr.lag = 30` (GitHub's search index is eventually consistent), `jira.lag = 15`. Types with no `.lag` file get lag = 0.
+Currently: `email.lag = 120` (Gmail's index is slow), `slack_mention.lag = 90`,
+`github_pr.lag = 30`, `github_issue.lag = 30`, `telegram_chat.lag = 2`, `telegram_search.lag = 30`,
+`x_search.lag = 30`, and `jira.lag = 15`. Types with no
+`.lag` file get lag = 0.
 
 Keep the lag as small as the source allows. Every second of lag widens the window in which an already-seen change gets re-reported, and each re-report costs a full dispatch that finds nothing. Note `*.lag` is gitignored, so a fresh clone starts at lag 0 for every type; recreate them from the values above.
 
@@ -128,8 +133,11 @@ Keep the lag as small as the source allows. Every second of lag widens the windo
     {"type": "schedule",      "cron": "0 9 * * 1", "tz": "Asia/Singapore", "last_checked_ts": "0", "reason": "..."},
     {"type": "email",         "query": "from:partner@company.com subject:Re:", "last_checked_ts": "0", "reason": "..."},
     {"type": "jira",          "jql": "labels=my-label", "last_checked_ts": "0", "reason": "..."},
-    {"type": "github_pr",     "repo": "owner/repo", "last_checked_ts": "0", "reason": "..."}
-    {"type": "github_issue",  "repo": "owner/repo", "last_checked_ts": "0", "reason": "..."}
+    {"type": "github_pr",     "repo": "owner/repo", "last_checked_ts": "0", "reason": "..."},
+    {"type": "github_issue",  "repo": "owner/repo", "last_checked_ts": "0", "reason": "..."},
+    {"type": "telegram_chat", "peer": "-1001234567890", "last_checked_ts": "1770000000", "reason": "..."},
+    {"type": "telegram_search", "peer": "@channel", "query": "release", "last_checked_ts": "1770000000", "reason": "..."},
+    {"type": "x_search",      "query": "from:XDevelopers", "last_checked_ts": "1770000000", "reason": "..."}
   ]
 }
 ```
@@ -139,6 +147,11 @@ Keep the lag as small as the source allows. Every second of lag widens the windo
 `.lag` note: `github_issue.lag = 30`, same as `github_pr` and for the same reason (GitHub's search index is eventually consistent).
 
 `last_checked_ts` is always a Unix epoch float string. The orchestrator is the sole owner of this field — the worker must never modify existing entries (it may only append new ones).
+
+In an interactive session, retire an obsolete entry by persistent ID with
+`sq watch retire <quest_id> <watch_id> "<reason>"`. The helper shares the triage lock, removes
+exactly one watch atomically, and records `watch_retired` in the quest timeline. It refuses to
+run during a tick. There is no replace command; retire the old watch, then add the new one.
 
 Old quests may carry six dead arrays at the bottom (`threads`, `dm_partners`, `channels`, `schedules`, `emails`, `reactions`) — harmless legacy. New quests created via `new-quest.py` only have `watches[]`.
 
@@ -158,74 +171,35 @@ Old quests may carry six dead arrays at the bottom (`threads`, `dm_partners`, `c
 
 ---
 
-## Adding a new channel type
+## Telegram and X credentials
 
-Example: adding Telegram.
+Telegram uses the authorized user's cloud history, not a bot update queue. Run
+`sq telegram-auth authorize API_ID [CREDENTIAL_ID]`; the phone number and API hash are prompted without echo,
+and the Telethon `StringSession` is stored in macOS Keychain. `telegram_chat` accepts `peer` plus
+optional `filter_sender_ids`, `filter_keywords`, `filter_kinds`, `include_outgoing`, and `limit`.
+Both types accept `from_user` as an @username; `telegram_search` additionally requires `query`.
+Secret Chats
+and later edits/deletes/reactions are not observable through these history-window checkers.
 
-**1. Store credentials in keychain (once):**
-```bash
-security add-generic-password -s telegram-bot-token -a yaas -w "<BOT_TOKEN>"
-```
+For X, run `sq x-auth install-app [CREDENTIAL_ID]` and paste the Developer Console bearer token
+at the hidden prompt. `x_search` requires an X recent-search query; use `@handle` for mentions or
+`from:handle` for an author's posts. Optional `filter_keywords` and `exclude_user_ids` are applied
+before dispatch. X API reads are billable, so keep the number of broad searches small.
 
-**2. In a source checkout, create `src/sidequestor/runtime/yaas-triage/checkers/telegram_chat.py`:**
-```python
-#!/usr/bin/env python3
-# Input:  watch entry JSON as argv[1]
-#         {"type":"telegram_chat","chat_id":"-100...","last_checked_ts":"..."}
-# Output: count|preview  or  error|reason
-import sys, os, json, subprocess
+Authentication alone does not activate polling. Add `telegram` and/or `x` to
+`SIDEQUESTOR_CHECKER_CONNECTORS` in the workspace `.env`. The default is
+`slack,email,github,jira`; connector-disabled watches stay stored with frozen watermarks. An
+unknown or repeated connector name is rejected by `setup.sh` and reported by `doctor.sh`, because
+`tick.py` exits 2 on it.
 
-def main():
-    entry = json.loads(sys.argv[1])
-    chat_id = str(entry["chat_id"])
-    since_ts = float(entry.get("last_checked_ts", "0"))
-
-    token = subprocess.run(
-        ["security", "find-generic-password", "-s", "telegram-bot-token", "-a", "yaas", "-w"],
-        capture_output=True, text=True
-    ).stdout.strip()
-    if not token:
-        print("error|no telegram-bot-token in keychain"); return
-
-    r = subprocess.run(
-        ["curl", "-sS", f"https://api.telegram.org/bot{token}/getUpdates?limit=20"],
-        capture_output=True, text=True, timeout=10
-    )
-    if r.returncode != 0 or not r.stdout.strip():
-        print(f"error|telegram API call failed (exit {r.returncode})"); return
-
-    data = json.loads(r.stdout)
-    if not data.get("ok"):
-        print(f"error|telegram API: {data.get('description','unknown')}"); return
-
-    new_msgs = [
-        u["message"] for u in data["result"]
-        if "message" in u
-        and str(u["message"]["chat"]["id"]) == chat_id
-        and u["message"]["date"] > since_ts
-    ]
-    if not new_msgs:
-        print("0|"); return
-
-    preview = new_msgs[0].get("text", "")[:80]
-    print(f"{len(new_msgs)}|{preview}")
-
-if __name__ == "__main__":
-    try: main()
-    except Exception as e: print(f"error|{e}")
-```
-
-**3. Add entries to a quest's `watch.json`:**
-```json
-{"type": "telegram_chat", "chat_id": "-1001234567890",
- "last_checked_ts": "0", "reason": "watch partner group chat"}
-```
-
-**4. (Optional) In a source checkout, add `src/sidequestor/runtime/yaas-triage/checkers/telegram_chat.lag`** with integer seconds for indexing lag (Telegram is real-time, so no lag file needed).
-
-**5. Document in the quest's `context.md`** how the worker should fetch full message content and reply (typically via `curl` to the Telegram Bot API).
-
-That's the entire change. The orchestrator requires no modification — it autodiscovers the new checker by filename.
+Two consequences of freezing a watermark are worth knowing. X recent search serves only the last
+seven days, so a watch whose cursor falls behind that floor is clamped forward to it and reports
+`skipped Ns of unrecoverable history` on the next row — the interval is gone either way, and
+clamping is what lets the watch resume at all. Telegram instead catches up in 24-hour windows, one
+per tick, until it reaches the present. Resolving a *numeric* Telegram peer requires enumerating
+the authorized user's dialogs, so the resolved identity is cached in
+`state/telegram-peers.json`, keyed by `credential_id`; deleting that file only costs one dialog
+scan per peer to rebuild.
 
 ---
 
@@ -280,7 +254,9 @@ The deterministic Slack adapter refreshes within five minutes of access-token ex
 refreshes and retries once after a definitive token rejection. `python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack_credentials.py" status`
 reports redacted credential health; `refresh-now` performs an immediate manual rotation.
 
-Set `SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0` when no local Slack app is available. Setup and doctor then
+Remove `slack` from `SIDEQUESTOR_CHECKER_CONNECTORS` when no local Slack app is available. The
+legacy `SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0` setting is an additional Slack-only kill switch.
+Setup and doctor then
 treat Slack app fields and the Keychain token as intentionally absent. The tick skips all
 `slack_*` checker entries and the global reaction sweep without advancing their watermarks;
 schedule and non-Slack checks continue, and paid workers retain their own MCP access.
@@ -316,6 +292,7 @@ come up while debugging:
 
 | Variable | Default | Effect |
 |---|---|---|
+| `SIDEQUESTOR_CHECKER_CONNECTORS` | `slack,email,github,jira` | Comma-separated external connectors allowed to poll. Add `telegram` and `x` explicitly after authentication. Disabled connector watches and watermarks are preserved. Local schedule/approval checks always run. |
 | `SIDEQUESTOR_SLACK_CHECKERS_ENABLED` | 1 | `0` disables all local `slack_*` Python checks and the reaction sweep. Slack watermarks are held; schedules and worker MCP access are unaffected. |
 | `SIDEQUESTOR_MAX_SPEND_1H` | 40 | Hourly dollar ceiling. On breach, checks still run but the dispatch is withheld and `gate_budget_exceeded` is logged. This is the first thing to check when nothing is dispatching despite dirty quests. |
 | `SIDEQUESTOR_MAX_SPEND_24H` | 250 | Daily dollar ceiling. |

@@ -30,6 +30,8 @@ class RuntimeConfigTest(unittest.TestCase):
                 "SIDEQUESTOR_APPROVAL_LEASE_MIN=23\n"
             )
             environment = _environment(workspace)
+            self.assertEqual(environment["SIDEQUESTOR_PYTHON"], os.sys.executable)
+            self.assertEqual(environment["YAAS_PYTHON"], os.sys.executable)
             self.assertEqual(environment["YAAS_TRIAGE_INTERVAL"], "11")
             self.assertEqual(environment["YAAS_HEARTBEAT_INTERVAL"], "17")
             self.assertEqual(environment["YAAS_APPROVAL_LEASE_MIN"], "23")
@@ -95,6 +97,7 @@ class RuntimeConfigTest(unittest.TestCase):
             environment = {
                 "PATH": str(root) + os.pathsep + os.environ.get("PATH", ""),
                 "SIDEQUESTOR_WORKSPACE": str(workspace),
+                "SIDEQUESTOR_PYTHON": str(fake_python),
                 "YAAS_TRIAGE_INTERVAL": "0.02",
             }
             process = subprocess.Popen(
@@ -146,6 +149,7 @@ class RuntimeConfigTest(unittest.TestCase):
                         env={
                             "PATH": str(root) + os.pathsep + os.environ.get("PATH", ""),
                             "SIDEQUESTOR_WORKSPACE": str(workspace),
+                            "SIDEQUESTOR_PYTHON": str(fake_python),
                         },
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     )
@@ -210,6 +214,41 @@ class RuntimeConfigTest(unittest.TestCase):
             self.assertEqual(config.env["YAAS_AGENT"], "codex")
             self.assertEqual(config.env["YAAS_SLACK_CHECKERS_ENABLED"], "0")
 
+    def test_connector_allowlist_defaults_and_opt_ins(self) -> None:
+        import sys
+
+        sys.path.insert(0, str(TRIAGE_ROOT))
+        try:
+            from tick_state import BadEnvKnob, load_checker_connectors, validate_knobs
+
+            self.assertEqual(
+                load_checker_connectors({}),
+                frozenset({"slack", "email", "github", "jira"}),
+            )
+            self.assertEqual(
+                load_checker_connectors({"YAAS_CHECKER_CONNECTORS": "telegram,x"}),
+                frozenset({"telegram", "x"}),
+            )
+            self.assertEqual(
+                load_checker_connectors({"YAAS_CHECKER_CONNECTORS": ""}),
+                frozenset(),
+            )
+            with self.assertRaisesRegex(BadEnvKnob, "unknown connector"):
+                validate_knobs({"YAAS_CHECKER_CONNECTORS": "slack,unknown"})
+            with self.assertRaisesRegex(BadEnvKnob, "unknown connector"):
+                validate_knobs({"YAAS_CHECKER_CONNECTORS": "Slack"})
+            config = __import__("tick_state").Config(
+                TRIAGE_ROOT,
+                environ={"SIDEQUESTOR_CHECKER_CONNECTORS": "telegram,x"},
+            )
+            self.assertTrue(config.checker_enabled("telegram_chat"))
+            self.assertTrue(config.checker_enabled("x_search"))
+            self.assertTrue(config.checker_enabled("schedule"))
+            self.assertFalse(config.checker_enabled("slack_thread"))
+            self.assertFalse(config.checker_enabled("email"))
+        finally:
+            sys.path.pop(0)
+
     def test_dashboard_uses_the_same_effective_environment(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sidequestor-dashboard-config-") as raw:
             workspace = Path(raw)
@@ -246,6 +285,10 @@ class RuntimeConfigTest(unittest.TestCase):
             }
             self.assertEqual(items["YAAS_AGENT"]["value"], "codex")
             self.assertTrue(items["YAAS_AGENT"]["set"])
+            self.assertEqual(
+                items["YAAS_CHECKER_CONNECTORS"]["value"],
+                "slack,email,github,jira",
+            )
             self.assertEqual(items["YAAS_SLACK_CHECKERS_ENABLED"]["value"], "0")
             self.assertTrue(items["YAAS_SLACK_CHECKERS_ENABLED"]["set"])
 
@@ -335,6 +378,57 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertEqual(build["commit"], "abcdef0")
         self.assertEqual(build["commit_full"], "abcdef0123456789")
         self.assertEqual(build["ref"], "package/sidequestor-0.1.0")
+
+    def test_dashboard_only_surfaces_a_block_as_the_latest_timeline_state(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-dashboard-blocked-") as raw:
+            workspace = Path(raw)
+            quest = workspace / "state" / "quests" / "active" / "quest-one"
+            quest.mkdir(parents=True)
+            (quest / "meta.json").write_text('{"title":"Quest one","status":"active"}')
+            timeline = quest / "timeline.ndjson"
+            environment = {
+                "YAAS_WORKSPACE": str(workspace),
+                "YAAS_RUNTIME_ROOT": str(RUNTIME_ROOT),
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                import sys
+                sys.path.insert(0, str(TRIAGE_ROOT))
+                try:
+                    spec = importlib.util.spec_from_file_location(
+                        "sidequestor_dashboard_blocked_test",
+                        TRIAGE_ROOT / "ops" / "dashboard-server.py",
+                    )
+                    module = importlib.util.module_from_spec(spec)
+                    assert spec.loader is not None
+                    with patch.object(sys, "argv", ["dashboard-server.py"]):
+                        spec.loader.exec_module(module)
+
+                    timeline.write_text(
+                        '{"ts":"2026-09-01T00:00:00Z","event":"blocked","reason":"waiting"}\n'
+                        '{"ts":"2026-09-02T00:00:00Z","event":"note","note":"recovered"}\n'
+                    )
+                    recovered = module.build_dashboard()["quests"][0]
+                    self.assertIsNone(recovered["last_blocked"])
+                    recovered_detail = module.build_quest_detail("quest-one")
+                    self.assertIsNone(recovered_detail["open_items"]["blocked"])
+                    self.assertNotIn(
+                        "blocked", [event.get("event") for event in recovered_detail["timeline"]]
+                    )
+
+                    timeline.write_text(
+                        timeline.read_text()
+                        + '{"ts":"2026-09-03T00:00:00Z","event":"blocked","reason":"older block"}\n'
+                        + '{"ts":"2026-09-04T00:00:00Z","event":"blocked","reason":"new block"}\n'
+                    )
+                    blocked = module.build_dashboard()["quests"][0]
+                    self.assertEqual(blocked["last_blocked"]["reason"], "new block")
+                    blocked_detail = module.build_quest_detail("quest-one")
+                    self.assertEqual(blocked_detail["open_items"]["blocked"]["reason"], "new block")
+                    detail_blocks = [event for event in blocked_detail["timeline"]
+                                     if event.get("event") == "blocked"]
+                    self.assertEqual([event["reason"] for event in detail_blocks], ["new block"])
+                finally:
+                    sys.path.pop(0)
 
     def test_dashboard_reaction_guide_resolves_defaults_and_overrides(self) -> None:
         """The guide must show the real emoji. Seeding the canonical key with an empty

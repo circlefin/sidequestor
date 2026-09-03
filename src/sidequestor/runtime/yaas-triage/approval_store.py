@@ -69,6 +69,15 @@ def _validate_queue(data) -> dict:
         raise ValueError("pending-approvals.json must contain an object")
     if not isinstance(data.get("items", []), list):
         raise ValueError("pending-approvals.json items must be a list")
+    # `action_type` postdates the queue format, so an item written before it existed has
+    # no field at all. Default it once, here, where every reader comes through: readers
+    # that each apply their own default drift apart, and the one that drifted was
+    # surfaces/slack-send.py's send guard, which denied a send the dashboard had
+    # presented as an ordinary Slack approval. Normalizing here keeps that guard strict
+    # without a state rewrite.
+    for item in data.get("items", []):
+        if isinstance(item, dict):
+            item.setdefault("action_type", "slack_message")
     return data
 
 

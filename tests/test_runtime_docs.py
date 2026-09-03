@@ -54,6 +54,42 @@ class RuntimeDocsTest(unittest.TestCase):
         self.assertIn(str(workspace.root / ".env"), result.stdout)
         self.assertNotIn("src/sidequestor/runtime/.env", result.stdout)
 
+    def _doctor(self, connectors: str) -> str:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-doctor-connectors-") as raw, \
+                tempfile.TemporaryDirectory(prefix="sidequestor-config-") as config_home:
+            with patch.dict(os.environ, {"SIDEQUESTOR_CONFIG_HOME": config_home}, clear=False):
+                workspace = init_workspace(raw)
+                result = subprocess.run(
+                    ["bash", str(DOCTOR)],
+                    text=True,
+                    capture_output=True,
+                    env={
+                        **os.environ,
+                        "SIDEQUESTOR_CONFIG_HOME": config_home,
+                        "SIDEQUESTOR_WORKSPACE": str(workspace.root),
+                        "SIDEQUESTOR_CHECKER_CONNECTORS": connectors,
+                    },
+                )
+        return result.stdout
+
+    def test_doctor_fails_a_connector_list_that_tick_would_exit_2_on(self) -> None:
+        """doctor used to print this green. It is the tool an operator reaches for when
+        triage has stopped, so a green line here sent them looking anywhere but the cause."""
+        report = self._doctor("slack,twitter")
+        self.assertIn("unknown connector", report)
+        self.assertIn("SIDEQUESTOR_CHECKER_CONNECTORS", report)
+        self.assertIn("tick.py exits 2", report)
+
+    def test_doctor_fails_a_duplicated_connector(self) -> None:
+        self.assertIn("duplicate connectors", self._doctor("slack,slack"))
+
+    def test_doctor_accepts_the_default_and_the_opt_in_lists(self) -> None:
+        for connectors in ("slack,email,github,jira", "slack,email,github,jira,telegram,x", ""):
+            report = self._doctor(connectors)
+            self.assertNotIn("unknown connector", report, connectors)
+            self.assertNotIn("duplicate connectors", report, connectors)
+            self.assertNotIn("could not validate", report, connectors)
+
     def _offenders(self, paths) -> list[str]:
         offenders: list[str] = []
         for path in paths:
@@ -66,6 +102,15 @@ class RuntimeDocsTest(unittest.TestCase):
     def test_shipped_skills_do_not_use_workspace_relative_helper_commands(self) -> None:
         offenders = self._offenders(sorted(SKILLS_ROOT.rglob("SKILL.md")))
         self.assertEqual(offenders, [], "\n".join(offenders))
+
+    def test_process_reaction_has_slack_connect_draft_fallback(self) -> None:
+        skill = (SKILLS_ROOT / "yaas-reactions" / "SKILL.md").read_text()
+        process_row = next(
+            line for line in skill.splitlines() if line.startswith("| `process` |")
+        )
+        self.assertIn("mcp_externally_shared_channel_restricted", process_row)
+        self.assertIn('"draft": true', process_row)
+        self.assertIn("ack it `blocked`", process_row)
 
     def test_shipped_config_and_operating_docs_use_resolvable_commands(self) -> None:
         # `<workspace>/yaas-triage/` does not exist in a pip install, so any command
@@ -89,6 +134,15 @@ class RuntimeDocsTest(unittest.TestCase):
             text = path.read_text()
             self.assertNotIn("com.yaas.triage", text, str(path))
             self.assertNotIn("com.yaas.heartbeat", text, str(path))
+
+    def test_quest_docs_keep_summary_in_context_and_history_in_timeline(self) -> None:
+        dispatch = (SKILLS_ROOT / "yaas-quest-dispatch" / "SKILL.md").read_text()
+        creation = (SKILLS_ROOT / "yaas-quest-creation" / "SKILL.md").read_text()
+        scaffold = (SKILLS_ROOT / "yaas-quest-creation" / "new-quest.py").read_text()
+        for text in (dispatch, creation, scaffold, OPERATING.read_text()):
+            self.assertIn("latest summary of things", text)
+        self.assertIn("timeline.ndjson` is the chronological record", dispatch)
+        self.assertIn("Do not append dated updates", dispatch)
 
     def test_doctor_does_not_source_workspace_dotenv(self) -> None:
         self.assertNotIn('source "$ENV_FILE"', DOCTOR.read_text())

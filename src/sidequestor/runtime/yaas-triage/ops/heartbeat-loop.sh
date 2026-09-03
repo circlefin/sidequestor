@@ -30,6 +30,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="${SIDEQUESTOR_WORKSPACE:-${YAAS_WORKSPACE:-${PWD:-$SCRIPT_DIR/../..}}}"
+PYTHON_BIN="${SIDEQUESTOR_PYTHON:-${YAAS_PYTHON:-python3}}"
 if [ ! -f "$WORKSPACE_ROOT/.yaas/instance.json" ]; then
   echo "Sidequestor workspace is not set or is missing .yaas/instance.json: $WORKSPACE_ROOT" >&2
   exit 2
@@ -38,7 +39,7 @@ fi
 # Read only the pacing key, inertly. Never source the workspace .env: inherited
 # launchd and `sq` values must remain authoritative, and dotenv values are data.
 _dotenv_value() {
-  python3 - "$WORKSPACE_ROOT/.env" "$1" <<'PY'
+  "$PYTHON_BIN" - "$WORKSPACE_ROOT/.env" "$1" <<'PY'
 from pathlib import Path
 import sys
 
@@ -74,7 +75,7 @@ if [ -z "${SIDEQUESTOR_HEARTBEAT_INTERVAL:-}" ] && [ -z "${YAAS_HEARTBEAT_INTERV
 fi
 
 INTERVAL="${SIDEQUESTOR_HEARTBEAT_INTERVAL:-${YAAS_HEARTBEAT_INTERVAL:-300}}"
-INTERVAL="$(python3 - "$INTERVAL" <<'PY'
+INTERVAL="$("$PYTHON_BIN" - "$INTERVAL" <<'PY'
 import math
 import sys
 
@@ -92,6 +93,6 @@ PY
 while true; do
   # Non-zero just means "something is unhealthy" — that is the normal reporting path,
   # not a failure of this loop, so never let it exit.
-  python3 "$SCRIPT_DIR/health-monitor.py" --notify >/dev/null 2>&1 || true
+  "$PYTHON_BIN" "$SCRIPT_DIR/health-monitor.py" --notify >/dev/null 2>&1 || true
   sleep "$INTERVAL"
 done

@@ -8,7 +8,7 @@ you can always see exactly what it did.
 - 🎯 **Quests, not chores** — you describe the mission once; the triage loop watches for what changes.
 - 🏠 **Local-first** — your machine, your Slack token, your files. Nothing to host.
 - 🔍 **Nothing hidden** — every dispatch leaves a transcript, a timeline entry and a run log.
-- 🤖 **Your agent, your call** — `codex` out of the box, `claude` if you prefer.
+- 🤖 **Your agent, your call** — `codex` out of the box, or `claude` and `cursor` if you prefer.
 
 ## Before you start
 
@@ -16,10 +16,10 @@ A short checklist, so nothing surprises you halfway through:
 
 - macOS with launchd (that is what runs the loop) and Python ≥ 3.11.
 - The command-line tools `jq`, `curl`, `openssl`, `security` and `open`.
-- An already-authenticated `claude` **or** `codex` CLI. Sidequestor never logs in for you.
+- An already-authenticated `claude`, `codex`, **or** `cursor-agent` CLI. Sidequestor never logs in for you.
 
-Sidequestor installs zero Python dependencies, so pip cannot check the list above for you.
-The Slack setup script checks the tools it needs before it runs, and
+Telegram user-session watches require the optional `sidequestor[telegram]` extra. The Slack setup
+script checks the command-line tools it needs before it runs, and
 `yaas-triage/ops/doctor.sh` checks the rest.
 
 ## How do I install it?
@@ -40,7 +40,7 @@ python -m pip install sidequestor
 sidequestor init .
 # Save the ready-to-paste Slack YAML manifest.
 sq setup --manifest > slack-app-manifest.yaml
-# Run interactive onboarding; choose bypassPermissions for the worker backend.
+# Run interactive onboarding; choose bypassPermissions when using the Codex backend.
 sq setup
 # Start triage, heartbeat, and the dashboard and print the dashboard URL.
 sq start
@@ -61,11 +61,11 @@ Commands use the current directory when it is an initialized workspace. From els
 5. If you grant a scope later, reinstall the app and run `sq setup` again.
 6. In Basic Information, copy the App ID and Client ID into `.env`, then complete OAuth.
 
-The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-5.6-luna` at `high` effort.
+The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-5.6-luna` at `high` effort. You can select `cursor` to use the authenticated `cursor-agent` CLI; leave `SIDEQUESTOR_CURSOR_MODEL` unset to use Cursor's default model, or set it to pin a model.
 
 ## What permissions does the worker need?
 
-For unattended work, choose `bypassPermissions` at the Worker permission mode prompt. This lets the selected agent execute filesystem, shell, and network/MCP operations without per-action approval, so use it only in a workspace where that behavior is acceptable.
+For unattended Codex work, choose `bypassPermissions` at the Worker permission mode prompt. This lets Codex execute filesystem, shell, and network/MCP operations without per-action approval. Cursor uses its own CLI execution mode and Sidequestor auto-approves its MCP calls; Claude uses its native permission mode. Use unattended backends only in a workspace where that behavior is acceptable.
 
 ```bash
 # Allow Claude workers to execute unattended tool actions.
@@ -75,6 +75,88 @@ SIDEQUESTOR_CODEX_PERMISSION_MODE=bypassPermissions
 ```
 
 The optional instruction block targets `CLAUDE.md` for Claude and `AGENTS.md` for every other backend. Neither file is ever created or edited by Sidequestor.
+
+## How do I authorize Telegram or X watchers?
+
+Run these commands from the virtualenv where Sidequestor is installed. If `sq` reports
+`command not found`, activate that environment first (`source .venv/bin/activate`) or invoke it
+by its full path (`.venv/bin/sq`). Installing Sidequestor does not add `sq` globally. Run from an
+initialized Sidequestor workspace, or select one explicitly with `--workspace PATH`.
+
+Telegram watches use your own Telegram user through the official MTProto API. Create an API
+application at `my.telegram.org`, then authorize once; the API hash and serialized user session
+are stored together in macOS Keychain and no SQLite session file is created.
+
+```bash
+python -m pip install 'sidequestor[telegram]'
+sq telegram-auth authorize API_ID
+sq telegram-auth status
+```
+
+The authorization command securely prompts for the phone number and API hash, then Telegram asks
+for the login code and, when enabled, the account's 2FA password. None of those values are placed
+in the command line.
+
+X watches use an app bearer token from the X Developer Console. The prompt stores it in Keychain;
+watch entries may select another named credential with `credential_id`.
+
+```bash
+sq x-auth install-app
+sq x-auth status
+```
+
+External direct checkers are enabled by connector. New workspaces default to Slack, email, GitHub,
+and Jira; Telegram and X remain dormant until explicitly added in the workspace `.env`:
+
+```bash
+SIDEQUESTOR_CHECKER_CONNECTORS=slack,email,github,jira,telegram,x
+```
+
+Disabling a connector does not delete its watches or advance their watermarks. The older
+`SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0` setting remains an additional Slack-only kill switch.
+
+Available direct-polling types are `telegram_chat`, `telegram_search`, and `x_search`. Use an X
+query such as `@handle` for mentions or `from:handle` for an author's posts. They detect new
+messages/posts; Telegram edits, deletions, reactions, Secret Chats, and X DMs/home timelines are
+intentionally outside this no-journal implementation.
+
+To test without permitting a worker to send anything, initialize a disposable workspace, enable
+the connectors, create a quest in its dashboard, add a watch, then use `tick --dry-run`:
+
+```bash
+WS=/tmp/sidequestor-connector-test
+python -m venv "$WS-venv"
+"$WS-venv/bin/pip" install -e '.[telegram]'
+"$WS-venv/bin/sq" init "$WS" --name connector-test
+cp "$WS/.env.example" "$WS/.env"
+chmod 600 "$WS/.env"
+
+# Edit $WS/.env: add telegram,x to SIDEQUESTOR_CHECKER_CONNECTORS.
+"$WS-venv/bin/sq" --workspace "$WS" telegram-auth authorize API_ID e2e
+"$WS-venv/bin/sq" --workspace "$WS" x-auth install-app e2e
+
+# Run this in a second terminal. It serves the test UI without starting background triage.
+"$WS-venv/bin/sq" --workspace "$WS" dashboard serve 0
+```
+
+Create a quest through that dashboard, then add narrowly scoped watches. Add each watch before
+posting its unique test marker so the initial watermark cannot ingest older history:
+
+```bash
+"$WS-venv/bin/sq" --workspace "$WS" watch QUEST_ID \
+  '{"type":"telegram_chat","credential_id":"e2e","peer":"YOUR_TELEGRAM_USER_ID","include_outgoing":true,"filter_keywords":["sq-e2e-unique"]}'
+"$WS-venv/bin/sq" --workspace "$WS" watch QUEST_ID \
+  '{"type":"telegram_search","credential_id":"e2e","peer":"YOUR_TELEGRAM_USER_ID","query":"sq-e2e-unique","include_outgoing":true}'
+"$WS-venv/bin/sq" --workspace "$WS" watch QUEST_ID \
+  '{"type":"x_search","credential_id":"e2e","query":"from:YOUR_TEST_ACCOUNT sq-e2e-unique"}'
+
+# Post/send the unique markers, wait 30 seconds for search indexes, then inspect detection.
+"$WS-venv/bin/sq" --workspace "$WS" tick --dry-run
+```
+
+The dry run should log `DIRTY` without dispatching. A second dry run must rediscover the same
+items because dirty watermarks are committed only after successful acknowledgement. Use
+`tick --isolated --fake-worker` to acknowledge them safely, then confirm a final dry run is clean.
 
 ```bash
 # Print the optional block without changing any files.
