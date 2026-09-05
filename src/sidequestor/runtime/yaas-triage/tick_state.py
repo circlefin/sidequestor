@@ -101,9 +101,13 @@ BOOLEAN_KNOBS = {
     "YAAS_SLACK_CHECKERS_ENABLED": "1",
 }
 
+DEFAULT_CHECKER_CONNECTORS = ("slack", "email", "github", "jira")
+KNOWN_CHECKER_CONNECTORS = frozenset((*DEFAULT_CHECKER_CONNECTORS, "telegram", "x"))
+UPSTREAM_CONNECTOR_ALIASES = {"gmail": "email"}
+
 
 class BadEnvKnob(Exception):
-    """A gate knob has a non-numeric value. tick.py turns this into gate_bad_env_knob + exit 2."""
+    """A gate setting is invalid. tick.py turns this into gate_bad_env_knob + exit 2."""
 
 
 def _load_env_file(repo_root, environ):
@@ -227,8 +231,30 @@ def validate_knobs(env):
     for k in BOOLEAN_KNOBS:
         if k in env and str(env[k]).strip() not in ("", "0", "1"):
             offenders.append(f"{k}={env[k]}")
+    try:
+        load_checker_connectors(env)
+    except ValueError as exc:
+        offenders.append(str(exc))
     if offenders:
         raise BadEnvKnob(" ".join(offenders))
+
+
+def load_checker_connectors(env):
+    """Return the explicitly enabled external checker connectors.
+
+    Local checkers have no connector and are always enabled. An empty configured value is
+    valid and disables every external checker without deleting watches or moving cursors.
+    """
+    raw = env.get("YAAS_CHECKER_CONNECTORS")
+    if raw is None:
+        return frozenset(DEFAULT_CHECKER_CONNECTORS)
+    values = [value.strip() for value in str(raw).split(",") if value.strip()]
+    unknown = sorted(set(values) - KNOWN_CHECKER_CONNECTORS)
+    if unknown:
+        raise ValueError(f"YAAS_CHECKER_CONNECTORS has unknown connector(s): {','.join(unknown)}")
+    if len(values) != len(set(values)):
+        raise ValueError("YAAS_CHECKER_CONNECTORS contains duplicate connectors")
+    return frozenset(values)
 
 
 def load_lag_map(triage_dir):
@@ -369,6 +395,8 @@ class Config:
         self.mcp_call = self.triage_dir / "surfaces" / "mcp-call.sh"
 
         self.lag_map = load_lag_map(self.triage_dir)
+        self.watch_manifests = load_watch_manifests(self.triage_dir)
+        self.checker_connectors = load_checker_connectors(self.env)
 
     def knob(self, name):
         """A validated numeric knob as an int, or its default if unset/empty."""
@@ -379,6 +407,16 @@ class Config:
         """A validated 0/1 feature switch, or its declared default when unset."""
         v = str(self.env.get(name, "")).strip() or BOOLEAN_KNOBS[name]
         return v == "1"
+
+    def checker_enabled(self, watch_type):
+        manifest = self.watch_manifests.get(str(watch_type), {})
+        upstream = manifest.get("upstream")
+        if not upstream:
+            return True
+        connector = UPSTREAM_CONNECTOR_ALIASES.get(upstream, upstream)
+        if connector not in self.checker_connectors:
+            return False
+        return connector != "slack" or self.enabled("YAAS_SLACK_CHECKERS_ENABLED")
 
 
 def main():

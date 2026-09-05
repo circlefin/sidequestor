@@ -92,7 +92,13 @@ sys.path.insert(0, str(RUNTIME_ROOT / "yaas-triage"))
 import approval_state
 import approval_store
 import tick_check
-from tick_state import Config, NUMERIC_KNOBS, load_environment, load_watch_manifests
+from tick_state import (
+    Config,
+    DEFAULT_CHECKER_CONNECTORS,
+    NUMERIC_KNOBS,
+    load_environment,
+    load_watch_manifests,
+)
 
 approval_state.configure(load_environment(REPO_ROOT))
 
@@ -853,8 +859,10 @@ def build_config() -> dict:
 
     groups = [
         {"title": "Adapters", "items": [
+            knob("YAAS_CHECKER_CONNECTORS", ",".join(DEFAULT_CHECKER_CONNECTORS),
+                 "Comma-separated external checker connectors. Local schedule/approval always run; disabled watches keep their watermarks."),
             knob("YAAS_SLACK_CHECKERS_ENABLED", 1,
-                 "Free local slack_* checkers and the reaction sweep. Set to 0 when Slack is available only through a paid worker's MCP."),
+                 "Additional Slack-only kill switch; Slack must also be present in YAAS_CHECKER_CONNECTORS."),
         ]},
         {"title": "Concurrency", "items": [
             knob("YAAS_TRIAGE_MAX_PARALLEL", NUMERIC_KNOBS["YAAS_TRIAGE_MAX_PARALLEL"],
@@ -943,6 +951,21 @@ def build_briefs(limit: int = 30) -> list:
         })
     return briefs
 
+def _current_block_index(lines: list[str]) -> int:
+    """Return the current block's line index, or -1 after any later recovery event."""
+    last_block = last_other = -1
+    for idx, raw in enumerate(lines):
+        try:
+            event = json.loads(raw).get("event", "")
+        except Exception:
+            continue
+        if event == "blocked":
+            last_block = idx
+        else:
+            last_other = idx
+    return last_block if last_block >= 0 and last_block > last_other else -1
+
+
 def build_dashboard(include_briefs: bool = False) -> dict:
     """The full quest-state snapshot.
 
@@ -954,6 +977,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
     /api/dashboard, whose payload contract still carries them, opts in.
     """
     active_dir = STATE_DIR / "quests" / "active"
+    checker_config = Config(str(RUNTIME_ROOT / "yaas-triage"))
     quests         = []
     recent_activity = []
 
@@ -971,11 +995,12 @@ def build_dashboard(include_briefs: bool = False) -> dict:
         timeline_path = quest_dir / "timeline.ndjson"
         if timeline_path.exists():
             lines = [l for l in timeline_path.read_text().splitlines() if l.strip()]
+            blocked_now = _current_block_index(lines) >= 0
             for raw in reversed(lines[-20:]):
                 try:
                     e = json.loads(raw)
                     ev = e.get("event", "")
-                    if ev == "blocked" and last_blocked is None:
+                    if blocked_now and ev == "blocked" and last_blocked is None:
                         last_blocked = {"ts": e.get("ts"), "reason": (e.get("reason") or e.get("note") or "")[:80]}
                     if ev != "blocked" and last_seen_ts is None:
                         last_seen_ts = e.get("ts")
@@ -986,7 +1011,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
                             "event": ev,
                             "note":  (e.get("note") or "")[:80],
                         }
-                    if last_action and last_blocked and last_seen_ts:
+                    if last_action and last_seen_ts and (last_blocked or not blocked_now):
                         break
                 except Exception:
                     continue
@@ -1043,8 +1068,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
                 qid, _, wid = key.partition("|")
                 if not isinstance(entry, dict) or entry.get("count", 0) < promote:
                     continue
-                if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
-                        and str(entry.get("type", "")).startswith("slack_")):
+                if not checker_config.checker_enabled(entry.get("type", "")):
                     continue
                 backoff_by_quest.setdefault(qid, []).append({
                     "watch_id":      wid,
@@ -1094,8 +1118,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
                 qid = owner.get(wid)
                 if not qid:
                     continue  # orphan: the watch or its quest is gone
-                if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
-                        and str(wtype_of.get(wid, "")).startswith("slack_")):
+                if not checker_config.checker_enabled(wtype_of.get(wid, "")):
                     continue
                 if tick_check.is_due(rec, now):
                     remaining = 0
@@ -1124,8 +1147,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
     # Annotate quests with recent rate-limiting (transient; from the run-log, not a state file).
     rl_by_quest: dict[str, dict] = {}
     for e in _recent_runlog_events("gate_watch_ratelimited", RATELIMIT_WINDOW_SEC):
-        if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
-                and str(e.get("type", "")).startswith("slack_")):
+        if not checker_config.checker_enabled(e.get("type", "")):
             continue
         qid = e.get("quest")
         if qid and e.get("watch_id"):
@@ -1498,17 +1520,26 @@ def build_quest_detail(quest_id: str) -> dict | None:
         pass
 
     timeline, total, lines = [], 0, []
+    current_block_idx = -1
     timeline_path = quest_dir / "timeline.ndjson"
     if timeline_path.exists():
         try:
             lines = [l for l in timeline_path.read_text().splitlines() if l.strip()]
             total = len(lines)
-            for raw in reversed(lines[-_TIMELINE_CAP:]):
+            current_block_idx = _current_block_index(lines)
+            first_idx = max(0, len(lines) - _TIMELINE_CAP)
+            for line_idx in range(len(lines) - 1, first_idx - 1, -1):
+                raw = lines[line_idx]
                 try:
                     e = json.loads(raw)
                 except Exception:
                     continue
                 if not isinstance(e, dict):
+                    continue
+                # A recovered block remains in the durable timeline for audit, but it is
+                # not a current worker issue. Show at most the one block that still defines
+                # the quest's present state, matching the main dashboard.
+                if e.get("event") == "blocked" and line_idx != current_block_idx:
                     continue
                 entry = {k: e[k] for k in _TIMELINE_KEYS if k in e}
                 # Resolve the link from the FULL event (ids live outside
@@ -1595,17 +1626,9 @@ def build_quest_detail(quest_id: str) -> dict | None:
     # Blocked: last blocked event with nothing logged after it (matches the
     # aggregate builder's recovery semantics).
     blocked_now = None
-    li_block = li_other = -1
-    for idx, raw in enumerate(lines):
+    if current_block_idx >= 0:
         try:
-            ev = json.loads(raw).get("event")
-        except Exception:
-            continue
-        if ev == "blocked": li_block = idx
-        else:              li_other = idx
-    if li_block >= 0 and li_block > li_other:
-        try:
-            be = json.loads(lines[li_block])
+            be = json.loads(lines[current_block_idx])
             blocked_now = {"ts": be.get("ts"),
                            "reason": _clip(be.get("reason") or be.get("note") or "", 2000)}
         except Exception:

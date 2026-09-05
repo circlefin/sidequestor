@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from sidequestor import cli
+
 
 PACKAGE = Path(__file__).resolve().parents[2]
 YAAS = Path(os.environ.get("SIDEQUESTOR_BIN", PACKAGE / ".venv" / "bin" / "sq"))
@@ -27,6 +29,10 @@ def run_sidequestor(*args: str, home: Path | None = None) -> subprocess.Complete
 
 
 class Stage2CommandSurfaceTest(unittest.TestCase):
+    def test_telegram_send_routes_to_native_surface(self) -> None:
+        self.assertIn("telegram-send", cli.LEGACY_COMMANDS)
+        self.assertNotIn("telegram-send", cli.ISOLATED_COMMANDS)
+
     def test_public_help(self) -> None:
         result = run("--help")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -37,7 +43,7 @@ class Stage2CommandSurfaceTest(unittest.TestCase):
         commands = (
             "init", "instances", "setup", "start", "stop", "tick", "loop", "dashboard", "doctor",
             "migrate", "sync-resources", "upgrade", "watch", "ack", "approval", "log", "slack-send",
-            "react", "mcp-call", "jira-call",
+            "telegram-send", "react", "mcp-call", "jira-call",
         )
         for command in commands:
             result = run(command, "--help")

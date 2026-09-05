@@ -55,6 +55,35 @@ def sgtnow():
 MAX_PAGES = 30   # ~600 results per emoji over the 60-day window
 
 
+def normalized_timestamps(values):
+    """Return valid Slack timestamps in deterministic order."""
+    timestamps = []
+    for value in values if isinstance(values, list) else []:
+        try:
+            timestamp = str(value)
+            float(timestamp)
+        except (TypeError, ValueError):
+            continue
+        timestamps.append(timestamp)
+    return sorted(set(timestamps), key=float)
+
+
+def load_pending(path):
+    """Read the worker's blocked/unacked queue without making it a hard dependency."""
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    pending = {}
+    for emoji, timestamps in data.items():
+        normalized = normalized_timestamps(timestamps)
+        if normalized:
+            pending[str(emoji)] = normalized
+    return pending
+
+
 def initialization_epoch(repo_root):
     """Return the workspace's first-scan boundary, if this is a package workspace."""
     candidates = (
@@ -90,7 +119,11 @@ def main():
         (emojis["adopt"],   "incoming_envelope_adopted.json", "adopted_timestamps"),
     ]
 
-    pending = {}
+    # A blocked worker item may no longer carry its original trigger reaction. Keep
+    # the durable queue across a fresh Slack search, then prune only items proven
+    # complete by their state file below.
+    existing_pending = load_pending(pending_path)
+    pending = dict(existing_pending)
     truncated = []
 
     for emoji, fname, key in emoji_specs:
@@ -160,17 +193,25 @@ def main():
                 truncated.append(emoji)
                 break
 
-        if new_ts:
-            pending[emoji] = sorted(set(new_ts), key=float)
+        retained = [ts for ts in existing_pending.get(emoji, []) if ts not in known]
+        merged = normalized_timestamps(retained + new_ts)
+        if merged:
+            pending[emoji] = merged
             print(f"DIRTY_REACTION: {emoji} → {len(pending[emoji])} new", file=sys.stderr)
+        else:
+            pending.pop(emoji, None)
 
     if truncated:
         print(f"REACTIONS_TRUNCATED={','.join(sorted(set(truncated)))}", file=sys.stderr)
         print(f"{sgtnow()}  REACTIONS_TRUNCATED=1")
 
     if pending:
-        os.makedirs(os.path.dirname(pending_path), exist_ok=True)
-        json.dump(pending, open(pending_path, "w"), indent=2)
+        pending_parent = os.path.dirname(pending_path)
+        os.makedirs(pending_parent, exist_ok=True)
+        pending_tmp = pending_path + ".tmp"
+        with open(pending_tmp, "w") as handle:
+            json.dump(pending, handle, indent=2)
+        os.replace(pending_tmp, pending_path)
         print(f"{sgtnow()}  REACTIONS_DIRTY=1")
     else:
         try:

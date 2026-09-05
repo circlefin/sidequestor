@@ -46,15 +46,23 @@ the packaged runtime directory. Put mutable data in the workspace through the su
 
 ## Shared-state rules
 
-- Never edit an existing watch or watermark. Add watches only with `add-watch.py`.
+- Never edit an existing watch or watermark. Add watches with `add-watch.py`; retire an
+  obsolete watch with `sq watch retire <quest_id> <watch_id> "<reason>"` in Mode B only.
 - Ack only items included in the current dispatch. Never ack unrelated work.
-- Write timeline events with `log-event.py`; send Slack through `slack-send.py`.
+- Write timeline events with `log-event.py`; send Slack through `slack-send.py`
+  and save native Telegram drafts through `telegram-send.py`.
+- Keep the latest summary of things in `context.md`. Rewrite that summary in place;
+  chronology and log detail belong in `timeline.ndjson`.
 - Use the approval helper for review-queue items.
 - For an unreviewed action, `allow_send: false` requires queuing the action for
   review instead of executing it.
 - A `reviewed` approval records the user's authorization for that specific action.
-  Execute it according to its action type and the dispatch rules; do not apply
-  `allow_send` again as a permanent veto.
+  Claim it before execution. A claimed `slack_message` approval can authorize its quest's
+  Slack send even when `allow_send` is false or the target watch is read-only — but only
+  to the channel and thread it was reviewed for. Send it somewhere else and the approval
+  authorizes nothing. `telegram-send.py` never sends to a recipient: it only saves a native
+  Telegram cloud draft for later human review, regardless of `allow_send`. A `manual_instruction`
+  does not override the Slack send controls or turn a Telegram draft into a send.
 - If an action is blocked, log the blocker, ack the item `blocked`, and report it.
 
 A backend-native workspace instruction file (`CLAUDE.md` under the Claude backend,

@@ -246,7 +246,8 @@ runtime files. Their accepted behavior is:
   on narrow screens. This prevents operators from acting on the wrong local
   instance while preserving the existing dashboard hierarchy.
 - `sq stop` with no selector discovers the containing workspace, unloads only
-  that instance's jobs, and retains its manifest and plists for restart.
+  that instance's jobs, retains its manifest, and removes its plists so launchd
+  cannot restart it after reboot. `sq start` recreates the plists.
   It also stops a foreground `sq dashboard serve` controller when its recorded
   process belongs to the same workspace, so the dashboard cannot outlive the
   workspace lifecycle. The foreground controller records only its own PID and

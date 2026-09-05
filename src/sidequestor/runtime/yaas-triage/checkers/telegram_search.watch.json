@@ -1,0 +1,15 @@
+{
+  "_comment": "checker_example is a minimal checker input; query is searched inside peer.",
+  "schema_version": 1,
+  "required": [["peer", "query"]],
+  "identity": ["credential_id", "peer", "query", "from_user", "filter_sender_ids", "filter_keywords", "filter_kinds", "include_outgoing"],
+  "checker_example": {
+    "type": "telegram_search",
+    "peer": "@telegram",
+    "query": "sidequestor",
+    "last_checked_ts": "1"
+  },
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "telegram"
+}

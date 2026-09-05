@@ -4,13 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sidequestor"
-version = "0.1.11"
+version = "0.1.22"
 description = "Sidequestor workspace and triage command shell"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = []
+
+[project.optional-dependencies]
+telegram = ["Telethon>=1.44,<2"]
 
 [project.scripts]
 sidequestor = "sidequestor.cli:main"

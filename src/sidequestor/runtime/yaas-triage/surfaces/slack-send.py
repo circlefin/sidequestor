@@ -52,6 +52,12 @@ Usage
                                  ("draft_posted" when draft=true).
     note             (optional)  short human summary for the timeline `note`.
 
+Non-draft sends are authorized here before Slack is called. Quest sends require an
+active quest with `allow_send: true`, or a claimed `slack_message` approval whose
+reviewed target matches this channel and thread. A `read_only` watch on the exact
+thread also requires that approval. The reactions dispatch is the sole quest-less
+send path.
+
 Output (stdout): compact JSON, e.g.
     {"response_ts":"1784280637.486119","permalink":"https://...","channel_id":"C...","logged":true}
 Callers use response_ts to build the follow-up watch.json entry (CLAUDE.md 3a).
@@ -160,26 +166,52 @@ def _thread_last_activity(channel_id: str, thread_ts: str):
     return newest
 
 
-def _approval_reviewed_timestamp(approval_id):
-    """Return the approval's reviewed_at epoch, if it is available."""
-    if not approval_id:
+def _claimed_slack_approval_item(approval_id, quest_id, channel_id, thread_ts):
+    """Return the live claimed Slack approval for these coordinates, if any."""
+    if not approval_id or not quest_id:
         return None
     try:
         item = next(
             (i for i in approval_store.read_queue().get("items", [])
-             if i.get("id") == approval_id),
+             if isinstance(i, dict) and i.get("id") == approval_id),
             None,
         )
-        value = item.get("reviewed_at") if item else None
-        if not value:
+        if not (
+            item
+            and item.get("quest_id") == quest_id
+            and item.get("status") == "executing"
+            and item.get("action_type") == "slack_message"
+        ):
             return None
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
-    except (AttributeError, TypeError, ValueError, OSError, OverflowError, json.JSONDecodeError):
-        # A missing or malformed approval timestamp must not weaken the guard.
+        target = item.get("target")
+        if not isinstance(target, dict) or not target.get("channel_id"):
+            return None
+        if target.get("channel_id") != channel_id:
+            return None
+        if (target.get("thread_ts") or None) != (thread_ts or None):
+            return None
+        lease = datetime.fromisoformat(str(item["lease_expires_at"]).replace("Z", "+00:00"))
+        return item if lease.timestamp() >= time.time() else None
+    except Exception:
+        # Approval-state failures must never weaken either send guard.
         return None
 
 
-def _stale_reason(channel_id, thread_ts, now=None, approval_id=None):
+def _approval_reviewed_timestamp(approval_id, quest_id, channel_id, thread_ts):
+    """Return reviewed_at only for a live approval of this exact destination."""
+    item = _claimed_slack_approval_item(approval_id, quest_id, channel_id, thread_ts)
+    if not item:
+        return None
+    try:
+        value = item.get("reviewed_at")
+        if not value:
+            return None
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _stale_reason(channel_id, thread_ts, now=None, approval_id=None, quest_id=None):
     """Should this send be held for review? Returns a reason string, or None to send.
 
     Fails CLOSED: if the thread cannot be read, we cannot show the conversation is
@@ -195,7 +227,9 @@ def _stale_reason(channel_id, thread_ts, now=None, approval_id=None):
     newest = _thread_last_activity(channel_id, thread_ts)
     if newest is None:
         return "could not read the thread to confirm it is still live"
-    reviewed_at = _approval_reviewed_timestamp(approval_id)
+    reviewed_at = _approval_reviewed_timestamp(
+        approval_id, quest_id, channel_id, thread_ts,
+    )
     freshest = max(newest, reviewed_at) if reviewed_at is not None else newest
     age_h = (now - freshest) / 3600.0
     if age_h > STALE_HOURS:
@@ -221,6 +255,83 @@ def _queue_for_review(p, reason):
         ["python3", str(SCRIPT_DIR.parent / "ledger" / "approval-helper.py"), "write", json.dumps(payload)],
         capture_output=True, text=True)
     return (out.stdout or "").strip()
+
+
+def _claimed_slack_approval(approval_id, quest_id, channel_id, thread_ts):
+    """Return whether a human-reviewed Slack action is currently claimed FOR THIS TARGET.
+
+    The reviewer approved an action at a specific place, so the claim only authorizes
+    that place. Without the coordinate check one live approval would let the
+    quest send anywhere, including into a `read_only` thread it was never shown.
+    """
+    return _claimed_slack_approval_item(
+        approval_id, quest_id, channel_id, thread_ts,
+    ) is not None
+
+
+def _targets_read_only(watches, channel_id, thread_ts):
+    """Whether the outbound coordinates are covered by a read-only watch.
+
+    `read_only` means "do not reply in THIS thread", so it needs an exact
+    channel_id + thread_ts match on a `slack_thread` watch. Matching a watch that
+    carries no thread_ts would block every send to the whole channel or DM; both
+    validators now reject `read_only` on those types, and keying off the type here
+    means a legacy entry cannot widen the block either.
+    """
+    if not thread_ts:
+        return False
+    for watch in watches:
+        if not isinstance(watch, dict) or watch.get("watch_mode") != "read_only":
+            continue
+        if watch.get("type") != "slack_thread":
+            continue
+        if watch.get("channel_id") == channel_id and watch.get("thread_ts") == thread_ts:
+            return True
+    return False
+
+
+def _send_policy_reason(p):
+    """Return a fail-closed reason for a real send, or None when authorized."""
+    target = os.environ.get("SIDEQUESTOR_DISPATCH_TARGET", "").strip()
+    quest_id = str(p.get("quest_id") or "").strip()
+
+    if target == "reactions" and quest_id:
+        return "the reactions dispatch cannot write through a quest"
+    if target and target != "reactions" and target != quest_id:
+        return f"quest_id {quest_id!r} does not match dispatch target {target!r}"
+    if p.get("draft"):
+        return None
+
+    # Reactions are the only sanctioned send-only flow with no quest folder.
+    if target == "reactions" and not quest_id:
+        return None
+    if not quest_id:
+        return "quest_id is required for a non-draft Slack send"
+    # active/ only, deliberately: a completed or archived quest keeps its folder but
+    # loses its send authority. quest_dir() below spans all three buckets because
+    # LOGGING a send that already happened is not the same decision as authorizing one.
+    qdir = REPO_ROOT / "state" / "quests" / "active" / quest_id
+    if not qdir.is_dir():
+        return (f"quest {quest_id} is not in state/quests/active; a completed or "
+                f"archived quest may not send")
+    try:
+        meta = json.loads((qdir / "meta.json").read_text())
+        watch_doc = json.loads((qdir / "watch.json").read_text())
+        watches = watch_doc.get("watches")
+        if not isinstance(meta, dict) or not isinstance(watches, list):
+            raise ValueError("invalid quest policy files")
+    except Exception as exc:
+        return f"cannot read quest policy for {quest_id}: {exc}"
+
+    approved = _claimed_slack_approval(p.get("approval_id"), quest_id,
+                                       p.get("channel_id"), p.get("thread_ts"))
+    if not meta.get("allow_send") and not approved:
+        return (f"quest {quest_id} has allow_send false and no claimed Slack approval "
+                f"for these coordinates")
+    if _targets_read_only(watches, p.get("channel_id"), p.get("thread_ts")) and not approved:
+        return ("target is covered by a read_only watch and has no claimed Slack "
+                "approval for these coordinates")
+    return None
 
 
 def _parse_args(argv):
@@ -302,14 +413,23 @@ def main():
 
     tool = "slack_send_message_draft" if is_draft else "slack_send_message"
 
-    # 0. Stale-reply guard. A reply to a conversation that went quiet more than
+    # 0. Authorization guard. Keep this before the stale-reply read and the Slack
+    # call so a denied action has no external side effect at all.
+    policy_reason = _send_policy_reason(p)
+    if policy_reason:
+        print(f"error: send denied: {policy_reason}", file=sys.stderr)
+        sys.exit(1)
+
+    # 1. Stale-reply guard. A reply to a conversation that went quiet more than
     #    STALE_HOURS ago is almost never still wanted: after a pause, triage hands the
     #    worker the OLDEST unread slice first, so without this it would march forward
     #    through days of backlog answering questions that were resolved without it.
     #    Enforced here, in the only sanctioned send path, rather than as a rule in
     #    CLAUDE.md, because a rule the model can forget is not a guard.
     if not is_draft:
-        reason = _stale_reason(channel_id, thread_ts, approval_id=p.get("approval_id"))
+        reason = _stale_reason(
+            channel_id, thread_ts, approval_id=p.get("approval_id"), quest_id=quest_id,
+        )
         if reason:
             appr_id = _queue_for_review(p, reason)
             quest_dir_path = quest_dir(REPO_ROOT, quest_id) if quest_id else None
@@ -323,14 +443,14 @@ def main():
                               "approval_id": appr_id, "response_ts": "", "permalink": ""}))
             return 0
 
-    # 1. Send / draft. On any failure nothing is logged (the message never landed).
+    # 2. Send / draft. On any failure nothing is logged (the message never landed).
     try:
         body = _call_slack(tool, args)
     except Exception as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)
 
-    # 2. Parse the response for the sent-message coordinates.
+    # 3. Parse the response for the sent-message coordinates.
     response_ts = ""
     permalink = ""
     try:
@@ -348,7 +468,7 @@ def main():
         print(f"error: unexpected response from {tool}: {body[:200]}", file=sys.stderr)
         sys.exit(2)
 
-    # 3. Log the verbatim body to the quest timeline (the whole point).
+    # 4. Log the verbatim body to the quest timeline (the whole point).
     logged = False
     if quest_id:
         qdir = quest_dir(REPO_ROOT, quest_id)

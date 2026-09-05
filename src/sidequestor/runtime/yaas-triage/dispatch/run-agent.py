@@ -38,7 +38,7 @@ Exit code is the AGENT's exit code, with 124 for a watchdog kill (matching timeo
 convention, which triage already treats specially: acks written before the kill are
 still trustworthy, so they still commit).
 
-Env passed through to dispatch-agent.sh: YAAS_AGENT, YAAS_CLAUDE_*, YAAS_CODEX_*,
+Env passed through to dispatch-agent.sh: YAAS_AGENT, YAAS_CLAUDE_*, YAAS_CODEX_*, YAAS_CURSOR_*,
 REPO_ROOT.
 """
 
@@ -167,6 +167,10 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
         f.write("=" * 56 + "\n")
 
     env = dict(os.environ, REPO_ROOT=str(REPO_ROOT))
+    # Sanctioned write surfaces use this to bind side effects to the one target
+    # named by the dispatch. The model cannot bypass quest policy by omitting or
+    # substituting a quest_id in a helper payload.
+    env["SIDEQUESTOR_DISPATCH_TARGET"] = label
     # When YAAS_CLAUDE_DEBUG is set, give the worker a per-invocation debug file beside its
     # logs so dispatch-agent.sh routes claude --debug-file there (root-cause view of a stall:
     # API request/retry/timing, MCP traffic). Harmless when debug is off — the var is only
