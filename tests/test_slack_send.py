@@ -176,7 +176,7 @@ class SlackSendAuthorizationTest(unittest.TestCase):
             "message": "hello",
             "draft": True,
         }, target=quest_id, response_body=json.dumps({
-            "channel_link": "https://circle.enterprise.slack.com/archives/D0A0LMEFWBY",
+            "channel_link": "https://acme.slack.com/archives/D0A0LMEFWBY",
             "widget_id": "96ce482a-976b-4785-95ed-e7412c3c7e74",
             "channel_info": {"channel_id": "D0A0LMEFWBY",
                              "name": "Guangmian Kung", "is_dm": True},

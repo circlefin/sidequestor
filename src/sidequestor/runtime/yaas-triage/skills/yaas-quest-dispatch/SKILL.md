@@ -88,12 +88,12 @@ entered the selected history window.
 If a connector is absent from `SIDEQUESTOR_CHECKER_CONNECTORS`, its watch was intentionally not
 dispatched. Do not work around that operator opt-in with exploratory API calls.
 
-**X watch type** (`x_search`): use the packaged
-`surfaces/x-call.py GET ... app:<credential_id>` with the same endpoint and source filter encoded
-by the watch. Request `id,text,author_id,created_at`, page to exhaustion, and retain only posts
-whose `created_at` is newer than `last_checked_ts`. A broad watch may fire on irrelevant posts;
-apply `context.md` before acting. Reads consume X API credits, so do not make exploratory calls
-outside the dispatched watch's exact window.
+**X watch types** (`x_search`, `x_mentions`, `x_user_posts`, `x_home`, `x_dm`): use the packaged
+`surfaces/x-call.py GET ... user:<credential_id>` with the exact endpoint and source filter encoded
+by the watch. Page only the dispatched interval and retain items newer than `last_checked_ts`.
+For `x_dm`, ignore events sent by the authorized account and apply its conversation or participant
+selector. A broad watch may fire on irrelevant posts; apply `context.md` before acting. Reads consume
+X API credits, so do not make exploratory calls outside the dispatched watch's exact window.
 
 **Email watch type** (`email`): read `watch.json` to get each entry's `query` and `last_checked_ts`. Then:
 1. `gws gmail users messages list --params '{"userId":"me","q":"<query> after:<YYYY/MM/DD>","maxResults":10}'`
@@ -267,20 +267,22 @@ sq log '{"quest_id":"<qid>","event":"note","note":"<what happened>"}'
 `thread_ts`, `message_text`, `link_url`, `reason`, …) is written through unchanged,
 so record whatever the event needs. A `ts` you pass is ignored.
 
-**Send Slack messages through `slack-send.py` and save Telegram drafts through `telegram-send.py` so the body is logged automatically.** For any quest send or draft, use the matching helper instead of calling the underlying client directly and then logging separately:
+**Send through the surface helpers so the body is logged automatically.** For any quest action, use the matching helper instead of calling the underlying client directly and then logging separately:
 
 ```bash
 python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack-send.py" '{"quest_id":"<qid>","approval_id":"<approval id, when executing a reviewed item>","channel_id":"C...","message":"<verbatim body>","thread_ts":"<parent ts, optional>","note":"<short summary>"}'
 # add "draft": true to save a draft instead of sending; "event":"..." to override the default (message_sent / draft_posted)
 python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/telegram-send.py" '{"quest_id":"<qid>","peer":"@chat","message":"<verbatim body>","reply_to_message_id":"<message id, optional>","credential_id":"<optional credential id>","note":"<short summary>"}'
 # Telegram always saves a native cloud draft; it never sends to the recipient.
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/x-send.py" '{"quest_id":"<qid>","action":"reply","post_id":"<post id>","text":"<verbatim body>","credential_id":"default","idempotency_key":"<run id plus action coordinates>","approval_id":"<optional claimed remote_request approval>","note":"<short summary>"}'
+# X writes require allow_send=true or an exact claimed approval. Never retry an indeterminate idempotency key blindly.
 ```
 
 The helper sends or drafts, then appends a timeline entry carrying the exact `message_text` in one step. Slack prints `{"response_ts":...,"permalink":...}` for the follow-up `watch.json` entry (§3a); Telegram prints `{"draft_saved":true}` and has no sent-message ID. If the operation fails nothing is logged. This makes body-capture structural rather than something you have to remember.
 
 **The underlying rule (why the helper matters):** the dashboard surfaces a message only when its timeline event carries a `message_text` field. A `note` summary alone shows in the full timeline but not in the Messages stream or the quest Conversation. So for any reply event (`message_sent` / `reply_sent` / `dm_sent` / `executed` (slack or email) / `email_replied`) the entry MUST carry the exact text as `message_text` alongside `note` + `permalink` + `response_ts`. This applies to Reactions Fast Path replies too. (Drafts routed through the approval queue already carry their body in `pending-approvals.json`, so a `draft_posted` with an `approval_id` needs no `message_text`.)
 
-**Never write the NDJSON line yourself, for any event.** Slack goes through `slack-send.py`, Telegram through `telegram-send.py`, everything else through `log-event.py`; pass `message_text` to the helper rather than hand-rolling an entry around it. A hand-written line carries a `ts` you invented, and you have no clock: your context holds a local date with no time of day, so the stamp lands hours off and, when that date runs ahead of UTC, in the future — which sorts a finished action above everything real on the dashboard and pins it there.
+**Never write the NDJSON line yourself, for any event.** Slack goes through `slack-send.py`, Telegram through `telegram-send.py`, X through `x-send.py`, and everything else through `log-event.py`; pass `message_text` to the helper rather than hand-rolling an entry around it. A hand-written line carries a `ts` you invented, and you have no clock: your context holds a local date with no time of day, so the stamp lands hours off and, when that date runs ahead of UTC, in the future, which sorts a finished action above everything real on the dashboard and pins it there.
 
 **Non-Slack replies need their own link fields.** The dashboard renders an "open in <surface>" chip next to every logged reply, and it builds that link from what you log. So when a reply lands somewhere other than Slack, log the identifiers:
 

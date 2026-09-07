@@ -44,6 +44,10 @@ Ask the user for, in order:
    - **`telegram_chat`** — a Telegram cloud-chat `peer`: use its `@username`/public link when available, or its numeric dialog ID for private chats. Reads as the user authorized by `sq telegram-auth`, not as a bot. Optional `credential_id`, `from_user` (an `@username`), `filter_sender_ids`, `filter_keywords`, `filter_kinds`, `include_outgoing`, and `limit`. Detects new messages only; it cannot see Secret Chats or reliably detect later edits, deletions, or reactions.
    - **`telegram_search`** — a `peer` plus non-empty `query`, with the same optional filters as `telegram_chat` and optional `from_user`. Search is index-backed and deliberately trails the current time by 30 seconds.
    - **`x_search`** — an X recent-search `query` (maximum 1024 characters). Use `@handle` for mentions or `from:handle` for an author's posts. Optional `credential_id`, `filter_keywords`, and `exclude_user_ids`. Broad searches incur API read charges; narrow at the source and with checker filters.
+   - **`x_mentions`** — mentions of the authorized X account. `credential_id` is required. Optional `user_id`, `filter_keywords`, and `exclude_user_ids`.
+   - **`x_user_posts`** — posts from one selected X `user_id`. Optional `credential_id`, `exclude_replies`, `exclude_reposts`, `filter_keywords`, and `exclude_user_ids`.
+   - **`x_home`** — the authorized account's reverse-chronological home timeline. `credential_id` is required. Optional `filter_keywords` and `exclude_user_ids`.
+   - **`x_dm`** — incoming X direct messages visible to the authorized account. `credential_id` is required. Optional `conversation_id`, `participant_id`, and `filter_keywords`; omit both selectors to watch all accessible conversations. X exposes only the last 30 days of DM events.
 
    External watches run only when their connector is present in
    `SIDEQUESTOR_CHECKER_CONNECTORS`. The default is `slack,email,github,jira`; adding a Telegram

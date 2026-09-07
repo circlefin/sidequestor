@@ -29,7 +29,8 @@ yaas-triage/
 │   ├── github_pr.py          ← PR activity via `gh search prs`
 │   ├── github_issue.py       ← issue activity via `gh search issues` (excludes PRs)
 │   ├── telegram_chat.py · telegram_search.py  ← MTProto user-session history/search
-│   ├── x_search.py                    ← official X recent-search polling
+│   ├── x_search.py · x_mentions.py · x_user_posts.py
+│   ├── x_home.py · x_dm.py            ← official X user-level polling
 │   ├── reactions.py          ← global reaction sweep (not per-quest)
 │   ├── result.py             ← the outcome contract every checker returns
 │   ├── slack_utils.py        ← shared drain()/parse helpers
@@ -116,7 +117,8 @@ If a channel type has indexing latency (e.g. Gmail's search index takes ~60s to 
 
 Currently: `email.lag = 120` (Gmail's index is slow), `slack_mention.lag = 90`,
 `github_pr.lag = 30`, `github_issue.lag = 30`, `telegram_chat.lag = 2`, `telegram_search.lag = 30`,
-`x_search.lag = 30`, and `jira.lag = 15`. Types with no
+`x_search.lag = 30`, `x_mentions.lag = 30`, `x_user_posts.lag = 30`, `x_home.lag = 30`,
+`x_dm.lag = 30`, and `jira.lag = 15`. Types with no
 `.lag` file get lag = 0.
 
 Keep the lag as small as the source allows. Every second of lag widens the window in which an already-seen change gets re-reported, and each re-report costs a full dispatch that finds nothing. Note `*.lag` is gitignored, so a fresh clone starts at lag 0 for every type; recreate them from the values above.
@@ -137,7 +139,11 @@ Keep the lag as small as the source allows. Every second of lag widens the windo
     {"type": "github_issue",  "repo": "owner/repo", "last_checked_ts": "0", "reason": "..."},
     {"type": "telegram_chat", "peer": "-1001234567890", "last_checked_ts": "1770000000", "reason": "..."},
     {"type": "telegram_search", "peer": "@channel", "query": "release", "last_checked_ts": "1770000000", "reason": "..."},
-    {"type": "x_search",      "query": "from:XDevelopers", "last_checked_ts": "1770000000", "reason": "..."}
+    {"type": "x_search",      "query": "from:XDevelopers", "last_checked_ts": "1770000000", "reason": "..."},
+    {"type": "x_mentions",    "credential_id": "default", "last_checked_ts": "1770000000", "reason": "..."},
+    {"type": "x_user_posts",  "user_id": "2244994945", "last_checked_ts": "1770000000", "reason": "..."},
+    {"type": "x_home",        "credential_id": "default", "last_checked_ts": "1770000000", "reason": "..."},
+    {"type": "x_dm",          "credential_id": "default", "last_checked_ts": "1770000000", "reason": "..."}
   ]
 }
 ```
@@ -185,10 +191,18 @@ delivers the message to the recipient, and `allow_send` cannot enable delivery.
 Secret Chats
 and later edits/deletes/reactions are not observable through these history-window checkers.
 
-For X, run `sq x-auth install-app [CREDENTIAL_ID]` and paste the Developer Console bearer token
-at the hidden prompt. `x_search` requires an X recent-search query; use `@handle` for mentions or
-`from:handle` for an author's posts. Optional `filter_keywords` and `exclude_user_ids` are applied
-before dispatch. X API reads are billable, so keep the number of broad searches small.
+For X, configure a public/native OAuth 2.0 Developer App with callback
+`http://127.0.0.1:8765/callback`, then run `sq x-auth authorize CLIENT_ID [CREDENTIAL_ID]`.
+The browser consent grants user-level access and Keychain stores the rotating token pair. Use
+`sq x-auth status` to inspect the account and scopes or `sq x-auth revoke` to revoke it. App-only
+bearer tokens are rejected. `x_search`, `x_mentions`, `x_user_posts`, `x_home`, and `x_dm` cover
+recent search, mentions, selected accounts, the home timeline, and incoming DMs. X API reads are
+billable, and DMs are limited to the API's 30-day history window.
+
+`sq x-send` acts as the authorized account. It supports posts, replies, threads, DMs, media uploads,
+post deletion, likes, reposts, bookmarks, follows, mutes, blocks, and their inverse actions. Active
+quests need `allow_send: true` or an exact claimed `remote_request` approval. Dispatched writes need
+an `idempotency_key`; a started key is never retried automatically after an uncertain interruption.
 
 Authentication alone does not activate polling. Add `telegram` and/or `x` to
 `SIDEQUESTOR_CHECKER_CONNECTORS` in the workspace `.env`. The default is

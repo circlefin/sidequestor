@@ -4,6 +4,18 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.26 - 2026-09-07
+
+### Added
+- X user-account watches now cover mentions, selected-user posts, the home timeline, and incoming
+  direct messages alongside recent search.
+- `sq x-send` supports posts, replies, threads, direct messages, media uploads, and common social
+  actions with quest policy, approval binding, and idempotency safeguards.
+
+### Changed
+- X authentication now uses OAuth 2.0 Authorization Code with PKCE and rotating user refresh
+  tokens instead of app-only bearer tokens.
+
 ## 0.1.25 - 2026-09-07
 
 ### Changed

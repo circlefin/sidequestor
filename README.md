@@ -102,12 +102,15 @@ in the command line. `telegram-send` uses that same authorized user session. It 
 the message to the recipient. The draft synchronizes to the authorized account's Telegram clients.
 Saving a new draft replaces the account's existing cloud draft in that dialog.
 
-X watches use an app bearer token from the X Developer Console. The prompt stores it in Keychain;
-watch entries may select another named credential with `credential_id`.
+X uses OAuth 2.0 Authorization Code with PKCE to act as the account that approves access. Create
+an X Developer App configured as a public/native OAuth 2.0 client, enable the callback
+`http://127.0.0.1:8765/callback`, then authorize it. Sidequestor stores the user access and rotating
+refresh tokens in Keychain; it does not accept an app-only bearer token.
 
 ```bash
-sq x-auth install-app
+sq x-auth authorize YOUR_OAUTH2_CLIENT_ID
 sq x-auth status
+sq x-auth revoke
 ```
 
 External direct checkers are enabled by connector. New workspaces default to Slack, email, GitHub,
@@ -120,10 +123,16 @@ SIDEQUESTOR_CHECKER_CONNECTORS=slack,email,github,jira,telegram,x
 Disabling a connector does not delete its watches or advance their watermarks. The older
 `SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0` setting remains an additional Slack-only kill switch.
 
-Available direct-polling types are `telegram_chat`, `telegram_search`, and `x_search`. Use an X
-query such as `@handle` for mentions or `from:handle` for an author's posts. They detect new
-messages/posts; Telegram edits, deletions, reactions, Secret Chats, and X DMs/home timelines are
-intentionally outside this no-journal implementation.
+Available X polling types are `x_search`, `x_mentions`, `x_user_posts`, `x_home`, and `x_dm`.
+They cover recent search, the authorized account's mentions and home timeline, posts from a
+selected user ID, and incoming DMs. X only exposes DM events from the last 30 days. These pollers
+detect new items, not later edits, deletions, reactions, list changes, Spaces, or notifications.
+
+`sq x-send` can create posts, replies, threads, DMs, and media uploads; delete the account's posts;
+and like, repost, bookmark, follow, mute, or block and reverse those actions. Quest-owned writes
+require an active quest with `allow_send: true` or an exact claimed `remote_request` approval.
+Dispatched writes also require an `idempotency_key`; an interrupted attempt is held for inspection
+instead of retried blindly. Availability and billing still depend on the X app's current access tier.
 
 To test without permitting a worker to send anything, initialize a disposable workspace, enable
 the connectors, create a quest in its dashboard, add a watch, then use `tick --dry-run`:
@@ -138,7 +147,7 @@ chmod 600 "$WS/.env"
 
 # Edit $WS/.env: add telegram,x to SIDEQUESTOR_CHECKER_CONNECTORS.
 "$WS-venv/bin/sq" --workspace "$WS" telegram-auth authorize API_ID e2e
-"$WS-venv/bin/sq" --workspace "$WS" x-auth install-app e2e
+"$WS-venv/bin/sq" --workspace "$WS" x-auth authorize YOUR_OAUTH2_CLIENT_ID e2e
 
 # Run this in a second terminal. It serves the test UI without starting background triage.
 "$WS-venv/bin/sq" --workspace "$WS" dashboard serve 0

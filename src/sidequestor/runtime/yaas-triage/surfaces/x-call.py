@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Call one X API endpoint with a Keychain credential and stable exit taxonomy."""
+"""Call one X API endpoint with a user OAuth token."""
 
 import json
 import sys
@@ -13,26 +13,58 @@ from x_credentials import get_access_token
 
 OK, AUTH, ERROR, BAD_ARGS, TRANSIENT = 0, 1, 2, 3, 4
 BASE_URL = "https://api.x.com"
+METHODS = {"GET", "POST", "PUT", "DELETE"}
+
+
+def call(method, path, query=None, body=None, credential_id="default"):
+    method = method.upper()
+    if method not in METHODS:
+        raise ValueError(f"unsupported method: {method}")
+    if not path.startswith("/2/"):
+        raise ValueError("X path must start with /2/")
+    if query is None:
+        query = {}
+    if not isinstance(query, dict):
+        raise ValueError("query must be an object")
+    if body is not None and not isinstance(body, dict):
+        raise ValueError("body must be an object")
+
+    encoded_query = urllib.parse.urlencode(query, doseq=True)
+    url = f"{BASE_URL}{path}"
+    if encoded_query:
+        url = f"{url}?{encoded_query}"
+    headers = {
+        "Authorization": f"Bearer {get_access_token(credential_id)}",
+        "Accept": "application/json",
+    }
+    data = None
+    if body is not None:
+        data = json.dumps(body, separators=(",", ":")).encode()
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=30) as response:
+        raw = response.read().decode()
+    return json.loads(raw) if raw else {}
 
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if len(argv) != 4 or argv[0] != "GET" or not argv[1].startswith("/2/"):
-        print("usage: x-call.py GET /2/path QUERY_JSON app[:CREDENTIAL_ID]", file=sys.stderr)
+    if len(argv) not in (4, 5):
+        print(
+            "usage: x-call.py METHOD /2/path QUERY_JSON [BODY_JSON] user[:CREDENTIAL_ID]",
+            file=sys.stderr,
+        )
         return BAD_ARGS
-    _method, path, query_json, auth_spec = argv
+    method, path, query_json = argv[:3]
+    body_json = None if len(argv) == 4 else argv[3]
+    auth_spec = argv[-1]
     try:
-        query = json.loads(query_json)
-        if not isinstance(query, dict):
-            raise ValueError("query must be an object")
         auth_mode, _, credential_id = auth_spec.partition(":")
-        if auth_mode != "app":
-            raise ValueError("auth mode must be app")
-        token = get_access_token(credential_id or "default")
-        url = f"{BASE_URL}{path}?{urllib.parse.urlencode(query)}"
-        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            body = response.read().decode()
+        if auth_mode != "user":
+            raise ValueError("auth mode must be user")
+        query = json.loads(query_json)
+        body = None if body_json is None else json.loads(body_json)
+        result = call(method, path, query, body, credential_id or "default")
     except TransientCredentialError as exc:
         # Ordered before CredentialError, its base class: a locked or timing-out Keychain is
         # transient machine state, and returning AUTH would park the watch as misconfigured.
@@ -64,7 +96,7 @@ def main(argv=None):
     except (ValueError, json.JSONDecodeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return BAD_ARGS
-    print(body)
+    print(json.dumps(result, separators=(",", ":")))
     return OK
 
 

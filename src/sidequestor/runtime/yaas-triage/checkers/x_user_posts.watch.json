@@ -1,0 +1,10 @@
+{
+  "_comment": "Watches posts from one X user id.",
+  "schema_version": 1,
+  "required": [["user_id"]],
+  "identity": ["credential_id", "user_id", "exclude_replies", "exclude_reposts", "filter_keywords", "exclude_user_ids"],
+  "checker_example": {"type": "x_user_posts", "user_id": "2244994945", "last_checked_ts": "1"},
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "x"
+}

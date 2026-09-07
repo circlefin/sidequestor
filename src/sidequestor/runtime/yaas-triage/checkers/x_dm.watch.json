@@ -1,0 +1,10 @@
+{
+  "_comment": "Watches incoming X DMs. Omit both selectors to watch all accessible DM conversations.",
+  "schema_version": 1,
+  "required": [["credential_id"]],
+  "identity": ["credential_id", "conversation_id", "participant_id", "filter_keywords"],
+  "checker_example": {"type": "x_dm", "credential_id": "default", "last_checked_ts": "1"},
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "x"
+}

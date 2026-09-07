@@ -200,13 +200,13 @@ class CheckerTest(unittest.TestCase):
         proc = mock.Mock(returncode=0, stdout='{"data":[{"id":"1"}],"errors":[{}]}', stderr="")
         with mock.patch.object(self.x.subprocess, "run", return_value=proc):
             with self.assertRaises(RuntimeError):
-                self.x._call("/2/test", {}, "app:default")
+                self.x._call("/2/test", {}, "user:default")
 
     def test_x_local_timeout_returns_an_incomplete_window(self):
         with mock.patch.object(self.x.subprocess, "run",
                                side_effect=self.x.subprocess.TimeoutExpired("x", 1)):
             rows, complete = self.x._fetch_window(
-                "/2/test", {}, "app:default", 100, 200,
+                "/2/test", {}, "user:default", 100, 200,
                 self.x.time.monotonic() + 20,
             )
         self.assertEqual([], rows)
@@ -313,7 +313,7 @@ class SurfaceCredentialClassificationTest(unittest.TestCase):
             "load_bundle", lambda module: module.main([params]))
 
     def test_x_surface_separates_locked_keychain_from_bad_credentials(self):
-        argv = ["GET", "/2/tweets/search/recent", "{}", "app:default"]
+        argv = ["GET", "/2/tweets/search/recent", "{}", "user:default"]
         self._assert_split(
             load("x_call_classify_test", SURFACES / "x-call.py"),
             "get_access_token", lambda module: module.main(argv))
@@ -441,7 +441,8 @@ class OperatorScriptValidationTest(unittest.TestCase):
 
 class RegistrationTest(unittest.TestCase):
     def test_new_checkers_are_executable_and_manifested(self):
-        expected = {"telegram_chat", "telegram_search", "x_search"}
+        expected = {"telegram_chat", "telegram_search", "x_search", "x_mentions",
+                    "x_user_posts", "x_home", "x_dm"}
         for name in expected:
             self.assertTrue(os.access(CHECKERS / f"{name}.py", os.X_OK), name)
             self.assertTrue((CHECKERS / f"{name}.watch.json").is_file(), name)

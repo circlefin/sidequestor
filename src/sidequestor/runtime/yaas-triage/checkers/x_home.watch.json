@@ -1,0 +1,10 @@
+{
+  "_comment": "Watches the authorized user's reverse-chronological home timeline.",
+  "schema_version": 1,
+  "required": [["credential_id"]],
+  "identity": ["credential_id", "filter_keywords", "exclude_user_ids"],
+  "checker_example": {"type": "x_home", "credential_id": "default", "last_checked_ts": "1"},
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "x"
+}

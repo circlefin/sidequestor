@@ -114,6 +114,15 @@ def lag_for(watch_type):
     return value
 
 
+def current_user_id(entry):
+    credential_id = str(entry.get("credential_id") or "default")
+    value = _call("/2/users/me", {}, f"user:{credential_id}")
+    data = value.get("data")
+    if not isinstance(data, dict) or not data.get("id"):
+        raise Misconfig("X user credential did not resolve to an account")
+    return str(data["id"])
+
+
 def _gap_reason(gap_seconds, max_age):
     """Name a clamped-away interval so the loss is visible in the row, not silent."""
     if not gap_seconds:
@@ -154,7 +163,7 @@ def run(entry, path, fixed=None, lag=0, now=None, max_age=None):
         return
     upper = ceiling
     credential_id = str(entry.get("credential_id") or "default")
-    auth_spec = f"app:{credential_id}"
+    auth_spec = f"user:{credential_id}"
     deadline = time.monotonic() + WALL_BUDGET_SECONDS
 
     for _attempt in range(SLICE_ATTEMPTS):
