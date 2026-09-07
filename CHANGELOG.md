@@ -11,6 +11,8 @@ Versions are dated by the day the snapshot was published.
   direct messages alongside recent search.
 - `sq x-send` supports posts, replies, threads, direct messages, media uploads, and common social
   actions with quest policy, approval binding, and idempotency safeguards.
+- `sq telegram-send --send` can explicitly deliver through the authorized Telegram user session;
+  drafts remain the default, while quest sends enforce approval and idempotency safeguards.
 
 ### Changed
 - X authentication now uses OAuth 2.0 Authorization Code with PKCE and rotating user refresh

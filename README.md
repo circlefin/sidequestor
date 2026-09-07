@@ -92,15 +92,17 @@ python -m pip install 'sidequestor[telegram]'
 sq telegram-auth authorize API_ID
 sq telegram-auth status
 sq telegram-send --peer @chat --message "hello" --quest-id quest-id
+sq telegram-send --peer @chat --message "hello" --send --quest-id quest-id --idempotency-key unique-key
 ```
 
 The authorization command securely prompts for the phone number and API hash, then Telegram asks
 for the login code and, when enabled, the account's 2FA password. None of those values are placed
-in the command line. `telegram-send` uses that same authorized user session. It logs drafted
-`message_text` automatically when `--quest-id` is provided. Despite its compatibility name,
-`telegram-send` only saves a native Telegram cloud draft with `SaveDraftRequest`; it never delivers
-the message to the recipient. The draft synchronizes to the authorized account's Telegram clients.
-Saving a new draft replaces the account's existing cloud draft in that dialog.
+in the command line. `telegram-send` uses that same authorized user session and logs `message_text`
+automatically when `--quest-id` is provided. It saves a native Telegram cloud draft by default;
+the draft synchronizes to the authorized account's Telegram clients, and a new draft replaces the
+existing draft in that dialog. Pass `--send` to deliver instead. Dispatched sends require an active
+quest with `allow_send: true` or an exact claimed approval, plus an `idempotency_key`; an
+interrupted send is held for inspection instead of retried blindly.
 
 X uses OAuth 2.0 Authorization Code with PKCE to act as the account that approves access. Create
 an X Developer App configured as a public/native OAuth 2.0 client, enable the callback

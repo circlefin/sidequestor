@@ -185,9 +185,10 @@ and the Telethon `StringSession` is stored in macOS Keychain. `telegram_chat` ac
 optional `filter_sender_ids`, `filter_keywords`, `filter_kinds`, `include_outgoing`, and `limit`.
 Both types accept `from_user` as an @username; `telegram_search` additionally requires `query`.
 Quest replies can be drafted through `sq telegram-send --peer ... --message ... [--quest-id ...]`;
-the helper logs `message_text` automatically when `quest_id` is present. Despite its compatibility
-name, the command only uses `SaveDraftRequest` to save a native Telegram cloud draft. It never
-delivers the message to the recipient, and `allow_send` cannot enable delivery.
+the helper logs `message_text` automatically when `quest_id` is present. It saves a native Telegram
+cloud draft by default. Pass `--send` to deliver instead. Quest-owned sends require
+`allow_send: true` or an exact claimed approval, and dispatched sends require a unique idempotency
+key.
 Secret Chats
 and later edits/deletes/reactions are not observable through these history-window checkers.
 

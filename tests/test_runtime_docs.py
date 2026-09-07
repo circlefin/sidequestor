@@ -149,10 +149,10 @@ class RuntimeDocsTest(unittest.TestCase):
         ops = (SKILLS_ROOT / "yaas-ops" / "SKILL.md").read_text()
         operating = OPERATING.read_text()
         self.assertIn("telegram-send.py", dispatch)
-        self.assertIn("SaveDraftRequest", dispatch)
-        self.assertIn("never delivers a message", dispatch)
+        self.assertIn('"send":true', dispatch)
+        self.assertIn("idempotency_key", dispatch)
         self.assertIn("sq telegram-send", ops)
-        self.assertIn("native Telegram cloud draft", ops)
+        self.assertIn("Pass `--send` to deliver", ops)
         self.assertIn("telegram-send.py", operating)
 
     def test_doctor_does_not_source_workspace_dotenv(self) -> None:

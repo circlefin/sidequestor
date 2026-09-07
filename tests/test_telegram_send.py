@@ -59,6 +59,9 @@ class TelegramSendAuthorizationTest(unittest.TestCase):
              patch.object(self.mod, "_save_draft", AsyncMock(return_value={
                  "peer": payload.get("peer"), "draft_saved": True,
              })), \
+             patch.object(self.mod, "_send_message", AsyncMock(return_value={
+                 "peer": payload.get("peer"), "delivered": True, "message_id": "99",
+             })), \
              patch.object(self.mod.sys, "argv", ["telegram-send.py", json.dumps(payload)]), \
              patch.dict(self.mod.os.environ, env, clear=True), \
              redirect_stdout(stdout), redirect_stderr(stderr):
@@ -107,6 +110,69 @@ class TelegramSendAuthorizationTest(unittest.TestCase):
         }, target=quest_id)
         self.assertEqual(code, 0, error)
 
+    def test_allow_send_true_can_deliver_and_log_a_message(self) -> None:
+        quest_id = self._quest(allow_send=True)
+        code, out, error = self._run({
+            "quest_id": quest_id,
+            "peer": "@chat",
+            "message": "hello",
+            "send": True,
+            "idempotency_key": "send-1",
+        }, target=quest_id)
+        self.assertEqual(code, 0, error)
+        payload = json.loads(out)
+        self.assertTrue(payload["delivered"])
+        self.assertFalse(payload["draft_saved"])
+        self.assertEqual("99", payload["message_id"])
+        timeline = (self.root / "state" / "quests" / "active" / quest_id / "timeline.ndjson").read_text()
+        self.assertIn('"event": "message_sent"', timeline)
+        self.assertIn('"message_id": "99"', timeline)
+
+    def test_allow_send_false_denies_a_direct_send(self) -> None:
+        quest_id = self._quest(allow_send=False)
+        code, _, error = self._run({
+            "quest_id": quest_id,
+            "peer": "@chat",
+            "message": "hello",
+            "send": True,
+            "idempotency_key": "send-1",
+        }, target=quest_id)
+        self.assertEqual(code, 1)
+        self.assertIn("allow_send false", error)
+
+    def test_dispatched_send_requires_idempotency_key(self) -> None:
+        quest_id = self._quest(allow_send=True)
+        code, _, error = self._run({
+            "quest_id": quest_id,
+            "peer": "@chat",
+            "message": "hello",
+            "send": True,
+        }, target=quest_id)
+        self.assertEqual(code, 1)
+        self.assertIn("idempotency_key", error)
+
+    def test_claimed_approval_binds_peer_reply_and_message(self) -> None:
+        quest_id = self._quest(allow_send=False)
+        approval = {
+            "id": "approval-1",
+            "quest_id": quest_id,
+            "status": "executing",
+            "action_type": "remote_request",
+            "target": {"surface": "telegram", "action": "send", "peer": "@chat",
+                       "reply_to_message_id": "7"},
+            "message_text": "hello",
+            "lease_expires_at": "2999-01-01T00:00:00Z",
+        }
+        payload = {
+            "approval_id": "approval-1", "quest_id": quest_id, "peer": "@chat",
+            "reply_to_message_id": "7", "message": "hello", "send": True,
+            "idempotency_key": "approved-send",
+        }
+        with patch.object(self.mod.approval_store, "read_queue",
+                          return_value={"items": [approval]}):
+            code, _, error = self._run(payload, target=quest_id)
+        self.assertEqual(code, 0, error)
+
     def test_dispatched_draft_requires_matching_quest(self) -> None:
         quest_id = self._quest(allow_send=True)
         code, _, error = self._run({
@@ -141,7 +207,34 @@ class TelegramSendAuthorizationTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("4096-character", error)
 
-    def test_native_surface_uses_save_draft_request_and_never_send_message(self) -> None:
+    def test_send_requires_a_json_boolean(self) -> None:
+        code, _, error = self._run({
+            "peer": "@chat", "message": "hello", "send": "false",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("send must be true or false", error)
+
+    def test_exact_dialog_title_can_resolve_when_it_is_unique(self) -> None:
+        class FakeClient:
+            async def get_entity(self, _value):
+                raise ValueError("not a username")
+
+            async def iter_dialogs(self):
+                yield types.SimpleNamespace(
+                    name="Bruncle's Brunch Bunch",
+                    entity=types.SimpleNamespace(peer_id=7),
+                )
+
+        utils = types.ModuleType("telethon.utils")
+        utils.get_peer_id = lambda entity: entity.peer_id
+        telethon = types.ModuleType("telethon")
+        telethon.utils = utils
+        with patch.dict(sys.modules, {"telethon": telethon, "telethon.utils": utils}):
+            peer = asyncio.run(self.mod._resolve_peer(
+                FakeClient(), "Bruncle's Brunch Bunch"))
+        self.assertEqual(7, peer.peer_id)
+
+    def test_native_draft_uses_save_draft_request(self) -> None:
         class FakeSaveDraftRequest:
             def __init__(self, **kwargs):
                 self.__dict__.update(kwargs)
@@ -206,10 +299,77 @@ class TelegramSendAuthorizationTest(unittest.TestCase):
         self.assertEqual(client.request.peer.name, "existing-dialog")
         self.assertEqual(client.request.message, "hello")
         self.assertEqual(client.request.reply_to.reply_to_msg_id, 7)
-        source = TELEGRAM_SEND.read_text()
-        for forbidden in (".send_message(", "SendMessageRequest", ".send_file(",
-                          ".forward_messages("):
-            self.assertNotIn(forbidden, source)
+
+    def test_native_send_delivers_to_the_resolved_dialog(self) -> None:
+        class FakeClient:
+            def __init__(self, *args):
+                self.sent = None
+
+            async def connect(self):
+                return None
+
+            async def is_user_authorized(self):
+                return True
+
+            async def get_entity(self, value):
+                return types.SimpleNamespace(peer_id=7)
+
+            async def iter_dialogs(self):
+                yield types.SimpleNamespace(
+                    entity=types.SimpleNamespace(peer_id=7, name="existing-dialog"),
+                )
+
+            async def send_message(self, peer, message, reply_to=None):
+                self.sent = (peer, message, reply_to)
+                return types.SimpleNamespace(id=99)
+
+            async def disconnect(self):
+                return None
+
+        client = FakeClient()
+        modules = {
+            "telethon": types.ModuleType("telethon"),
+            "telethon.sessions": types.ModuleType("telethon.sessions"),
+            "telethon.utils": types.ModuleType("telethon.utils"),
+        }
+        modules["telethon"].TelegramClient = lambda *args: client
+        modules["telethon"].utils = modules["telethon.utils"]
+        modules["telethon.sessions"].StringSession = lambda value: value
+        modules["telethon.utils"].get_peer_id = lambda entity: entity.peer_id
+        with patch.dict(sys.modules, modules), \
+             patch.object(self.mod, "load_bundle", return_value={
+                 "session": "session", "api_id": "1", "api_hash": "hash",
+             }):
+            result = asyncio.run(self.mod._send_message({
+                "peer": "@chat", "message": "hello", "reply_to_message_id": "7",
+            }))
+        self.assertTrue(result["delivered"])
+        self.assertEqual("99", result["message_id"])
+        self.assertEqual("existing-dialog", client.sent[0].name)
+        self.assertEqual(("hello", 7), client.sent[1:])
+
+    def test_idempotency_replays_a_completed_send_without_resending(self) -> None:
+        with patch.object(self.mod, "REPO_ROOT", self.root), \
+             patch.object(self.mod, "_send_message", AsyncMock(return_value={
+                 "peer": "@chat", "delivered": True, "message_id": "99",
+             })) as send:
+            payload = {"peer": "@chat", "message": "hello", "send": True,
+                       "idempotency_key": "same"}
+            first = self.mod._send_with_idempotency(payload)
+            second = self.mod._send_with_idempotency(payload)
+        self.assertEqual(first, second)
+        send.assert_awaited_once()
+
+    def test_preflight_failure_does_not_poison_idempotency_key(self) -> None:
+        with patch.object(self.mod, "REPO_ROOT", self.root), \
+             patch.object(self.mod, "_send_message", AsyncMock(
+                 side_effect=self.mod.CredentialError("Keychain unavailable"))):
+            payload = {"peer": "@chat", "message": "hello", "send": True,
+                       "idempotency_key": "retryable"}
+            with self.assertRaises(self.mod.CredentialError):
+                self.mod._send_with_idempotency(payload)
+        records = json.loads((self.root / "state" / "telegram-idempotency.json").read_text())
+        self.assertNotIn("retryable", records)
 
 
 if __name__ == "__main__":

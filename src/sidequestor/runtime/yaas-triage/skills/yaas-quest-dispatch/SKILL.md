@@ -273,12 +273,13 @@ so record whatever the event needs. A `ts` you pass is ignored.
 python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack-send.py" '{"quest_id":"<qid>","approval_id":"<approval id, when executing a reviewed item>","channel_id":"C...","message":"<verbatim body>","thread_ts":"<parent ts, optional>","note":"<short summary>"}'
 # add "draft": true to save a draft instead of sending; "event":"..." to override the default (message_sent / draft_posted)
 python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/telegram-send.py" '{"quest_id":"<qid>","peer":"@chat","message":"<verbatim body>","reply_to_message_id":"<message id, optional>","credential_id":"<optional credential id>","note":"<short summary>"}'
-# Telegram always saves a native cloud draft; it never sends to the recipient.
+# Telegram saves a native cloud draft by default. Add "send":true and a unique "idempotency_key"
+# only when allow_send=true or an exact claimed remote_request approval authorizes this send.
 python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/x-send.py" '{"quest_id":"<qid>","action":"reply","post_id":"<post id>","text":"<verbatim body>","credential_id":"default","idempotency_key":"<run id plus action coordinates>","approval_id":"<optional claimed remote_request approval>","note":"<short summary>"}'
 # X writes require allow_send=true or an exact claimed approval. Never retry an indeterminate idempotency key blindly.
 ```
 
-The helper sends or drafts, then appends a timeline entry carrying the exact `message_text` in one step. Slack prints `{"response_ts":...,"permalink":...}` for the follow-up `watch.json` entry (§3a); Telegram prints `{"draft_saved":true}` and has no sent-message ID. If the operation fails nothing is logged. This makes body-capture structural rather than something you have to remember.
+The helper sends or drafts, then appends a timeline entry carrying the exact `message_text` in one step. Slack prints `{"response_ts":...,"permalink":...}` for the follow-up `watch.json` entry (§3a); Telegram drafts print `{"draft_saved":true}`, while sends print `{"delivered":true,"message_id":"..."}`. If the operation fails nothing is logged. This makes body-capture structural rather than something you have to remember.
 
 **The underlying rule (why the helper matters):** the dashboard surfaces a message only when its timeline event carries a `message_text` field. A `note` summary alone shows in the full timeline but not in the Messages stream or the quest Conversation. So for any reply event (`message_sent` / `reply_sent` / `dm_sent` / `executed` (slack or email) / `email_replied`) the entry MUST carry the exact text as `message_text` alongside `note` + `permalink` + `response_ts`. This applies to Reactions Fast Path replies too. (Drafts routed through the approval queue already carry their body in `pending-approvals.json`, so a `draft_posted` with an `approval_id` needs no `message_text`.)
 

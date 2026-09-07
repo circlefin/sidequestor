@@ -60,9 +60,10 @@ the packaged runtime directory. Put mutable data in the workspace through the su
   Claim it before execution. A claimed `slack_message` approval can authorize its quest's
   Slack send even when `allow_send` is false — but only to the channel and thread it was
   reviewed for. Send it somewhere else and the approval authorizes nothing.
-  `telegram-send.py` never sends to a recipient: it only saves a native
-  Telegram cloud draft for later human review, regardless of `allow_send`. A `manual_instruction`
-  does not override the Slack send controls or turn a Telegram draft into a send.
+  `telegram-send.py` saves a native Telegram cloud draft unless the action explicitly requests
+  `send: true`. A direct send requires `allow_send: true` or an exact claimed `remote_request`
+  approval bound to its peer, reply target, and message. Dispatched sends also require an
+  `idempotency_key`. A `manual_instruction` does not override these controls.
 - If an action is blocked, log the blocker, ack the item `blocked`, and report it.
 
 A backend-native workspace instruction file (`CLAUDE.md` under the Claude backend,
