@@ -74,6 +74,7 @@ def _environment(workspace: Workspace, extra_env: dict[str, str] | None = None) 
     environment.update({
         "SIDEQUESTOR_WORKSPACE": str(workspace.root),
         "SIDEQUESTOR_RUNTIME_ROOT": str(RUNTIME_ROOT),
+        "SIDEQUESTOR_PYTHON": sys.executable,
         "YAAS_WORKSPACE": str(workspace.root),
         "YAAS_ENGINE_ROOT": str(workspace.yaas_dir / "engine" / "current"),
         "YAAS_RUNTIME_ROOT": str(RUNTIME_ROOT),

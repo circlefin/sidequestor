@@ -1,0 +1,14 @@
+{
+  "_comment": "checker_example is a minimal checker input; query uses X recent-search syntax.",
+  "schema_version": 1,
+  "required": [["query"]],
+  "identity": ["credential_id", "query", "filter_keywords", "exclude_user_ids"],
+  "checker_example": {
+    "type": "x_search",
+    "query": "from:XDevelopers",
+    "last_checked_ts": "1"
+  },
+  "open_loop": false,
+  "user_creatable": true,
+  "upstream": "x"
+}

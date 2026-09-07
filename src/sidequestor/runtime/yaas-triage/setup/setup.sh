@@ -98,6 +98,32 @@ set -a; source "$ENV_FILE"; set +a
 python3 "$TRIAGE_DIR/ledger/approval-helper.py" ensure-inbox >/dev/null
 
 SLACK_CHECKERS_ENABLED="${SIDEQUESTOR_SLACK_CHECKERS_ENABLED:-${YAAS_SLACK_CHECKERS_ENABLED:-1}}"
+CHECKER_CONNECTORS="${SIDEQUESTOR_CHECKER_CONNECTORS:-${YAAS_CHECKER_CONNECTORS:-slack,email,github,jira}}"
+case ",$CHECKER_CONNECTORS," in
+  *,slack,*) ;;
+  *) SLACK_CHECKERS_ENABLED=0 ;;
+esac
+# Reject an unknown or duplicated connector here, at the one interactive moment, rather than
+# letting every later tick exit 2 on BadEnvKnob. The known set comes from the runtime loader
+# so this check cannot drift from what tick.py enforces.
+if CONNECTOR_ERROR="$(python3 - "$TRIAGE_DIR" "$CHECKER_CONNECTORS" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import tick_state
+try:
+    tick_state.load_checker_connectors({"YAAS_CHECKER_CONNECTORS": sys.argv[2]})
+except ValueError as exc:
+    print(str(exc).replace("YAAS_CHECKER_CONNECTORS", "SIDEQUESTOR_CHECKER_CONNECTORS"))
+PY
+)"; then
+  if [ -n "$CONNECTOR_ERROR" ]; then
+    echo "ERROR: $CONNECTOR_ERROR" >&2
+    exit 1
+  fi
+else
+  echo "ERROR: could not validate SIDEQUESTOR_CHECKER_CONNECTORS=$CHECKER_CONNECTORS" >&2
+  exit 1
+fi
 case "$SLACK_CHECKERS_ENABLED" in
   0|1) ;;
   *)

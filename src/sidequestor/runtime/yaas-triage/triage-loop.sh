@@ -35,6 +35,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="${SIDEQUESTOR_WORKSPACE:-${YAAS_WORKSPACE:-${PWD:-$SCRIPT_DIR/..}}}"
+PYTHON_BIN="${SIDEQUESTOR_PYTHON:-${YAAS_PYTHON:-python3}}"
 if [ ! -f "$WORKSPACE_ROOT/.yaas/instance.json" ]; then
   echo "Sidequestor workspace is not set or is missing .yaas/instance.json: $WORKSPACE_ROOT" >&2
   exit 2
@@ -44,7 +45,7 @@ fi
 # runtime parses the full file for tick.py; this shell wrapper only needs its pacing
 # value, and must preserve any value launchd or `sq loop` explicitly exported.
 _dotenv_value() {
-  python3 - "$WORKSPACE_ROOT/.env" "$1" <<'PY'
+  "$PYTHON_BIN" - "$WORKSPACE_ROOT/.env" "$1" <<'PY'
 from pathlib import Path
 import sys
 
@@ -80,7 +81,7 @@ if [ -z "${SIDEQUESTOR_TRIAGE_INTERVAL:-}" ] && [ -z "${YAAS_TRIAGE_INTERVAL:-}"
 fi
 
 INTERVAL="${SIDEQUESTOR_TRIAGE_INTERVAL:-${YAAS_TRIAGE_INTERVAL:-60}}"
-INTERVAL="$(python3 - "$INTERVAL" <<'PY'
+INTERVAL="$("$PYTHON_BIN" - "$INTERVAL" <<'PY'
 import math
 import sys
 
@@ -106,7 +107,7 @@ mkdir -p "$(dirname "$FAILFILE")" 2>/dev/null || true
 while true; do
   # The loop drives tick.py (the Python orchestrator). The port is complete and validated;
   # the original shell orchestrator has been retired to archive/.
-  if python3 "$SCRIPT_DIR/tick.py"; then
+  if "$PYTHON_BIN" "$SCRIPT_DIR/tick.py"; then
     echo 0 > "$FAILFILE" 2>/dev/null || true
   else
     _prev=$(cat "$FAILFILE" 2>/dev/null || echo 0)

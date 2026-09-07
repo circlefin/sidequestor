@@ -73,10 +73,12 @@ def search_advance_to(newest_seen: float, now: float = None,
 
 
 def drain(fetch_page, since: float, filter_user_ids=None, filter_keywords=None,
-          now: float = None):
+          now: float = None, page_parser=None):
     """Read everything new on a Slack source, and only claim coverage we can prove.
 
     `fetch_page(cursor, oldest, latest)` must return `(text, next_cursor, transient)`.
+    `page_parser` may override the channel-response parser for sources such as
+    Slack threads whose MCP text format is different.
 
     Returns `(count, preview, advance_to, complete, transient)`.
 
@@ -96,12 +98,13 @@ def drain(fetch_page, since: float, filter_user_ids=None, filter_keywords=None,
     """
     if now is None:
         now = time.time()
+    page_parser = page_parser or _parse_page
 
     def read(oldest, latest, cursor=None):
         text, next_cursor, transient = fetch_page(cursor, oldest, latest)
         if transient:
             return None, None, transient
-        count, preview, newest, _saw_old, raw_seen = _parse_page(
+        count, preview, newest, _saw_old, raw_seen = page_parser(
             text, since, filter_user_ids, filter_keywords)
         return (count, preview, newest, raw_seen), next_cursor, None
 
@@ -201,6 +204,11 @@ def drain(fetch_page, since: float, filter_user_ids=None, filter_keywords=None,
     return total, preview, None, False, None
 
 
+_MESSAGE_HEADER = re.compile(
+    r"^=== Message from .+\(([A-Z0-9]+)(?:,\s*external:\s*[^\r\n]+)?\) at .+ ==="
+)
+
+
 def parse_slack_messages(
     text: str,
     since: float,
@@ -217,6 +225,7 @@ def parse_slack_messages(
 
     The MCP header format is:
         === Message from NAME <email> (USER_ID) at DATETIME ===
+        === Message from NAME <email> (USER_ID, external: ORGANIZATION) at DATETIME ===
         Message TS: NUMERIC_TS
         body lines...
     """
@@ -225,7 +234,7 @@ def parse_slack_messages(
     current_user_id = None
     i = 0
     while i < len(lines):
-        header_m = re.match(r"=== Message from .+\(([A-Z0-9]+)\) at .+ ===", lines[i])
+        header_m = _MESSAGE_HEADER.match(lines[i])
         if header_m:
             current_user_id = header_m.group(1)
             i += 1
@@ -240,7 +249,7 @@ def parse_slack_messages(
         # `=== Message from ... ===` and its `Message TS:` line — that is inherent to
         # the Slack MCP returning unescaped delimited text and is only fully closed
         # by structured (per-message) MCP output.
-        if ts_m and i > 0 and re.match(r"=== Message from .+\(([A-Z0-9]+)\) at .+ ===", lines[i - 1]):
+        if ts_m and i > 0 and _MESSAGE_HEADER.match(lines[i - 1]):
             # current_user_id is only valid for the message right after its
             # header; capture then clear so a TS block with no preceding header
             # can't inherit (and mis-attribute to) the previous message's author.
@@ -297,7 +306,7 @@ def _parse_page(text, since, filter_user_ids=None, filter_keywords=None):
     current_user_id = None
     i = 0
     while i < len(lines):
-        header_m = re.match(r"=== Message from .+\(([A-Z0-9]+)\) at .+ ===", lines[i])
+        header_m = _MESSAGE_HEADER.match(lines[i])
         if header_m:
             current_user_id = header_m.group(1)
             i += 1
@@ -316,8 +325,7 @@ def _parse_page(text, since, filter_user_ids=None, filter_keywords=None):
             # ponytail: an adjacent forged header+TS pair typed into a body remains
             # indistinguishable in this text format; only structured MCP output
             # closes that fully.
-            header_adjacent = i > 0 and re.match(
-                r"=== Message from .+\(([A-Z0-9]+)\) at .+ ===", lines[i - 1])
+            header_adjacent = i > 0 and _MESSAGE_HEADER.match(lines[i - 1])
             if ts <= since:
                 saw_old = True
                 i += 1
@@ -351,4 +359,81 @@ def _parse_page(text, since, filter_user_ids=None, filter_keywords=None):
                 newest = ts
                 preview = body_text[:100]
         i += 1
+    return count, preview, newest, saw_old, raw_seen
+
+
+_THREAD_RECORD_START = re.compile(
+    r"^(?:=== THREAD PARENT MESSAGE ===|--- Reply \d+ of \d+ ---)$",
+    re.MULTILINE,
+)
+# Slack Connect appends organization metadata inside the author parentheses.
+# Capture only the stable user ID so author filters behave identically for both forms.
+_THREAD_FROM = re.compile(
+    r"^From: .*\(([A-Z0-9]+)(?:,\s*external:\s*[^\r\n]+)?\)$",
+    re.MULTILINE,
+)
+_THREAD_TS = re.compile(r"^Message TS:\s*([0-9]+\.[0-9]+)$", re.MULTILINE)
+
+
+def _parse_thread_page(text, since, filter_user_ids=None, filter_keywords=None):
+    """Parse the distinct text shape returned by ``slack_read_thread``.
+
+    Thread responses put ``From:`` and ``Message TS:`` inside parent/reply
+    sections, unlike channel responses where the author header immediately
+    precedes the timestamp. Keep this parser separate so channel hardening does
+    not make thread watches silently clean.
+    """
+    count, newest, preview = 0, 0.0, ""
+    saw_old, raw_seen = False, 0
+    starts = list(_THREAD_RECORD_START.finditer(text))
+    timestamps = list(_THREAD_TS.finditer(text))
+    if text.strip() and not starts:
+        raise ValueError("unrecognized slack thread response shape")
+    # This also catches timestamp-shaped data before the first record delimiter.
+    if len(timestamps) != len(starts):
+        raise ValueError("incomplete slack thread response records")
+
+    for index, start in enumerate(starts):
+        segment_end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
+        segment = text[start.end():segment_end]
+        from_matches = list(_THREAD_FROM.finditer(segment))
+        ts_matches = list(_THREAD_TS.finditer(segment))
+        if len(from_matches) != 1 or len(ts_matches) != 1:
+            raise ValueError("incomplete slack thread response record")
+        from_match, ts_match = from_matches[0], ts_matches[0]
+        if from_match.start() > ts_match.start():
+            raise ValueError("invalid slack thread response record order")
+
+        user_id = from_match.group(1)
+        ts = float(ts_match.group(1))
+        raw_seen += 1
+        if ts <= since:
+            saw_old = True
+
+        is_parent = start.group(0) == "=== THREAD PARENT MESSAGE ==="
+        if is_parent:
+            # slack_read_thread repeats the parent on every page. It identifies
+            # the thread but is not new thread activity and must never dispatch.
+            # It still counts as raw coverage so a page with a live cursor cannot
+            # terminate drain() merely because that page has no replies.
+            continue
+
+        if ts <= since:
+            continue
+
+        body = segment[ts_match.end():]
+        # As with channel parsing, fully forged delimiter/author/timestamp lines
+        # in a message body are indistinguishable in the MCP's unescaped text.
+        body_text = " ".join(body.split())
+        if filter_user_ids and user_id not in filter_user_ids:
+            continue
+        if filter_keywords:
+            body_lower = body_text.lower()
+            if not any(kw.lower() in body_lower for kw in filter_keywords):
+                continue
+
+        count += 1
+        if ts > newest:
+            newest = ts
+            preview = body_text[:100]
     return count, preview, newest, saw_old, raw_seen

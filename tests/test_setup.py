@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from importlib.resources import files
 from pathlib import Path
 from unittest.mock import patch
 
@@ -59,6 +60,37 @@ class SetupTests(unittest.TestCase):
             self.assertIn("SIDEQUESTOR_CODEX_MODEL=gpt-5.6-luna", content)
             self.assertIn("SIDEQUESTOR_CODEX_EFFORT=high", content)
 
+    def test_cursor_provisioning_uses_cursor_defaults_without_foreign_knobs(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            sync_resources(workspace)
+            workspace.env_file.write_text(
+                "SIDEQUESTOR_AGENT=cursor\n"
+                "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+            )
+
+            provision_env(workspace, interactive=False)
+
+            content = workspace.env_file.read_text()
+            self.assertNotIn("SIDEQUESTOR_CURSOR_MODEL=", content)
+            self.assertNotIn("SIDEQUESTOR_CURSOR_EFFORT", content)
+            self.assertNotIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE", content)
+
+    def test_interactive_setup_accepts_cursor(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            sync_resources(workspace)
+            workspace.env_file.write_text("SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n")
+            answers = iter(["cursor", "sonnet-4-thinking"])
+
+            provision_env(workspace, input_fn=lambda _prompt: next(answers), interactive=True)
+
+            content = workspace.env_file.read_text()
+            self.assertIn("SIDEQUESTOR_AGENT=cursor", content)
+            self.assertIn("SIDEQUESTOR_CURSOR_MODEL=sonnet-4-thinking", content)
+            self.assertNotIn("SIDEQUESTOR_CURSOR_EFFORT", content)
+            self.assertNotIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE", content)
+
     def test_interactive_instructions_target_selected_backend_without_writing(self):
         from contextlib import redirect_stdout
         from io import StringIO
@@ -102,7 +134,7 @@ class SetupTests(unittest.TestCase):
                 self.assertEqual(list_instances()[0]["instance_id"], workspace.instance_id)
                 self.assertTrue((Path(canonical) / "yaas" / "instances.json").is_file())
 
-    def test_sync_resources_creates_workspace_and_claude_skill_symlinks(self):
+    def test_sync_resources_creates_workspace_agent_and_claude_skill_symlinks(self):
         with tempfile.TemporaryDirectory() as raw:
             workspace = init_workspace(raw)
 
@@ -111,6 +143,9 @@ class SetupTests(unittest.TestCase):
             managed_skill = workspace.root / "skills" / "yaas-ops"
             self.assertTrue(managed_skill.is_symlink())
             self.assertEqual(os.readlink(managed_skill), "../.yaas/engine/current/skills/yaas-ops")
+            agent_skill = workspace.root / ".agents" / "skills" / "yaas-ops"
+            self.assertTrue(agent_skill.is_symlink())
+            self.assertEqual(os.readlink(agent_skill), "../../.yaas/engine/current/skills/yaas-ops")
             claude_skill = workspace.root / ".claude" / "skills" / "yaas-ops"
             self.assertTrue(claude_skill.is_symlink())
             self.assertEqual(os.readlink(claude_skill), "../../.yaas/engine/current/skills/yaas-ops")
@@ -129,20 +164,65 @@ class SetupTests(unittest.TestCase):
             wrong = workspace.root / ".claude" / "skills" / "yaas-ops"
             wrong.unlink()
             wrong.symlink_to("../../broken-target", target_is_directory=True)
+            wrong_agent = workspace.root / ".agents" / "skills" / "yaas-ops"
+            wrong_agent.unlink()
+            wrong_agent.symlink_to("../../broken-target", target_is_directory=True)
 
             first = sync_resources(workspace)
             second = sync_resources(workspace)
 
             self.assertEqual(first, second)
             self.assertFalse(stale.exists())
+            self.assertEqual(os.readlink(workspace.root / ".agents" / "skills" / "yaas-ops"),
+                             "../../.yaas/engine/current/skills/yaas-ops")
             self.assertEqual(os.readlink(workspace.root / ".claude" / "skills" / "yaas-ops"),
                              "../../.yaas/engine/current/skills/yaas-ops")
+
+    def test_sync_resources_backfills_agent_skills_in_existing_workspace(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            agent_skills = workspace.root / ".agents" / "skills"
+            user_skill = agent_skills / "user-owned-skill"
+            user_skill.mkdir(parents=True)
+            (user_skill / "SKILL.md").write_text("user owned\n")
+
+            sync_resources(workspace)
+
+            managed_skill = agent_skills / "yaas-ops"
+            self.assertTrue(managed_skill.is_symlink())
+            self.assertEqual(os.readlink(managed_skill),
+                             "../../.yaas/engine/current/skills/yaas-ops")
+            self.assertEqual((user_skill / "SKILL.md").read_text(), "user owned\n")
+
+    def test_sync_resources_refreshes_examples_without_touching_live_configuration(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            workspace.env_file.write_text("CUSTOM_SECRET=keep-me\n")
+            settings = workspace.root / "settings.json"
+            settings.write_text('{"custom": "keep-me"}\n')
+            (workspace.root / ".env.example").write_text("stale env example\n")
+            (workspace.root / "settings.json.example").write_text("stale settings example\n")
+
+            sync_resources(workspace)
+
+            packaged = files("sidequestor").joinpath("package_data")
+            self.assertEqual((workspace.root / ".env.example").read_text(),
+                             packaged.joinpath("env.example").read_text())
+            self.assertEqual((workspace.root / "settings.json.example").read_text(),
+                             packaged.joinpath("settings.json.example").read_text())
+            self.assertEqual(workspace.env_file.read_text(), "CUSTOM_SECRET=keep-me\n")
+            self.assertEqual(settings.read_text(), '{"custom": "keep-me"}\n')
 
     def test_sync_resources_leaves_real_files_in_place(self):
         with tempfile.TemporaryDirectory() as raw:
             workspace = init_workspace(raw)
             blocked = workspace.root / "skills" / "yaas-ops"
             blocked.write_text("user-owned override\n")
+            agents_root = workspace.root / ".agents"
+            agents_root.mkdir()
+            (agents_root / "skills").mkdir()
+            blocked_agent = agents_root / "skills" / "yaas-gmail-reply"
+            blocked_agent.write_text("custom entry\n")
             claude_root = workspace.root / ".claude"
             claude_root.mkdir()
             (claude_root / "skills").mkdir()
@@ -153,17 +233,21 @@ class SetupTests(unittest.TestCase):
 
             self.assertFalse(blocked.is_symlink())
             self.assertEqual(blocked.read_text(), "user-owned override\n")
+            self.assertFalse(blocked_agent.is_symlink())
+            self.assertEqual(blocked_agent.read_text(), "custom entry\n")
             self.assertFalse(blocked_claude.is_symlink())
             self.assertEqual(blocked_claude.read_text(), "custom entry\n")
 
-    def test_sync_resources_skips_codex_or_claude_paths_blocked_by_files(self):
+    def test_sync_resources_skips_agent_codex_or_claude_paths_blocked_by_files(self):
         with tempfile.TemporaryDirectory() as raw:
             workspace = init_workspace(raw)
+            (workspace.root / ".agents").write_text("blocked\n")
             (workspace.root / ".claude").write_text("blocked\n")
             (workspace.root / ".codex").write_text("blocked\n")
 
             sync_resources(workspace)
 
+            self.assertFalse((workspace.root / ".agents" / "skills").exists())
             self.assertFalse((workspace.root / ".claude" / "skills").exists())
             self.assertFalse((workspace.root / ".codex" / "prompts").exists())
             self.assertTrue((workspace.root / "skills" / "yaas-ops").is_symlink())

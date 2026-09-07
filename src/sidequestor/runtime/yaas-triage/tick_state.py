@@ -35,10 +35,52 @@ modules.
 
 import json
 import os
+import re
 from pathlib import Path
 
 WATCH_MANIFEST_SCHEMA_VERSION = 1
 NON_WATCH_EXECUTABLES = {"cron-due", "reactions"}
+
+# Slack has two id namespaces that look alike and are NOT interchangeable: a conversation
+# is C…, D… or G…, while a member is U… (or W… on Enterprise Grid).
+#
+# Which conversation gets which prefix is NOT the tidy split the old docs describe, so this
+# is what a live Enterprise Grid workspace actually returns (sampled 2026-09-07):
+#   C… public channels, private channels AND group DMs (mpims). A group DM really is C…,
+#        e.g. a 3-person DM comes back as C0B2CJEPV7U — `is_mpim` is what marks it, not
+#        the prefix. Modern private channels are C… too (#ext-circle-tazapay = C08FB4CR9M2).
+#   G… legacy private channels and legacy mpims, still live and still watchable today
+#        (#se-team = G01EC0UKCSZ), which is why G stays accepted rather than being dropped.
+#   D… one-to-one DMs.
+# There is no `MP` prefix in any of it; that claim came from this repo's own docs and was
+# never a Slack thing.
+#
+# This matters because slack_send_message accepts EITHER as a destination and silently
+# resolves a member id to that person's DM. So a member id pasted into channel_id sends
+# perfectly, and only the watch built from it is broken: the checker polls a conversation
+# that does not exist, forever, without ever erroring.
+#
+# Scope is deliberately NAMESPACE ONLY: the documented prefix, then one or more uppercase
+# alphanumerics. It does not encode a length floor or a "contains a digit" rule, because
+# Slack has never promised either — its 2016 id-format changelog explicitly tells clients
+# not to assume the characters of an id — and this check REJECTS writes, so an invented
+# invariant would refuse a legitimate watch. Compare dashboard-server.py's _ID_RE, which
+# does demand 7+ chars and a digit: that one hunts ids inside free prose and only decides
+# whether to linkify, so a false negative there costs a hyperlink, not a broken watch.
+SLACK_CONVERSATION_RE = re.compile(r"[CDG][A-Z0-9]+")
+SLACK_MEMBER_RE = re.compile(r"[UW][A-Z0-9]+")
+
+# Which Slack id fields each watch type carries, and which namespace each one must be in.
+SLACK_ID_FIELDS = {
+    "slack_channel": ("channel_id",),
+    "slack_thread": ("channel_id",),
+    "slack_dm": ("channel_id", "user_id"),
+    "slack_mention": ("user_id",),
+}
+_SLACK_ID_SHAPES = {
+    "channel_id": (SLACK_CONVERSATION_RE, "a conversation id (C…/D…/G…)"),
+    "user_id": (SLACK_MEMBER_RE, "a member id (U…/W…)"),
+}
 
 
 def _repo_root(start):
@@ -80,7 +122,7 @@ NUMERIC_KNOBS = {
     "YAAS_LOG_RETAIN_DAYS": 14,
     "YAAS_MANIFEST_RETAIN_DAYS": 7,
     "YAAS_CHECKER_HEALTH_RETAIN_DAYS": 30,
-    "YAAS_TRIAGE_MAX_PARALLEL": 3,
+    "YAAS_TRIAGE_MAX_PARALLEL": 1,
     "YAAS_MIN_DISPATCH_SLICE": 300,
     "YAAS_STALE_REPLY_HOURS": 168,
 }
@@ -101,9 +143,13 @@ BOOLEAN_KNOBS = {
     "YAAS_SLACK_CHECKERS_ENABLED": "1",
 }
 
+DEFAULT_CHECKER_CONNECTORS = ("slack", "email", "github", "jira")
+KNOWN_CHECKER_CONNECTORS = frozenset((*DEFAULT_CHECKER_CONNECTORS, "telegram", "x"))
+UPSTREAM_CONNECTOR_ALIASES = {"gmail": "email"}
+
 
 class BadEnvKnob(Exception):
-    """A gate knob has a non-numeric value. tick.py turns this into gate_bad_env_knob + exit 2."""
+    """A gate setting is invalid. tick.py turns this into gate_bad_env_knob + exit 2."""
 
 
 def _load_env_file(repo_root, environ):
@@ -227,8 +273,30 @@ def validate_knobs(env):
     for k in BOOLEAN_KNOBS:
         if k in env and str(env[k]).strip() not in ("", "0", "1"):
             offenders.append(f"{k}={env[k]}")
+    try:
+        load_checker_connectors(env)
+    except ValueError as exc:
+        offenders.append(str(exc))
     if offenders:
         raise BadEnvKnob(" ".join(offenders))
+
+
+def load_checker_connectors(env):
+    """Return the explicitly enabled external checker connectors.
+
+    Local checkers have no connector and are always enabled. An empty configured value is
+    valid and disables every external checker without deleting watches or moving cursors.
+    """
+    raw = env.get("YAAS_CHECKER_CONNECTORS")
+    if raw is None:
+        return frozenset(DEFAULT_CHECKER_CONNECTORS)
+    values = [value.strip() for value in str(raw).split(",") if value.strip()]
+    unknown = sorted(set(values) - KNOWN_CHECKER_CONNECTORS)
+    if unknown:
+        raise ValueError(f"YAAS_CHECKER_CONNECTORS has unknown connector(s): {','.join(unknown)}")
+    if len(values) != len(set(values)):
+        raise ValueError("YAAS_CHECKER_CONNECTORS contains duplicate connectors")
+    return frozenset(values)
 
 
 def load_lag_map(triage_dir):
@@ -271,6 +339,37 @@ def _validate_string_list(path, field_name, value):
 
 def _entry_satisfies_required(entry, required):
     return any(all(entry.get(field) for field in alt) for alt in required)
+
+
+def slack_id_problem(watch_type, entry):
+    """Return (field, message) for the first malformed Slack id, or None if all are fine.
+
+    Shared by BOTH watch-creation paths — add-watch.py and new-quest.py — because a check
+    that lives on only one of them is not a check: whichever path is unguarded is the one
+    the next broken watch comes in through.
+
+    A missing field is deliberately NOT reported here; that is the required-fields check's
+    job, and reporting it twice would produce a worse message than the one that names the
+    manifest's own requirements.
+    """
+    for field in SLACK_ID_FIELDS.get(watch_type, ()):
+        value = entry.get(field)
+        if value is None:
+            continue
+        pattern, expected = _SLACK_ID_SHAPES[field]
+        if isinstance(value, str) and pattern.fullmatch(value):
+            continue
+        # Naming the OTHER namespace turns "that id is malformed" into the actionable
+        # "you pasted a person where a place goes", which is the mistake in practice.
+        swapped = ""
+        if isinstance(value, str):
+            for other, (other_pattern, other_expected) in _SLACK_ID_SHAPES.items():
+                if other != field and other_pattern.fullmatch(value):
+                    swapped = (f"; that is {other_expected} — resolve the conversation it "
+                               f"belongs to first" if field == "channel_id"
+                               else f"; that is {other_expected}")
+        return field, f"{field} {value!r} is not {expected}{swapped}"
+    return None
 
 
 def _validate_checker_example(path, watch_type, checker_example, required):
@@ -369,6 +468,8 @@ class Config:
         self.mcp_call = self.triage_dir / "surfaces" / "mcp-call.sh"
 
         self.lag_map = load_lag_map(self.triage_dir)
+        self.watch_manifests = load_watch_manifests(self.triage_dir)
+        self.checker_connectors = load_checker_connectors(self.env)
 
     def knob(self, name):
         """A validated numeric knob as an int, or its default if unset/empty."""
@@ -379,6 +480,16 @@ class Config:
         """A validated 0/1 feature switch, or its declared default when unset."""
         v = str(self.env.get(name, "")).strip() or BOOLEAN_KNOBS[name]
         return v == "1"
+
+    def checker_enabled(self, watch_type):
+        manifest = self.watch_manifests.get(str(watch_type), {})
+        upstream = manifest.get("upstream")
+        if not upstream:
+            return True
+        connector = UPSTREAM_CONNECTOR_ALIASES.get(upstream, upstream)
+        if connector not in self.checker_connectors:
+            return False
+        return connector != "slack" or self.enabled("YAAS_SLACK_CHECKERS_ENABLED")
 
 
 def main():

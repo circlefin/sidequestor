@@ -232,7 +232,7 @@ def rotate_check_order(quest_ids, cursor):
     return [quest_ids[(offset + i) % n] for i in range(n)], offset + 1
 
 
-def run_checks(watches, run_one, classify_ctx, max_parallel=3):
+def run_checks(watches, run_one, classify_ctx, max_parallel=1):
     """Run `run_one(watch)` for each watch concurrently (capped at max_parallel) and classify
     the results. `run_one` returns the parsed checker result (or None); `classify_ctx(watch)`
     returns the kwargs for classify (health, unacked, checker_exists, thresholds). Returns a

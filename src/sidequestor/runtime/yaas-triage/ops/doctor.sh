@@ -179,6 +179,32 @@ else
   fi
 
   SLACK_CHECKERS_ENABLED="$(_setting SIDEQUESTOR_SLACK_CHECKERS_ENABLED YAAS_SLACK_CHECKERS_ENABLED 1)"
+  CHECKER_CONNECTORS="$(_setting SIDEQUESTOR_CHECKER_CONNECTORS YAAS_CHECKER_CONNECTORS slack,email,github,jira)"
+  case ",$CHECKER_CONNECTORS," in
+    *,slack,*) ;;
+    *) SLACK_CHECKERS_ENABLED=0 ;;
+  esac
+  # Validated by the runtime loader rather than a list duplicated here: an unknown or
+  # repeated connector makes tick.py raise BadEnvKnob and exit 2, so reporting it green
+  # pointed the operator away from the actual cause of a dead triage loop.
+  if CONNECTOR_ERROR="$(python3 - "$RUNTIME_ROOT/yaas-triage" "$CHECKER_CONNECTORS" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import tick_state
+try:
+    tick_state.load_checker_connectors({"YAAS_CHECKER_CONNECTORS": sys.argv[2]})
+except ValueError as exc:
+    print(str(exc).replace("YAAS_CHECKER_CONNECTORS", "SIDEQUESTOR_CHECKER_CONNECTORS"))
+PY
+)"; then
+    if [ -n "$CONNECTOR_ERROR" ]; then
+      fail "$CONNECTOR_ERROR (tick.py exits 2 on this)"
+    else
+      ok "SIDEQUESTOR_CHECKER_CONNECTORS=$CHECKER_CONNECTORS"
+    fi
+  else
+    warn "could not validate SIDEQUESTOR_CHECKER_CONNECTORS=$CHECKER_CONNECTORS (runtime loader unavailable)"
+  fi
   case "$SLACK_CHECKERS_ENABLED" in
     0|1) ok "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=$SLACK_CHECKERS_ENABLED" ;;
     *) fail "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=$SLACK_CHECKERS_ENABLED is invalid (expected 0 or 1)" ;;

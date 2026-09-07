@@ -201,7 +201,7 @@ This permanent quest owns one-off work that did not originate in another quest. 
 is independent and must be processed from the exact `approval` watch named in the dispatch.
 
 Rules for the worker dispatched here:
-- Execute the reviewed approval item(s) per §3d (`approval-helper.py start` -> send -> `done`).
+- Execute the reviewed approval item(s) per §3c (`approval-helper.py start` -> send -> `done`).
   Process every fired approval watch separately; one failure must not block its siblings.
 - Reactions still use their fast path unless they require review. Only reviewed reaction work
   lands here.

@@ -38,7 +38,7 @@ Spec JSON fields:
 Watch entry fields by type:
   slack_thread:  channel_id, thread_ts, reason
   slack_channel: channel_id, reason
-  slack_dm:      user_id, reason
+  slack_dm:      channel_id (the D… DM conversation), user_id, reason
   slack_mention: user_id, reason   (fires on any message that @mentions user_id, anywhere)
   schedule:      cron (5-field), tz (IANA), reason  [optional: id]
   email:         query (Gmail search string), reason
@@ -65,12 +65,6 @@ waking the worker on irrelevant messages; evaluated inside the checker scripts
   filter_user_ids:  [<user_id>, ...]  only these authors wake the worker
   filter_keywords:  [<str>, ...]      message must contain >=1 (case-insensitive substring)
   (both set → AND-ed. Passed through verbatim; spell exactly — unknown keys are silently ignored.)
-
-Optional watch behaviour:
-  watch_mode:  "read_only"  — monitor only; worker must not reply in this thread.
-               Use for internal escalation threads (#help-*, #cpn-se-questions, etc.)
-               where you post a question and want outcome notifications without bot chatter.
-               Any value other than "read_only" is rejected by this script.
 
 Example spec:
   {
@@ -129,7 +123,7 @@ RUNTIME_ROOT = Path(os.environ.get("SIDEQUESTOR_RUNTIME_ROOT")
                     or os.environ.get("YAAS_RUNTIME_ROOT")
                     or Path(__file__).resolve().parents[3])
 sys.path.insert(0, str(RUNTIME_ROOT / "yaas-triage"))
-from tick_state import load_watch_manifests
+from tick_state import load_watch_manifests, slack_id_problem
 
 QUESTS_ACTIVE    = REPO_ROOT / "state" / "quests" / "active"
 QUESTS_COMPLETED = REPO_ROOT / "state" / "quests" / "completed"
@@ -224,8 +218,12 @@ def validate_watches(watches, *, allow_empty=False):
                 if not w.get(field):
                     die(f"watches[{i}] (type={t!r}) missing required field '{field}'")
             die(f"watches[{i}] (type={t!r}) is missing required fields")
-        if "watch_mode" in w and w["watch_mode"] not in ("read_only",):
-            die(f"watches[{i}] watch_mode must be 'read_only' if set, got: {w['watch_mode']!r}")
+        problem = slack_id_problem(t, w)
+        if problem:
+            # A Slack member id pasted into channel_id scaffolds cleanly and then polls a
+            # conversation that does not exist, silently, forever. Mirrors add-watch.py's
+            # check via the same shared helper so neither creation path can drift.
+            die(f"watches[{i}] (type={t!r}) {problem[1]}")
         if "last_checked_ts" in w:
             die(f"watches[{i}] must not include 'last_checked_ts' — this script sets it")
 
@@ -339,6 +337,8 @@ def main():
 ## Current state
 
 _Quest just created._
+
+_Keep the latest summary of things here. Replace this summary as the situation changes; do not append chronological logs._
 
 ## Links
 

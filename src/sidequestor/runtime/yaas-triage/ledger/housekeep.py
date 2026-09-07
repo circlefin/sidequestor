@@ -27,7 +27,11 @@ predicates here with a unit test each.
 
 THE FOUR RULES (each returns True = retire this entry):
 
-  slack_thread   its parent thread_ts is older than the quest's retire window. The window is
+  slack_thread   its latest known activity is older than the quest's retire window. Activity
+                 is max(thread_ts, created_ts, last_activity_ts), so adding a watch to an old
+                 thread gets a full window and each observed reply extends it. Older entries
+                 need no migration: absent optional fields simply fall back to thread_ts.
+                 The window is
                  per-quest (meta.json retire_slack_threads_after_days), default 14 days.
                  "never" / 0 / false / null / missing-as-default and, crucially, any
                  NON-INTEGER value all mean "do not retire" — the non-integer case matters
@@ -73,6 +77,7 @@ Usage:
         category actually retired, matching the shell's old log lines.
 """
 
+import fcntl
 import json
 import os
 import sys
@@ -125,18 +130,38 @@ def _thread_epoch(w):
         return 0.0
 
 
+def _finite_epoch(value):
+    """A positive finite epoch, or 0.0 when absent/malformed."""
+    try:
+        epoch = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not (epoch > 0 and epoch == epoch and epoch not in (float("inf"), float("-inf"))):
+        return 0.0
+    return epoch
+
+
+def _thread_activity_epoch(w):
+    """Newest durable evidence that this thread watch is still wanted."""
+    return max(
+        _thread_epoch(w),
+        _finite_epoch(w.get("created_ts")),
+        _finite_epoch(w.get("last_activity_ts")),
+    )
+
+
 def malformed_thread(w):
     """A slack_thread with no usable parent ts. Keep it, but surface it."""
     return w.get("type") == "slack_thread" and _thread_epoch(w) <= 0
 
 
 def retire_thread(w, cutoff_epoch):
-    """A slack_thread whose parent is older than the cutoff. cutoff_epoch None → never."""
+    """A slack_thread whose latest known activity is older than the cutoff."""
     if cutoff_epoch is None:
         return False
     if malformed_thread(w):
         return False
-    return w.get("type") == "slack_thread" and _thread_epoch(w) < cutoff_epoch
+    return w.get("type") == "slack_thread" and _thread_activity_epoch(w) < cutoff_epoch
 
 
 def retire_approval(w, done_ids):
@@ -269,26 +294,29 @@ def cmd_retire(watch_path, meta_path, approvals_path, now):
     eph_hours = resolve_retire_hours(meta, eph_default)
     eph_cutoff = None if eph_hours is None else (now - eph_hours * 3600)
 
-    watch = _load(watch_path, None)
-    if not isinstance(watch, dict):
-        return 0
-    watches = watch.get("watches") or []
-    kept, counts, mutated = partition(watches, cutoff, done_ids, eph_cutoff, now)
+    lock_path = watch_path + ".lock"
+    with open(lock_path, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        watch = _load(watch_path, None)
+        if not isinstance(watch, dict):
+            return 0
+        watches = watch.get("watches") or []
+        kept, counts, mutated = partition(watches, cutoff, done_ids, eph_cutoff, now)
 
-    if len(kept) == len(watches) and not mutated:
-        if counts["malformed_slack_thread"]:
-            print(f"Kept {counts['malformed_slack_thread']} malformed slack_thread watch(es) "
-                  f"(missing or invalid thread_ts)")
-        return 0  # nothing retired and no clock started; leave the file untouched
+        if len(kept) == len(watches) and not mutated:
+            if counts["malformed_slack_thread"]:
+                print(f"Kept {counts['malformed_slack_thread']} malformed slack_thread watch(es) "
+                      f"(missing or invalid thread_ts)")
+            return 0  # nothing retired and no clock started; leave the file untouched
 
-    watch["watches"] = kept
-    _write_atomic(watch_path, watch)
+        watch["watches"] = kept
+        _write_atomic(watch_path, watch)
 
     # One line per category, echoing the shell's phrasing so operators see no change in logs.
     if counts["slack_thread"]:
         dd = "?" if days is None else days
         print(f"Retired {counts['slack_thread']} stale slack_thread watch(es) "
-              f"(thread_ts older than {dd}d)")
+              f"(last activity older than {dd}d)")
     if counts["approval"]:
         print(f"Retired {counts['approval']} completed approval watch(es)")
     if counts["schedule"]:

@@ -19,7 +19,8 @@
 checkers/slack_dm.py — check for new DMs from a watched Slack user since watermark.
 
 Input:  watch entry JSON as argv[1]
-        {"type":"slack_dm","user_id":"U...","last_checked_ts":"1234.567","reason":"..."}
+        {"type":"slack_dm","channel_id":"D...","user_id":"U...",
+         "last_checked_ts":"1234.567","reason":"..."}
 
 Output: count|preview   (preview = snippet of newest new message)
         error|reason    (on MCP failure — triage treats this as dirty/retry)

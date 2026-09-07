@@ -52,9 +52,14 @@ Usage
                                  ("draft_posted" when draft=true).
     note             (optional)  short human summary for the timeline `note`.
 
+Non-draft sends are authorized here before Slack is called. Quest sends require an
+active quest with `allow_send: true`, or a claimed `slack_message` approval whose
+reviewed target matches this channel and thread. The reactions dispatch is the sole
+quest-less send path.
+
 Output (stdout): compact JSON, e.g.
     {"response_ts":"1784280637.486119","permalink":"https://...","channel_id":"C...","logged":true}
-Callers use response_ts to build the follow-up watch.json entry (CLAUDE.md 3a).
+Callers use response_ts to build the follow-up watch.json entry (`yaas-quest-dispatch` §3a).
 
 Exit codes:
     0  sent (or drafted) successfully
@@ -105,6 +110,7 @@ REPO_ROOT = _repo_root(__file__)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from timeline_io import utc_now, quest_dir, append_timeline
+from tick_state import SLACK_CONVERSATION_RE, SLACK_MEMBER_RE
 import approval_store
 MCP_CALL = os.environ.get("MCP_CALL", str(Path(__file__).parent / "mcp-call.sh"))
 
@@ -123,6 +129,36 @@ def _call_slack(tool: str, args: dict) -> str:
     if not body:
         raise RuntimeError(f"{tool} returned empty response")
     return body
+
+
+def _text(value) -> str:
+    """A response field as a string, or "" if it is anything else.
+
+    Every read of the Slack response goes through this. The parse below runs AFTER the
+    message has already been delivered, and its only `except` is for JSONDecodeError, so
+    an unexpected type (an int channel_id, a null link) would raise past it and exit
+    non-zero with the send done but the timeline never written — the exact split-brain the
+    helper exists to prevent, and one a retry would turn into a duplicate message.
+    """
+    return value if isinstance(value, str) else ""
+
+
+def _channel_id_from_link(link: str) -> str:
+    """Best-effort conversation id out of a Slack URL, or "" if it holds none.
+
+    The last resort for the draft path, behind `channel_info.channel_id`. Opportunistic on
+    purpose — an unrecognised link shape yields "" and the caller keeps what it already
+    had, so a future change to the link format degrades to today's behaviour instead of
+    writing a wrong id.
+
+    Anchored on a path segment so a team id (T…/E…) or a query string cannot match, and
+    takes the LAST match because every observed shape puts the conversation last. A real
+    draft response (verified 2026-09-07, member id in → DM out) returns
+    `…/archives/D0A0LMEFWBY`; the tool's own docs advertise `…/client/T123/C456`. Both
+    parse, which is the point of not depending on either.
+    """
+    matches = re.findall(r"/([CDG][A-Z0-9]+)(?=[/?#]|$)", _text(link))
+    return matches[-1] if matches else ""
 
 
 # How old the conversation may be before a reply needs human review, in hours.
@@ -160,26 +196,52 @@ def _thread_last_activity(channel_id: str, thread_ts: str):
     return newest
 
 
-def _approval_reviewed_timestamp(approval_id):
-    """Return the approval's reviewed_at epoch, if it is available."""
-    if not approval_id:
+def _claimed_slack_approval_item(approval_id, quest_id, channel_id, thread_ts):
+    """Return the live claimed Slack approval for these coordinates, if any."""
+    if not approval_id or not quest_id:
         return None
     try:
         item = next(
             (i for i in approval_store.read_queue().get("items", [])
-             if i.get("id") == approval_id),
+             if isinstance(i, dict) and i.get("id") == approval_id),
             None,
         )
-        value = item.get("reviewed_at") if item else None
-        if not value:
+        if not (
+            item
+            and item.get("quest_id") == quest_id
+            and item.get("status") == "executing"
+            and item.get("action_type") == "slack_message"
+        ):
             return None
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
-    except (AttributeError, TypeError, ValueError, OSError, OverflowError, json.JSONDecodeError):
-        # A missing or malformed approval timestamp must not weaken the guard.
+        target = item.get("target")
+        if not isinstance(target, dict) or not target.get("channel_id"):
+            return None
+        if target.get("channel_id") != channel_id:
+            return None
+        if (target.get("thread_ts") or None) != (thread_ts or None):
+            return None
+        lease = datetime.fromisoformat(str(item["lease_expires_at"]).replace("Z", "+00:00"))
+        return item if lease.timestamp() >= time.time() else None
+    except Exception:
+        # Approval-state failures must never weaken either send guard.
         return None
 
 
-def _stale_reason(channel_id, thread_ts, now=None, approval_id=None):
+def _approval_reviewed_timestamp(approval_id, quest_id, channel_id, thread_ts):
+    """Return reviewed_at only for a live approval of this exact destination."""
+    item = _claimed_slack_approval_item(approval_id, quest_id, channel_id, thread_ts)
+    if not item:
+        return None
+    try:
+        value = item.get("reviewed_at")
+        if not value:
+            return None
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _stale_reason(channel_id, thread_ts, now=None, approval_id=None, quest_id=None):
     """Should this send be held for review? Returns a reason string, or None to send.
 
     Fails CLOSED: if the thread cannot be read, we cannot show the conversation is
@@ -195,7 +257,9 @@ def _stale_reason(channel_id, thread_ts, now=None, approval_id=None):
     newest = _thread_last_activity(channel_id, thread_ts)
     if newest is None:
         return "could not read the thread to confirm it is still live"
-    reviewed_at = _approval_reviewed_timestamp(approval_id)
+    reviewed_at = _approval_reviewed_timestamp(
+        approval_id, quest_id, channel_id, thread_ts,
+    )
     freshest = max(newest, reviewed_at) if reviewed_at is not None else newest
     age_h = (now - freshest) / 3600.0
     if age_h > STALE_HOURS:
@@ -221,6 +285,57 @@ def _queue_for_review(p, reason):
         ["python3", str(SCRIPT_DIR.parent / "ledger" / "approval-helper.py"), "write", json.dumps(payload)],
         capture_output=True, text=True)
     return (out.stdout or "").strip()
+
+
+def _claimed_slack_approval(approval_id, quest_id, channel_id, thread_ts):
+    """Return whether a human-reviewed Slack action is currently claimed FOR THIS TARGET.
+
+    The reviewer approved an action at a specific place, so the claim only authorizes
+    that place. Without the coordinate check one live approval would let the quest
+    send anywhere.
+    """
+    return _claimed_slack_approval_item(
+        approval_id, quest_id, channel_id, thread_ts,
+    ) is not None
+
+
+def _send_policy_reason(p):
+    """Return a fail-closed reason for a real send, or None when authorized."""
+    target = os.environ.get("SIDEQUESTOR_DISPATCH_TARGET", "").strip()
+    quest_id = str(p.get("quest_id") or "").strip()
+
+    if target == "reactions" and quest_id:
+        return "the reactions dispatch cannot write through a quest"
+    if target and target != "reactions" and target != quest_id:
+        return f"quest_id {quest_id!r} does not match dispatch target {target!r}"
+    if p.get("draft"):
+        return None
+
+    # Reactions are the only sanctioned send-only flow with no quest folder.
+    if target == "reactions" and not quest_id:
+        return None
+    if not quest_id:
+        return "quest_id is required for a non-draft Slack send"
+    # active/ only, deliberately: a completed or archived quest keeps its folder but
+    # loses its send authority. quest_dir() below spans all three buckets because
+    # LOGGING a send that already happened is not the same decision as authorizing one.
+    qdir = REPO_ROOT / "state" / "quests" / "active" / quest_id
+    if not qdir.is_dir():
+        return (f"quest {quest_id} is not in state/quests/active; a completed or "
+                f"archived quest may not send")
+    try:
+        meta = json.loads((qdir / "meta.json").read_text())
+        if not isinstance(meta, dict):
+            raise ValueError("invalid quest policy file")
+    except Exception as exc:
+        return f"cannot read quest policy for {quest_id}: {exc}"
+
+    approved = _claimed_slack_approval(p.get("approval_id"), quest_id,
+                                       p.get("channel_id"), p.get("thread_ts"))
+    if not meta.get("allow_send") and not approved:
+        return (f"quest {quest_id} has allow_send false and no claimed Slack approval "
+                f"for these coordinates")
+    return None
 
 
 def _parse_args(argv):
@@ -284,6 +399,16 @@ def main():
 
     is_draft = bool(p.get("draft"))
     thread_ts = p.get("thread_ts")
+    # Slack resolves a U… member id to that person's DM, so a member id "works" as a
+    # destination, but the approval-target and stale-thread guards compare the raw value,
+    # and both are keyed on the D… conversation. Refuse it here rather than resolve
+    # after the fact: resolution only happens in the send response, which is too late.
+    if thread_ts and SLACK_MEMBER_RE.fullmatch(str(channel_id)):
+        print(f"error: channel_id '{channel_id}' is a Slack member id; a threaded reply "
+              f"must name the conversation itself (C…/D…/G…). The approval guard matches "
+              f"on this value, and the follow-up watch is built from it. "
+              f"Resolve the DM conversation first.", file=sys.stderr)
+        sys.exit(1)
     quest_id = p.get("quest_id")
     # quest_id names a directory; reject traversal before it reaches quest_dir().
     # Mirrors surfaces/log-event.py's guard so both send paths validate identically.
@@ -302,14 +427,23 @@ def main():
 
     tool = "slack_send_message_draft" if is_draft else "slack_send_message"
 
-    # 0. Stale-reply guard. A reply to a conversation that went quiet more than
+    # 0. Authorization guard. Keep this before the stale-reply read and the Slack
+    # call so a denied action has no external side effect at all.
+    policy_reason = _send_policy_reason(p)
+    if policy_reason:
+        print(f"error: send denied: {policy_reason}", file=sys.stderr)
+        sys.exit(1)
+
+    # 1. Stale-reply guard. A reply to a conversation that went quiet more than
     #    STALE_HOURS ago is almost never still wanted: after a pause, triage hands the
     #    worker the OLDEST unread slice first, so without this it would march forward
     #    through days of backlog answering questions that were resolved without it.
     #    Enforced here, in the only sanctioned send path, rather than as a rule in
     #    CLAUDE.md, because a rule the model can forget is not a guard.
     if not is_draft:
-        reason = _stale_reason(channel_id, thread_ts, approval_id=p.get("approval_id"))
+        reason = _stale_reason(
+            channel_id, thread_ts, approval_id=p.get("approval_id"), quest_id=quest_id,
+        )
         if reason:
             appr_id = _queue_for_review(p, reason)
             quest_dir_path = quest_dir(REPO_ROOT, quest_id) if quest_id else None
@@ -323,32 +457,56 @@ def main():
                               "approval_id": appr_id, "response_ts": "", "permalink": ""}))
             return 0
 
-    # 1. Send / draft. On any failure nothing is logged (the message never landed).
+    # 2. Send / draft. On any failure nothing is logged (the message never landed).
     try:
         body = _call_slack(tool, args)
     except Exception as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)
 
-    # 2. Parse the response for the sent-message coordinates.
+    # 3. Parse the response for the sent-message coordinates.
     response_ts = ""
     permalink = ""
+    resolved_channel_id = channel_id
     try:
         d = json.loads(body)
+        d = d if isinstance(d, dict) else {}
         # slack_send_message: {"message_link":..,"message_context":{"message_ts":..,"channel_id":..}}
-        ctx = d.get("message_context", {}) if isinstance(d, dict) else {}
-        response_ts = ctx.get("message_ts", "") or ""
-        permalink = d.get("message_link", "") if isinstance(d, dict) else ""
+        ctx = d.get("message_context", {})
+        ctx = ctx if isinstance(ctx, dict) else {}
+        response_ts = _text(ctx.get("message_ts"))
+        permalink = _text(d.get("message_link"))
         # slack_send_message_draft returns {"channel_link":..} — no message_ts.
         if not permalink:
-            permalink = d.get("channel_link", "") if isinstance(d, dict) else ""
+            permalink = _text(d.get("channel_link"))
+        # Prefer what Slack says it actually used. A U… destination is resolved to its D…
+        # DM, and the caller's next step is a watch on that conversation, so echoing back
+        # the member id hands them an id that no checker and no permalink can ever match.
+        #
+        # Three sources in descending directness, verified against real responses on
+        # 2026-09-07: a send answers with `message_context.channel_id`; a draft answers
+        # with neither that nor a message_ts, but DOES carry `channel_info.channel_id`
+        # (a draft addressed to U0A0SA0UQNQ came back as D0A0LMEFWBY), and its
+        # `channel_link` holds the same id as the last path segment.
+        #
+        # Each candidate must itself BE a conversation id before it can win: an unusable
+        # value in the response is no improvement on the requested one, and promoting it
+        # would just relocate the bug being fixed. Falling through leaves the request.
+        info = d.get("channel_info", {})
+        info = info if isinstance(info, dict) else {}
+        for candidate in (_text(ctx.get("channel_id")).strip(),
+                          _text(info.get("channel_id")).strip(),
+                          _channel_id_from_link(permalink)):
+            if SLACK_CONVERSATION_RE.fullmatch(candidate):
+                resolved_channel_id = candidate
+                break
     except json.JSONDecodeError:
         # Non-JSON body usually means an error string slipped through (e.g. a
         # restricted channel). Surface it and treat the send as failed.
         print(f"error: unexpected response from {tool}: {body[:200]}", file=sys.stderr)
         sys.exit(2)
 
-    # 3. Log the verbatim body to the quest timeline (the whole point).
+    # 4. Log the verbatim body to the quest timeline (the whole point).
     logged = False
     if quest_id:
         qdir = quest_dir(REPO_ROOT, quest_id)
@@ -359,13 +517,13 @@ def main():
             entry = {
                 "ts": utc_now(),
                 "event": event,
-                "channel_id": channel_id,
+                "channel_id": resolved_channel_id,
                 "message_text": message,
             }
             if thread_ts:
                 entry["thread_ts"] = thread_ts
             # For a draft there is no sent ts; fall back to thread_ts so a
-            # follow-up watch has a sensible boundary (CLAUDE.md 3a).
+            # follow-up watch has a sensible boundary (`yaas-quest-dispatch` §3a).
             entry["response_ts"] = response_ts or (thread_ts or "")
             if permalink:
                 entry["permalink"] = permalink
@@ -377,7 +535,7 @@ def main():
     print(json.dumps({
         "response_ts": response_ts,
         "permalink": permalink,
-        "channel_id": channel_id,
+        "channel_id": resolved_channel_id,
         "logged": logged,
     }, ensure_ascii=False))
 

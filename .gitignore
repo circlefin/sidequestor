@@ -4,6 +4,11 @@ dist/
 *.egg-info/
 __pycache__/
 *.py[cod]
+.DS_Store
+
+# Local design drafts and generated reaction artwork.
+docs/explainer/
+src/sidequestor/runtime/yaas-triage/assets/reactions/
 
 # Local operator skills and disposable end-to-end workspaces.
 .agents/

@@ -41,7 +41,7 @@ MCP_CALL = os.environ.get("MCP_CALL", os.path.join(os.path.dirname(SCRIPT_DIR), 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import result
-from slack_utils import PAGE_LIMIT, drain
+from slack_utils import PAGE_LIMIT, drain, _parse_thread_page
 
 
 def main():
@@ -102,6 +102,7 @@ def main():
         fetch_page, since,
         entry.get("filter_user_ids") or None,
         entry.get("filter_keywords") or None,
+        page_parser=_parse_thread_page,
     )
 
     if transient:

@@ -95,8 +95,9 @@ normal start path brings up triage, heartbeat, and dashboard together.
 `sq dashboard url` retrieves the URL later. `sq dashboard serve` remains a
 foreground developer escape hatch rather than a second persistent lifecycle.
 `sq stop` unloads the containing workspace's jobs and also cleans up a matching
-foreground dashboard controller, while intentionally retaining the manifest
-and plists so `sq start` can restart them. Full removal is explicit:
+foreground dashboard controller. It retains the manifest but removes the plists
+so the instance stays stopped across reboots; `sq start` recreates them. Full
+removal is explicit:
 `sq setup --production uninstall` unloads jobs and deletes only the plist paths
 recorded for that workspace under `~/Library/LaunchAgents`.
 

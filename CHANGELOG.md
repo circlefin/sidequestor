@@ -4,6 +4,98 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.25 - 2026-09-07
+
+### Changed
+- `watch_mode` is now treated as inert legacy watch data: existing and arbitrary values remain
+  accepted and preserved on every watch type, but no longer restrict Slack sends or appear in
+  the dashboard. Slack send authorization relies on `allow_send` and target-scoped claimed
+  approvals.
+- Blanket guidance that prohibited worker replies in internal escalation threads has been
+  removed. Quests with `allow_send: true` may now reply there when their objective and context
+  call for it; use `allow_send: false` when outbound messages require review.
+
+## 0.1.24 - 2026-09-07
+
+### Changed
+- Managed workspace resources refresh their generated environment and settings examples during
+  engine synchronization and expose engine skills through `.agents/skills` when available.
+  `.env.example` and `settings.json.example` are Sidequestor-owned and regenerated, so local
+  configuration belongs in `.env` and `settings.json` instead.
+
+## 0.1.23 - 2026-09-07
+
+### Changed
+- Triage checker subprocesses run serially by default to avoid connector and state contention.
+
+### Fixed
+- Slack watch creation rejects member IDs where conversation IDs are required, threaded sends
+  reject unresolved member destinations, and send logging records the resolved DM conversation.
+- Slack DM watch guidance uses the correct channel and member identifiers.
+
+## 0.1.22 - 2026-09-06
+
+### Fixed
+- `sq stop` removes its workspace's LaunchAgent plists after unloading the jobs, so a stopped
+  instance remains stopped across login and reboot while `sq start` can recreate it.
+- The quest instruction composer remains mounted across dashboard polls, preserving drafts,
+  focus, selection, scroll position, and in-progress text while live quest details refresh.
+- Instruction drafts remain scoped to their selected quest, including during detail-fetch and
+  submit races, so text cannot be queued against a different quest.
+
+## 0.1.21 - 2026-09-04
+
+### Added
+- Telegram replies can be saved as native cloud drafts through `sq telegram-send`; the surface
+  uses `SaveDraftRequest` exclusively, never delivers to recipients, and logs drafts to the quest
+  timeline for every worker backend.
+
+### Changed
+- Telegram draft targets must already exist in the authorized account's dialogs, draft bodies are
+  limited to Telegram's 4096-character maximum, and saving replaces that dialog's existing draft.
+- The optional Telegram dependency now requires Telethon 1.44 or newer.
+
+### Fixed
+- Telegram checker subprocesses use the same Python interpreter as the Sidequestor runtime, so
+  optional Telethon installations do not drift between parent and helper processes.
+
+## 0.1.17 - 2026-09-03
+
+### Fixed
+- Production upgrades now snapshot and drain every process in each launchd job before installing
+  or restarting, including detached worker and dashboard child processes.
+
+## 0.1.16 - 2026-09-03
+
+### Fixed
+- Slack approvals authorize only their reviewed channel and thread, including when a recent review
+  refreshes the stale-reply guard; an approval for another destination cannot bypass either check.
+- Read-only monitoring is limited to exact Slack threads, completed quests cannot send, and watch
+  retirement replays tolerate malformed timeline records without losing an earlier audit event.
+
+## 0.1.15 - 2026-09-02
+
+### Fixed
+- Slack Connect author metadata is accepted by thread and channel-style message parsers, so
+  external replies no longer enter safe backoff or get silently skipped.
+
+## 0.1.14 - 2026-08-31
+
+### Fixed
+- Slack Connect process reactions now fall back to an in-thread draft when direct sending is
+  restricted, and blocked reaction work is retained across checker sweeps instead of being lost.
+
+## 0.1.13 - 2026-08-31
+
+### Added
+- Cursor is now a first-class worker backend in `sq setup`, with optional
+  `SIDEQUESTOR_CURSOR_MODEL` pinning and Cursor's account/CLI model default when unset.
+
+### Changed
+- The setup template and README document `claude`, `codex`, and `cursor` consistently.
+- Cursor setup no longer creates Claude/Codex-only reasoning-effort or permission-mode settings.
+- Setup rejects an invalid existing worker backend instead of silently carrying it forward.
+
 ## 0.1.6.dev0 - 2026-08-25
 
 ### Changed

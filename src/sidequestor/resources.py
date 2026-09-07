@@ -57,9 +57,9 @@ def _safe_managed_directory(path: Path) -> Path | None:
 def _sync_skill_links(directory: Path | None, relative_prefix: str, names: set[str]) -> None:
     """Publish engine skills as symlinks into a directory Sidequestor does not own.
 
-    `skills/` and `.claude/skills/` belong to the user; this writes into them so an
-    interactive agent can discover the engine skills without being told a path. That
-    makes the blast radius the important part of this function.
+    `skills/`, `.claude/skills/`, and `.agents/skills/` belong to the user; this writes
+    into them so an interactive agent can discover the engine skills without being told
+    a path. That makes the blast radius the important part of this function.
 
     THE CLAIM: Sidequestor owns the `yaas-` prefix inside these directories, and nothing
     else. Within that namespace it will DELETE a symlink it did not create — one whose
@@ -122,16 +122,11 @@ def _sync_new_quest_prompt(workspace: Workspace) -> None:
 def sync_resources(workspace: Workspace) -> Path:
     ensure_reaction_watermark(workspace)
     env_example = workspace.root / ".env.example"
-    if not env_example.exists() or env_example.read_text() in {
-        "# YAAS workspace configuration\n",
-        "# Sidequestor workspace configuration\n",
-    }:
-        env_resource = files("sidequestor").joinpath("package_data", "env.example")
-        env_example.write_text(env_resource.read_text())
+    env_resource = files("sidequestor").joinpath("package_data", "env.example")
+    env_example.write_text(env_resource.read_text())
     settings_example = workspace.root / "settings.json.example"
-    if not settings_example.exists():
-        settings_resource = files("sidequestor").joinpath("package_data", "settings.json.example")
-        settings_example.write_text(settings_resource.read_text())
+    settings_resource = files("sidequestor").joinpath("package_data", "settings.json.example")
+    settings_example.write_text(settings_resource.read_text())
     destination = workspace.yaas_dir / "engine" / ENGINE_VERSION
     if destination.exists():
         shutil.rmtree(destination)
@@ -156,11 +151,15 @@ def sync_resources(workspace: Workspace) -> Path:
     os.replace(temporary, current)
     skill_names = {path.name for path in (destination / "skills").iterdir()
                    if path.is_dir() and path.name.startswith("yaas-")}
-    # workspace.skills is passed straight in, while .claude/.codex go through
+    # workspace.skills is passed straight in, while tool-owned directories go through
     # _safe_managed_directory(). Not an oversight: init_workspace() creates skills/ and
-    # validate_workspace() requires it, so it is ours by construction. .claude/ and
-    # .codex/ belong to other tools and may not exist, or may be something unexpected.
+    # validate_workspace() requires it, so it is ours by construction. .agents/,
+    # .claude/, and .codex/ belong to other tools and may not exist, or may be something
+    # unexpected.
     _sync_skill_links(workspace.skills, "../.yaas/engine/current/skills/", skill_names)
+    agents_root = _safe_managed_directory(workspace.root / ".agents")
+    agents_skills = _safe_managed_directory(agents_root / "skills") if agents_root else None
+    _sync_skill_links(agents_skills, "../../.yaas/engine/current/skills/", skill_names)
     claude_root = _safe_managed_directory(workspace.root / ".claude")
     claude_skills = _safe_managed_directory(claude_root / "skills") if claude_root else None
     _sync_skill_links(claude_skills, "../../.yaas/engine/current/skills/", skill_names)

@@ -41,9 +41,16 @@ Ask the user for, in order:
    - **`github_pr`** — a `repo` as `owner/name`. Fires on any PR update in that repo: new PR, new commit, review, comment, or merge. Use it alongside `jira` when a fix lands as a PR, because **a PR review comment does not bump the linked Jira issue**, so the `jira` watch cannot see it. Optional `search` (extra GitHub qualifiers) and `limit` (default 100). Two traps before you add a `search`: repeated qualifiers AND rather than OR (`author:a author:b` matches nothing and the watch reports clean forever), and full-text terms only match what a PR happens to say. Also avoid `is:open`, which hides merges. Verify recall against a known PR set first; the details are in `checkers/github_pr.py`'s docstring.
 
    - **`github_issue`** — a `repo` as `owner/name`. Fires on any issue update in that repo: new issue, comment, label change, close. Pull requests are excluded (`gh search issues` omits them unless asked), so it never double-reports with `github_pr` — pair the two when you want both halves. Optional `search` (extra qualifiers, same AND-not-OR trap as `github_pr`), `limit` (default 100), and `gh_account` (a `gh` login whose token to use, for a private repo the ACTIVE `gh` account cannot see; resolved per-run via `gh auth token -u`, never persisted).
+   - **`telegram_chat`** — a Telegram cloud-chat `peer`: use its `@username`/public link when available, or its numeric dialog ID for private chats. Reads as the user authorized by `sq telegram-auth`, not as a bot. Optional `credential_id`, `from_user` (an `@username`), `filter_sender_ids`, `filter_keywords`, `filter_kinds`, `include_outgoing`, and `limit`. Detects new messages only; it cannot see Secret Chats or reliably detect later edits, deletions, or reactions.
+   - **`telegram_search`** — a `peer` plus non-empty `query`, with the same optional filters as `telegram_chat` and optional `from_user`. Search is index-backed and deliberately trails the current time by 30 seconds.
+   - **`x_search`** — an X recent-search `query` (maximum 1024 characters). Use `@handle` for mentions or `from:handle` for an author's posts. Optional `credential_id`, `filter_keywords`, and `exclude_user_ids`. Broad searches incur API read charges; narrow at the source and with checker filters.
 
-   All three of the above are repo/project-wide by nature, so they can fire on items unrelated to the quest. Say so in the `reason`, and make the quest's `context.md` tell the worker to exit immediately without acting when the changed item is out of scope.
-   - **`approval`** — effectively runtime-only: the worker appends one itself when it queues a manual-review item (§3d of the `yaas-quest-dispatch` skill). Do not put one in a creation spec — there is no approval to track before the quest exists. `new-quest.py` does accept the type (with a required `approval_id`) so its type list matches `checkers/`, so this is a rule you follow, not one the script enforces.
+   External watches run only when their connector is present in
+   `SIDEQUESTOR_CHECKER_CONNECTORS`. The default is `slack,email,github,jira`; adding a Telegram
+   or X watch without enabling its connector intentionally leaves its watermark frozen.
+
+   GitHub and broad Telegram/X searches can fire on items unrelated to the quest. Say so in the `reason`, and make the quest's `context.md` tell the worker to exit immediately without acting when the changed item is out of scope.
+   - **`approval`** — effectively runtime-only: the worker appends one itself when it queues a manual-review item (§3c of the `yaas-quest-dispatch` skill). Do not put one in a creation spec — there is no approval to track before the quest exists. `new-quest.py` does accept the type (with a required `approval_id`) so its type list matches `checkers/`, so this is a rule you follow, not one the script enforces.
    - **Anything else** — there is no other type. `new-quest.py` rejects a type with no
      `checkers/<type>.py`, because an unknown type would otherwise scaffold cleanly and then be
      skipped silently on every tick. To add one, write the checker first, then add
@@ -70,16 +77,13 @@ Ask the user for, in order:
    verbatim and NOT validated, so a typo like `filter_keyword` (singular) is silently
    written and silently ignored — spell them exactly.
 
-   **`watch_mode: "read_only"`** — add this to any watch on a thread in an internal routing or
-   expert channel (`#help-*`, `#cpn-se-questions`, `#cpn-*`, `#api-key-permissions`, any
-   `#oncall-*` or `#eng-*` escalation channel). It tells the worker to read replies and relay
-   outcomes, but never post back into that thread. Without it, the bot will reply in expert
-   channels and annoy the humans there. `new-quest.py` validates that the only legal value is
-   `"read_only"` — any typo is caught at creation time.
-
    **Note:** reaction-workflow triggers (`process`, `draft`, `save`, and `adopt`) are tracked globally by the triage orchestrator and are NOT a per-quest watch input. Do not include them in `watches[]`.
 3. **Priority** — high / normal / low. Default to normal if unspecified.
-4. **Context** — ask the user to paste or describe what this quest is about. This becomes the body of `context.md`. If they already gave context earlier in the conversation, use that; don't re-ask.
+4. **Context** — ask the user to paste or describe what this quest is about. Turn it into a
+   compact mission brief: objective, durable decision rules, important links, and the
+   latest summary of things. Do not seed `context.md` with a conversation transcript or chronological
+   updates; those belong in `timeline.ndjson`. If they already gave context earlier in the
+   conversation, use that; don't re-ask.
 
 ### 2. Generate the quest ID
 
@@ -185,15 +189,17 @@ Always watch the **parent thread_ts**, not a reply's ts.
   collision it appends `-2`, `-3`, … itself.
 - `watches[]` has at least one entry, and every entry has a `type` and a `reason`.
 - The `type` has an executable `checkers/<type>.py`, and carries that type's required fields.
-- `watch_mode`, if present, is exactly `"read_only"`.
 - No `last_checked_ts` — the script sets it.
+- Slack IDs are in the right namespace: `channel_id` is a conversation and `user_id` is a
+  member (`U…`, or `W…` on Enterprise Grid). A conversation is `C…` (public channels,
+  private channels **and group DMs** — a group DM really does come back as `C…`), `D…` (a
+  one-to-one DM), or `G…` (legacy private channels and legacy group DMs, still in use).
+  There is **no `MP` prefix**; that was this doc's own invention. A user ID pasted into a
+  channel field is the mistake this catches: it sends fine and then watches a conversation
+  that does not exist, silently, forever.
 
-**These are yours to check; the script does NOT** — a malformed ID scaffolds cleanly and then
-fails at runtime, where it is much harder to notice:
+**This one is yours to check; the script does NOT** — shape is checkable, meaning is not:
 
-- Channel IDs start with `C` (public), `G` (private group), `D` (DM), or `MP` (mpim). Anything
-  else is almost certainly a user ID pasted into a channel field. Flag it to the user.
-- User IDs start with `U`.
 - The IDs point at what the user actually meant. Resolve names via
   `mcp__slack__slack_search_users` and confirm before writing them in.
 
