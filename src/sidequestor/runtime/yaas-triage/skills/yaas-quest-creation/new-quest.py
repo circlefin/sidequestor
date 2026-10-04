@@ -47,11 +47,13 @@ Watch entry fields by type:
                  Reads via the packaged runtime's surfaces/jira-call.sh; needs the Keychain API token.
                  Do NOT put ORDER BY in the jql: it disables the checker's early
                  stop and makes every tick page to the cap.
-  github_pr:     repo ("owner/name"), reason  [optional: search, limit]
+  github_pr:     repo ("owner/name"), reason  [optional: search, limit, gh_account]
                  Fires on any PR update in the repo (new PR, commit, review,
                  comment, merge). `search` adds GitHub qualifiers, but read the
                  warning in checkers/github_pr.py first: repeated qualifiers AND
                  rather than OR, so a bad one silently matches nothing forever.
+                 `gh_account` pins the gh login whose token is used, for a repo the
+                 ACTIVE gh account cannot see.
   github_issue:  repo ("owner/name"), reason  [optional: search, limit, gh_account]
                  Fires on any ISSUE update in the repo (new issue, comment, label,
                  close). Pull requests are excluded, so this does not double-report

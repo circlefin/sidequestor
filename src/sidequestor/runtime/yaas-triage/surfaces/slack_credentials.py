@@ -6,8 +6,11 @@
 """Own the lifecycle of the Slack credential used by deterministic checkers."""
 
 import fcntl
+import hashlib
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -22,8 +25,11 @@ REFRESH_TOKEN_LIFETIME_SECONDS = 30 * 24 * 60 * 60
 BUNDLE_SERVICE = "slack-oauth-token-bundle"
 LEGACY_SERVICE = "slack-xoxp-token"
 KEYCHAIN_ACCOUNT = "yaas"
+HELPER_VERSION = 1
+HELPER_NAME = f"sidequestor-keychain-helper-v{HELPER_VERSION}"
 SLACK_TOKEN_URL = "https://slack.com/api/oauth.v2.access"
 HTTP_TIMEOUT_SECONDS = 30
+KEYCHAIN_TIMEOUT_SECONDS = 120
 
 
 class CredentialError(Exception):
@@ -50,21 +56,12 @@ class HelperUnavailableError(CredentialError):
     """The Keychain helper could not be built or run on this machine."""
 
 
+class HelperMigrationRequired(HelperUnavailableError):
+    """The stable helper must be authorized in a foreground repair."""
+
+
 def _state_root():
-    """Where this surface keeps its per-workspace state.
-
-    Both users below are workspace state, not package assets: a compiled Keychain helper
-    and the OAuth refresh lock. They were resolved as `Path(__file__).resolve().parents[2]`,
-    which WAS the repo root before this became a pip package and is the installed package
-    directory now. So an install compiled a binary into site-packages and — worse — put the
-    refresh lock there, where every workspace sharing a venv contends on one lock. Where
-    site-packages is not writable (a --user or system install, a read-only container) both
-    become hard failures, and the Keychain path reports "could not build the helper" rather
-    than the permissions problem it actually hit.
-
-    Falls back to the old location when nothing names a workspace, so running this script
-    bare behaves exactly as it did rather than guessing at a root.
-    """
+    """Find legacy per-workspace state during the one-time helper migration."""
     for name in ("SIDEQUESTOR_WORKSPACE", "YAAS_WORKSPACE", "REPO_ROOT"):
         value = os.environ.get(name)
         if value:
@@ -74,65 +71,227 @@ def _state_root():
     return Path(__file__).resolve().parents[2]
 
 
+def _config_home():
+    configured = (
+        os.environ.get("SIDEQUESTOR_CONFIG_HOME")
+        or os.environ.get("YAAS_CONFIG_HOME")
+    )
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".config"
+
+
+def _credential_home():
+    return _config_home() / "yaas" / "credentials"
+
+
+def _ensure_credential_directories():
+    """Create each app-owned directory at its final restrictive mode."""
+    app_home = _config_home() / "yaas"
+    app_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(app_home, 0o700)
+    credential_home = _credential_home()
+    credential_home.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(credential_home, 0o700)
+    return credential_home
+
+
 def _keychain_helper_path():
-    """The Keychain helper binary, preferring one that already exists.
+    """Return one immutable, versioned helper path shared by this macOS user."""
+    return _credential_home() / "bin" / HELPER_NAME
 
-    Deliberately NOT simply `_state_root()/state/bin/...`. macOS binds a Keychain item's
-    ACL to the *binary* that reads it, so pointing an existing install at a different
-    path means a freshly compiled binary with no authorization — macOS then raises a GUI
-    trust prompt, which under launchd nobody ever sees, and the read times out. Verified:
-    switching the path on a live workspace turned a working `status` call into
-    "macOS Keychain timed out during Slack credential read".
 
-    So an install that already has an authorized helper keeps using it, wherever it sits,
-    and only a first compile goes to the workspace. New installs get the correct location;
-    existing ones keep working and are never asked to re-authorize.
-    """
-    legacy = Path(__file__).resolve().parents[2] / "state" / "bin" / "yaas-keychain-helper"
-    if legacy.is_file() and os.access(legacy, os.X_OK):
-        return legacy
-    return _state_root() / "state" / "bin" / "yaas-keychain-helper"
+def _legacy_helper_candidates():
+    """Helpers older releases may already have authorized in Keychain."""
+    candidates = [
+        Path(__file__).resolve().parents[2] / "state" / "bin" / "yaas-keychain-helper",
+        _state_root() / "state" / "bin" / "yaas-keychain-helper",
+    ]
+    registry = _config_home() / "yaas" / "instances.json"
+    try:
+        rows = json.loads(registry.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        rows = []
+    if not isinstance(rows, list):
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("path"), str):
+            continue
+        root = Path(row["path"]).expanduser()
+        if not (root / ".yaas" / "instance.json").is_file():
+            continue
+        candidates.extend([
+            root / "state" / "bin" / "yaas-keychain-helper",
+            root / ".local" / "yaas-package" / "src" / "sidequestor"
+            / "runtime" / "state" / "bin" / "yaas-keychain-helper",
+        ])
+        manifest = root / ".yaas" / "launchd" / "production.json"
+        try:
+            production = json.loads(manifest.read_text(encoding="utf-8"))
+            python = Path(production["python"]).expanduser()
+        except (KeyError, OSError, TypeError, ValueError):
+            python = None
+        venv_roots = [root / ".local" / "yaas-package" / ".venv"]
+        if python is not None and python.parent.name == "bin":
+            venv_roots.insert(0, python.parent.parent)
+        for venv in venv_roots:
+            for package in ("sidequestor", "yaas_triage"):
+                candidates.extend(
+                    venv.glob(
+                        f"lib/python*/site-packages/{package}/runtime/state/bin/"
+                        "yaas-keychain-helper"
+                    )
+                )
+    unique = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _helper_marker_path():
+    return _credential_home() / f"{HELPER_NAME}.ready.json"
+
+
+def _helper_digest(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _trusted_legacy_helper(path):
+    try:
+        metadata = Path(path).lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and metadata.st_uid == os.getuid()
+        and not metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        and os.access(path, os.X_OK)
+    )
+
+
+def _install_global_helper(source, helper):
+    """Install once under a global lock; never replace an existing identity."""
+    helper = Path(helper)
+    _ensure_credential_directories()
+    helper.parent.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(helper.parent, 0o700)
+    lock = FileLock(helper.parent / f".{HELPER_NAME}.install.lock")
+    with lock:
+        if helper.exists():
+            if not _trusted_legacy_helper(helper):
+                raise HelperUnavailableError(
+                    f"Keychain helper exists but is not a secure executable: {helper}; "
+                    "refusing to replace it automatically"
+                )
+            if _helper_marker_path().exists() and not _helper_ready(helper):
+                raise HelperUnavailableError(
+                    f"Keychain helper identity changed unexpectedly: {helper}; "
+                    "refusing to replace or execute it automatically"
+                )
+            return None
+
+        # Candidate order begins with the exact package/workspace selection used by
+        # older releases. Registered-workspace paths are fallbacks before compilation;
+        # filesystem atime is deliberately not used as an authorization signal.
+        migrated_from = next(
+            (path for path in _legacy_helper_candidates() if _trusted_legacy_helper(path)),
+            None,
+        )
+        temporary = helper.with_name(f".{helper.name}.{os.getpid()}.tmp")
+        try:
+            if migrated_from is not None:
+                shutil.copyfile(migrated_from, temporary, follow_symlinks=False)
+                if _helper_digest(temporary) != _helper_digest(migrated_from):
+                    raise HelperUnavailableError(
+                        "copied Keychain helper failed its integrity check")
+            else:
+                result = subprocess.run(
+                    ["/usr/bin/clang", str(source), "-framework", "Security",
+                     "-framework", "CoreFoundation", "-o", str(temporary)],
+                    capture_output=True, text=True, timeout=30)
+                if result.returncode != 0:
+                    raise HelperUnavailableError(
+                        "could not build the Slack Keychain helper")
+            temporary.chmod(0o700)
+            with temporary.open("rb") as handle:
+                os.fsync(handle.fileno())
+            os.replace(temporary, helper)
+            directory_fd = os.open(helper.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise HelperUnavailableError(
+                "could not install the Slack Keychain helper") from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+        return migrated_from
+
+
+def _helper_ready(helper):
+    try:
+        payload = json.loads(_helper_marker_path().read_text(encoding="utf-8"))
+        return (payload.get("schema") == 1
+                and payload.get("helper_sha256") == _helper_digest(helper))
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _mark_helper_ready(helper, credential_present):
+    marker = _helper_marker_path()
+    _ensure_credential_directories()
+    temporary = marker.with_name(f".{marker.name}.{os.getpid()}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump({
+                "schema": 1,
+                "helper_sha256": _helper_digest(helper),
+                "credential_present": bool(credential_present),
+            }, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, marker)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class MacOSKeychain:
     """Use a stable local helper so Keychain values never enter argv."""
 
-    def __init__(self):
+    def __init__(self, allow_unready=False):
         if sys_platform() != "darwin":
             raise CredentialError("Slack Keychain storage requires macOS")
         self.source = Path(__file__).resolve().with_name("keychain-helper.c")
         self.helper = _keychain_helper_path()
+        self.allow_unready = allow_unready
 
     def _ensure_helper(self):
-        if self.helper.is_file() and os.access(self.helper, os.X_OK):
-            return
-        self.helper.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.helper.with_name(f"{self.helper.name}.{os.getpid()}.tmp")
-        try:
-            result = subprocess.run(
-                ["/usr/bin/clang", str(self.source), "-framework", "Security",
-                 "-framework", "CoreFoundation", "-o", str(temporary)],
-                capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                raise HelperUnavailableError("could not build the Slack Keychain helper")
-            temporary.chmod(0o700)
-            os.replace(temporary, self.helper)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise HelperUnavailableError("could not build the Slack Keychain helper") from exc
-        finally:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
+        _install_global_helper(self.source, self.helper)
+
+    def _require_ready_helper(self):
+        self._ensure_helper()
+        if not self.allow_unready and not _helper_ready(self.helper):
+            raise HelperMigrationRequired(
+                "Keychain helper authorization is incomplete. Run "
+                "`sq credentials repair-keychain` in a terminal."
+            )
 
     def read(self, service, account):
         if service == LEGACY_SERVICE:
             return self._read_legacy(service, account)
-        self._ensure_helper()
+        self._require_ready_helper()
         try:
             result = subprocess.run(
                 [str(self.helper), "read", service, account],
-                capture_output=True, text=True, timeout=10)
+                capture_output=True, text=True, timeout=KEYCHAIN_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired as exc:
             raise TransientCredentialError(
                 "macOS Keychain timed out during Slack credential read") from exc
@@ -152,7 +311,8 @@ class MacOSKeychain:
         try:
             result = subprocess.run(
                 ["/usr/bin/security", "find-generic-password", "-s", service,
-                 "-a", account, "-w"], capture_output=True, text=True, timeout=10)
+                 "-a", account, "-w"], capture_output=True, text=True,
+                timeout=KEYCHAIN_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired as exc:
             raise TransientCredentialError(
                 "macOS Keychain timed out during Slack credential read") from exc
@@ -169,11 +329,12 @@ class MacOSKeychain:
         raise CredentialError("macOS Keychain failed during Slack credential read")
 
     def write(self, service, account, value):
-        self._ensure_helper()
+        self._require_ready_helper()
         try:
             result = subprocess.run(
                 [str(self.helper), "write", service, account],
-                input=value, capture_output=True, text=True, timeout=10)
+                input=value, capture_output=True, text=True,
+                timeout=KEYCHAIN_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired as exc:
             raise TransientCredentialError(
                 "macOS Keychain timed out during Slack credential write") from exc
@@ -208,8 +369,13 @@ class FileLock:
         self.handle = None
 
     def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.parent == _credential_home():
+            _ensure_credential_directories()
+        else:
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(self.path.parent, 0o700)
         fd = os.open(str(self.path), os.O_CREAT | os.O_RDWR, 0o600)
+        os.chmod(self.path, 0o600)
         self.handle = os.fdopen(fd, "r+")
         fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
         return self
@@ -232,6 +398,8 @@ class KeychainCredentialStore:
     def load(self):
         try:
             raw = self.keychain.read(BUNDLE_SERVICE, self.account)
+        except HelperMigrationRequired:
+            raise
         except HelperUnavailableError:
             # Can't build the helper (e.g. no Command Line Tools) - fall through
             # to the legacy xoxp- read below, which only needs /usr/bin/security.
@@ -506,30 +674,91 @@ def get_access_token(rejected_token=None):
 
 
 def _default_credentials():
-    root = _state_root()
     return SlackCredentials(
         store=KeychainCredentialStore(MacOSKeychain()),
         oauth=SlackOAuthTransport(),
-        lock=FileLock(root / "state" / "triage" / "slack-oauth.lock"),
+        lock=FileLock(_credential_home() / "slack-oauth.lock"),
     )
+
+
+def keychain_helper_status():
+    """Return helper migration metadata without reading any Keychain value."""
+    helper = _keychain_helper_path()
+    return {
+        "version": HELPER_VERSION,
+        "path": str(helper),
+        "installed": helper.is_file() and os.access(helper, os.X_OK),
+        "ready": helper.is_file() and _helper_ready(helper),
+    }
+
+
+def repair_keychain_helper(require_interactive=True):
+    """Install the global helper and verify its Keychain trust without rewriting tokens."""
+    keychain = MacOSKeychain(allow_unready=True)
+    _install_global_helper(keychain.source, keychain.helper)
+    # Refresh writes and these two trust-verification reads operate on the same global
+    # Keychain item. Serialize both so a legitimate rotation cannot look like corruption.
+    with FileLock(_credential_home() / "slack-oauth.lock"):
+        with FileLock(_credential_home() / f".{HELPER_NAME}.repair.lock"):
+            return _verify_keychain_helper(
+                keychain, require_interactive=require_interactive)
+
+
+def _verify_keychain_helper(keychain, require_interactive=True):
+    if _helper_ready(keychain.helper):
+        return keychain_helper_status()
+
+    if require_interactive and not sys.stderr.isatty():
+        raise HelperUnavailableError(
+            "Keychain helper migration needs an interactive terminal. "
+            "Run `sq credentials repair-keychain` in a terminal; the selected instance "
+            "will remain stopped until the migration succeeds."
+        )
+
+    print(
+        "Sidequestor is authorizing its stable Keychain helper. "
+        "If macOS prompts, choose Always Allow once.",
+        file=sys.stderr,
+    )
+
+    first = keychain.read(BUNDLE_SERVICE, KEYCHAIN_ACCOUNT)
+    if first is None:
+        _mark_helper_ready(keychain.helper, credential_present=False)
+        return keychain_helper_status()
+
+    # A second successful read catches a one-time `Allow` response before background
+    # processes resume. Credential material stays in memory and is never printed.
+    second = keychain.read(BUNDLE_SERVICE, KEYCHAIN_ACCOUNT)
+    if second != first:
+        raise CredentialError("Slack credential changed while Keychain trust was verified")
+    _mark_helper_ready(keychain.helper, credential_present=True)
+    return keychain_helper_status()
 
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    quiet = False
     try:
-        root = _state_root()
-        store = KeychainCredentialStore(MacOSKeychain())
-        lock = FileLock(root / "state" / "triage" / "slack-oauth.lock")
-        if len(argv) == 2 and argv[0] == "install":
+        installing = len(argv) == 2 and argv[0] == "install"
+        store = KeychainCredentialStore(MacOSKeychain(allow_unready=installing))
+        lock = FileLock(_credential_home() / "slack-oauth.lock")
+        if installing:
             summary = install_oauth_response(
                 json.load(sys.stdin), argv[1], store, lock=lock)
+            repair_keychain_helper(require_interactive=False)
         elif argv == ["status"]:
             summary = credential_status(store)
         elif argv == ["refresh-now"]:
             summary = SlackCredentials(
                 store=store, oauth=SlackOAuthTransport(), lock=lock).refresh_now()
+        elif argv == ["helper-status"]:
+            summary = keychain_helper_status()
+        elif argv in (["repair-keychain"], ["repair-keychain", "--quiet"]):
+            quiet = "--quiet" in argv
+            summary = repair_keychain_helper()
         else:
-            print("usage: slack_credentials.py <install CLIENT_ID|status|refresh-now>",
+            print("usage: slack_credentials.py "
+                  "<install CLIENT_ID|status|refresh-now|helper-status|repair-keychain>",
                   file=sys.stderr)
             return 3
     except TransientCredentialError as exc:
@@ -541,7 +770,8 @@ def main(argv=None):
     except (CredentialError, RefreshError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps(summary, separators=(",", ":"), sort_keys=True))
+    if not quiet:
+        print(json.dumps(summary, separators=(",", ":"), sort_keys=True))
     return 0
 
 

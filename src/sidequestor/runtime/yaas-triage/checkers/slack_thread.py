@@ -41,7 +41,7 @@ MCP_CALL = os.environ.get("MCP_CALL", os.path.join(os.path.dirname(SCRIPT_DIR), 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import result
-from slack_utils import PAGE_LIMIT, drain, _parse_thread_page
+from slack_utils import PAGE_LIMIT, drain, _parse_thread_page, thread_page_has_ts
 
 
 def main():
@@ -49,6 +49,10 @@ def main():
     channel_id = entry["channel_id"]
     thread_ts = entry["thread_ts"]
     since = float(entry.get("last_checked_ts", "0"))
+    handoff_target = entry.get("one_shot_until_ts")
+    handoff_target = float(handoff_target) if handoff_target is not None else None
+    include_parent = handoff_target is not None and entry.get("include_parent") is True
+    saw_handoff_target = False
 
     def fetch_page(cursor, oldest=None, latest=None):
         """One page. Returns (text, next_cursor, transient_reason).
@@ -62,8 +66,11 @@ def main():
             args["cursor"] = cursor
         if oldest is not None:
             args["oldest"] = f"{float(oldest):.6f}"
+        if handoff_target is not None:
+            latest = min(float(latest), handoff_target) if latest is not None else handoff_target
         if latest is not None:
             args["latest"] = f"{float(latest):.6f}"
+        nonlocal saw_handoff_target
         r = subprocess.run(
             [MCP_CALL, "slack_read_thread", json.dumps(args)],
             capture_output=True, text=True, timeout=30,
@@ -78,7 +85,7 @@ def main():
             cause = result.transient_cause(r.stderr, "slack_read_thread")
             return "", None, f"TRANSIENT: {cause}; watermark held"
         if r.returncode == 1:
-            return "", None, f"slack auth failure on slack_read_thread"
+            return "", None, "AUTH: Slack authorization failed on slack_read_thread"
         # A non-zero exit is NOT automatically a hard error: mcp-call.sh exits 2 on
         # any JSON-RPC .error, and a rate limit arrives that way. Inspect the body
         # before classifying, or rate limits get misfiled as `error` and (before the
@@ -93,16 +100,33 @@ def main():
         except Exception:
             # Permanent lookup failures arrive as plain text with exit 0. Those must
             # read as clean-and-complete, else they wake the worker forever.
+            if ("thread_not_found" in body or "channel_not_found" in body) \
+                    and handoff_target is not None:
+                return "", None, "handoff target thread unavailable; watermark held"
             if "thread_not_found" in body or "channel_not_found" in body:
                 return "", None, None
             return "", None, f"non-json response: {body[:80]}"
-        return d.get("messages", ""), _next_cursor(d), None
+        messages = d.get("messages", "")
+        if handoff_target is not None and thread_page_has_ts(messages, handoff_target):
+            saw_handoff_target = True
+        return messages, _next_cursor(d), None
+
+    parent_counted = False
+    def parse_page(text, watermark, filter_user_ids=None, filter_keywords=None):
+        nonlocal parent_counted
+        parsed = _parse_thread_page(
+            text, watermark, filter_user_ids, filter_keywords,
+            include_parent=include_parent and not parent_counted,
+            until=handoff_target,
+        )
+        parent_counted = parent_counted or include_parent
+        return parsed
 
     count, preview, advance_to, complete, transient = drain(
         fetch_page, since,
         entry.get("filter_user_ids") or None,
         entry.get("filter_keywords") or None,
-        page_parser=_parse_thread_page,
+        page_parser=parse_page,
     )
 
     if transient:
@@ -111,8 +135,14 @@ def main():
         # whenever the wording changed.
         if transient.startswith("TRANSIENT:"):
             result.ratelimited(transient)
+        elif transient.startswith("AUTH:"):
+            result.misconfig(transient[5:].strip())
         else:
             result.error(transient)
+        return
+
+    if handoff_target is not None and not saw_handoff_target:
+        result.error("handoff target message not observed; watermark held")
         return
 
     # advance_to is the newest message this check actually covered, not "now". If

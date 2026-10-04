@@ -14,14 +14,24 @@ from . import __version__
 from .build_info import build_info
 from .native import _environment, dry_tick, run_native, run_native_loop, run_native_tick
 from .dashboard import (
+    read_dashboard_port,
     read_dashboard_url,
     serve as serve_dashboard,
     stop_dashboard_process,
+    wait_for_dashboard_port,
     wait_for_dashboard_url,
 )
 from .isolated import run_isolated
 from .launchd import install as install_jobs
-from .launchd import install_production, production_is_running, production_status, uninstall_production
+from .launchd import (
+    LaunchdLifecycleError,
+    install_production,
+    production_agent_status,
+    production_is_running,
+    production_status,
+    stop_production,
+    uninstall_production,
+)
 from .launchd import render, status as launchd_status, uninstall as uninstall_jobs
 from .migrations import migrate_workspace
 from .resources import ENGINE_VERSION, current_engine_version, sync_resources
@@ -53,12 +63,14 @@ COMMANDS = {
     "migrate": "apply workspace schema migrations",
     "sync-resources": "refresh managed engine resources",
     "upgrade": "upgrade the package and refresh managed resources",
+    "credentials": "inspect or repair the stable macOS Keychain helper",
     "new-quest": "scaffold a quest folder from a JSON spec",
     "watch": "manage watches",
     "ack": "acknowledge dispatched work",
     "approval": "manage approval state",
     "log": "write a timeline event",
     "slack-send": "send through the Slack surface",
+    "slack-file": "upload a file to Slack, or fetch a message's attached files",
     "telegram-send": "save a Telegram draft or explicitly send a message",
     "react": "advance reaction lifecycle",
     "mcp-call": "call an MCP surface",
@@ -66,6 +78,7 @@ COMMANDS = {
     "telegram-auth": "authorize or inspect a Telegram user session",
     "x-auth": "authorize or inspect an X user account",
     "x-send": "perform an X action as the authorized user",
+    "gdoc-comment": "add verified text-anchored Google Doc comments",
 }
 
 LEGACY_COMMANDS = {
@@ -78,10 +91,12 @@ LEGACY_COMMANDS = {
     "ack": "yaas-triage/ledger/ack-watch.py",
     "approval": "yaas-triage/ledger/approval-helper.py",
     "log": "yaas-triage/surfaces/log-event.py",
+    "slack-file": "yaas-triage/surfaces/slack-file.py",
     "telegram-send": "yaas-triage/surfaces/telegram-send.py",
     "telegram-auth": "yaas-triage/surfaces/telegram_credentials.py",
     "x-auth": "yaas-triage/surfaces/x_credentials.py",
     "x-send": "yaas-triage/surfaces/x-send.py",
+    "gdoc-comment": "yaas-triage/skills/yaas-gdoc-anchored-comments/gdoc-comment.py",
 }
 
 # These four route to isolated.py, which RECORDS the call instead of performing it.
@@ -111,18 +126,21 @@ def _command_help(command: str) -> str:
         "init": "sidequestor init PATH [--name NAME]",
         "instances": "sidequestor instances list [--all]|doctor|register [PATH]|rekey [PATH]",
         "setup": "sidequestor [--workspace PATH] setup [--instructions|--manifest|--production] [--non-interactive|--render-only|install|status|uninstall]",
-        "start": "sidequestor [--workspace PATH] start",
+        "start": "sidequestor [--workspace PATH] start [--dashboard-port PORT]",
         "stop": "sidequestor [--workspace PATH] stop [INSTANCE_ID]",
         "tick": "sidequestor [--workspace PATH] tick [--dry-run|--isolated [--fake-worker]]",
         "loop": "sidequestor [--workspace PATH] loop [--max-ticks N]",
         "dashboard": "sidequestor [--workspace PATH] dashboard serve|url",
         "migrate": "sidequestor [--workspace PATH] migrate [NAME|--name NAME]",
         "upgrade": "sidequestor [--workspace PATH] upgrade [--source GITHUB_URL --ref REF] [--pre] [--yes] [--no-restart]",
+        "credentials": "sidequestor [--workspace PATH] credentials status|repair-keychain",
         "watch": "sidequestor [--workspace PATH] watch QUEST_ID WATCH_JSON\n       sidequestor [--workspace PATH] watch retire QUEST_ID WATCH_ID REASON",
+        "slack-file": "sidequestor [--workspace PATH] slack-file send|approval-spec|fetch '<json>'",
         "telegram-send": "sidequestor [--workspace PATH] telegram-send --peer @name --message \"hello\" [--send] [--quest-id QUEST_ID] [--reply-to-message-id N] [--credential-id ID] [--idempotency-key KEY]",
-        "telegram-auth": "sidequestor [--workspace PATH] telegram-auth authorize API_ID [CREDENTIAL_ID]\n       sidequestor [--workspace PATH] telegram-auth status [CREDENTIAL_ID]",
+        "telegram-auth": "sidequestor [--workspace PATH] telegram-auth authorize [API_ID] [CREDENTIAL_ID]\n       API_ID defaults to TELEGRAM_API_ID from the workspace .env\n       sidequestor [--workspace PATH] telegram-auth status [CREDENTIAL_ID]",
         "x-auth": "sidequestor [--workspace PATH] x-auth authorize CLIENT_ID [CREDENTIAL_ID]\n       sidequestor [--workspace PATH] x-auth status [CREDENTIAL_ID]\n       sidequestor [--workspace PATH] x-auth revoke [CREDENTIAL_ID]",
         "x-send": "sidequestor [--workspace PATH] x-send ACTION [OPTIONS]\n       sidequestor [--workspace PATH] x-send '{\"action\":\"post\",\"text\":\"hello\"}'",
+        "gdoc-comment": "sidequestor [--workspace PATH] gdoc-comment [approval-spec] '<payload_json>'",
     }
     usage = examples.get(command, f"sidequestor [--workspace PATH] {command} [ARGS...]")
     return f"usage: {usage}\n\n{COMMANDS[command]}"
@@ -271,6 +289,13 @@ def _cmd_doctor(workspace: Workspace) -> int:
     checks = [("workspace", not errors), ("python", sys.version_info >= (3, 11))]
     for name, passed in checks:
         print(f"{name}: {'ok' if passed else 'error'}")
+    # Advisory only: `sq upgrade` gates restarts on doctor, and a missing agent CLI
+    # is fixed by the user, not by keeping jobs stopped.
+    agent = production_agent_status(workspace)
+    if agent is not None:
+        name, binary = agent
+        print(f"agent: ok ({binary})" if binary else
+              f"agent: warning ({name} CLI is not on the PATH recorded for background jobs)")
     print(f"sidequestor {info['version']}{suffix}")
     for error in errors:
         print(f"error: {error}", file=sys.stderr)
@@ -288,10 +313,14 @@ def _cmd_setup(workspace: Workspace, args: list[str]) -> int:
     action = args[0] if args and not args[0].startswith("-") else "--render-only"
     if production:
         if action == "install":
+            helper_code = _ensure_keychain_helper(workspace)
+            if helper_code:
+                return helper_code
             manifest = install_production(workspace, Path(sys.executable))
             print(f"installed production jobs for {manifest['workspace']}")
             for name, job in manifest["jobs"].items():
                 print(f"{name}: {job['label']}")
+            _report_agent(manifest)
             url = wait_for_dashboard_url(workspace)
             print(f"dashboard: {url}" if url else "dashboard: still starting (run `sq dashboard url` to check)")
             return 0
@@ -336,14 +365,109 @@ def _cmd_setup(workspace: Workspace, args: list[str]) -> int:
     raise SystemExit(f"unknown setup action: {action}")
 
 
-def _cmd_start(workspace: Workspace) -> int:
-    manifest = install_production(workspace, Path(sys.executable))
+def _slack_credentials_enabled(workspace: Workspace) -> bool:
+    environment = _environment(workspace)
+    return environment.get("SIDEQUESTOR_SLACK_CHECKERS_ENABLED") == "1"
+
+
+def _ensure_keychain_helper(workspace: Workspace) -> int:
+    if not _slack_credentials_enabled(workspace):
+        return 0
+    code = run_native(
+        workspace,
+        "yaas-triage/surfaces/slack_credentials.py",
+        ["repair-keychain", "--quiet"],
+    )
+    if code:
+        print(
+            "Sidequestor was not started because its Keychain helper migration "
+            "did not complete. Run `sq credentials repair-keychain` in a terminal.",
+            file=sys.stderr,
+        )
+    return code
+
+
+def _cmd_credentials(workspace: Workspace, args: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="sidequestor credentials")
+    parser.add_argument("action", choices=("status", "repair-keychain"))
+    values = parser.parse_args(args)
+    surface = "yaas-triage/surfaces/slack_credentials.py"
+    if values.action == "status":
+        return run_native(workspace, surface, ["helper-status"])
+
+    manifest = production_status(workspace)
+    was_running = bool(manifest and manifest.get("running"))
+    dashboard_port = read_dashboard_port(workspace) if was_running else None
+    if was_running:
+        try:
+            if not stop_production(workspace):
+                print("could not stop the Sidequestor jobs before repair", file=sys.stderr)
+                return 1
+        except LaunchdLifecycleError as exc:
+            print(f"could not stop Sidequestor before repair: {exc}", file=sys.stderr)
+            return 1
+        print(f"Stopped Sidequestor instance {workspace.instance_id} for Keychain repair.")
+
+    code = run_native(workspace, surface, ["repair-keychain"])
+    if code:
+        if was_running:
+            print(
+                "Keychain repair did not complete; Sidequestor remains stopped.",
+                file=sys.stderr,
+            )
+        return code
+
+    if was_running:
+        if dashboard_port is not None and not wait_for_dashboard_port(dashboard_port):
+            print(
+                f"Keychain repair completed, but dashboard port {dashboard_port} is "
+                "still in use; Sidequestor remains stopped.",
+                file=sys.stderr,
+            )
+            return 1
+        start_args = (["--dashboard-port", str(dashboard_port)]
+                      if dashboard_port is not None else [])
+        return _cmd_start(workspace, start_args)
+    return 0
+
+
+def _cmd_start(workspace: Workspace, args: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="sidequestor start")
+    parser.add_argument(
+        "--dashboard-port", type=int,
+        help="bind the dashboard to a specific loopback port",
+    )
+    values = parser.parse_args(args or [])
+    if values.dashboard_port is not None and not 1 <= values.dashboard_port <= 65535:
+        parser.error("--dashboard-port must be between 1 and 65535")
+    helper_code = _ensure_keychain_helper(workspace)
+    if helper_code:
+        return helper_code
+    manifest = install_production(
+        workspace, Path(sys.executable), values.dashboard_port or 0,
+    )
     print(f"started Sidequestor instance {workspace.instance_id}")
     for name, job in manifest["jobs"].items():
         print(f"{name}: {job['label']}")
+    _report_agent(manifest)
     url = wait_for_dashboard_url(workspace)
     print(f"dashboard: {url}" if url else "dashboard: still starting (run `sq dashboard url` to check)")
     return 0
+
+
+def _report_agent(manifest: dict) -> None:
+    agent = manifest.get("agent")
+    if not isinstance(agent, dict) or not agent.get("name"):
+        return
+    if agent.get("binary"):
+        print(f"agent: {agent['name']} ({agent['binary']})")
+        return
+    print(
+        f"warning: the {agent['name']} CLI was not found on the PATH recorded for background "
+        "jobs. Install it, or set SIDEQUESTOR_PATH in .env to a PATH that contains it, then "
+        "run `sq start` again.",
+        file=sys.stderr,
+    )
 
 
 def _sync_resources_if_version_drifted(workspace: Workspace, command: str) -> None:
@@ -516,12 +640,14 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
         return 0
     if command == "upgrade":
         return run_upgrade(workspace, args)
+    if command == "credentials":
+        return _cmd_credentials(workspace, args)
     if command == "setup":
         return _cmd_setup(workspace, args)
     if command in {"start", "tick", "loop"}:
         _sync_resources_if_version_drifted(workspace, command)
     if command == "start":
-        return _cmd_start(workspace)
+        return _cmd_start(workspace, args)
     if command == "stop":
         return _cmd_stop(workspace)
     if command == "tick":

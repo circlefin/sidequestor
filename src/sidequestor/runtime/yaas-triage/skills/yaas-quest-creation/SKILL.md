@@ -38,7 +38,7 @@ Ask the user for, in order:
      Cron cannot express "every other week" and similar; for those, schedule the inner interval and have `context.md` gate on a state file the worker writes after it acts.
    - **`email`** — field name is `query` (a Gmail search string, e.g. `from:partner@example.com subject:invoice`). Matches any email matching the query that arrived after the watermark.
    - **`jira`** — a JQL string (e.g. `labels=my-label`, `project=PROJ AND assignee=currentUser()`). Fires when any issue in that set changes: status transition, new comment, or any field edit. Reads through the packaged bridge at `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/jira-call.sh`, so it works headless (the Atlassian MCP does not). Requires the Keychain API token `jira-api-token`/`yaas`. Do NOT include `ORDER BY` in the JQL: the checker adds its own ordering, and a caller-supplied one disables its early stop and makes every tick page to the cap.
-   - **`github_pr`** — a `repo` as `owner/name`. Fires on any PR update in that repo: new PR, new commit, review, comment, or merge. Use it alongside `jira` when a fix lands as a PR, because **a PR review comment does not bump the linked Jira issue**, so the `jira` watch cannot see it. Optional `search` (extra GitHub qualifiers) and `limit` (default 100). Two traps before you add a `search`: repeated qualifiers AND rather than OR (`author:a author:b` matches nothing and the watch reports clean forever), and full-text terms only match what a PR happens to say. Also avoid `is:open`, which hides merges. Verify recall against a known PR set first; the details are in `checkers/github_pr.py`'s docstring.
+   - **`github_pr`**: a `repo` as `owner/name`. Fires on any PR update in that repo: new PR, new commit, review, comment, or merge. Use it alongside `jira` when a fix lands as a PR, because **a PR review comment does not bump the linked Jira issue**, so the `jira` watch cannot see it. Optional `search` (extra GitHub qualifiers), `limit` (default 100), and `gh_account` (a `gh` login whose token to use when the active account cannot see a private repo). Two traps before you add a `search`: repeated qualifiers AND rather than OR (`author:a author:b` matches nothing and the watch reports clean forever), and full-text terms only match what a PR happens to say. Also avoid `is:open`, which hides merges. Verify recall against a known PR set first; the details are in `checkers/github_pr.py`'s docstring.
 
    - **`github_issue`** — a `repo` as `owner/name`. Fires on any issue update in that repo: new issue, comment, label change, close. Pull requests are excluded (`gh search issues` omits them unless asked), so it never double-reports with `github_pr` — pair the two when you want both halves. Optional `search` (extra qualifiers, same AND-not-OR trap as `github_pr`), `limit` (default 100), and `gh_account` (a `gh` login whose token to use, for a private repo the ACTIVE `gh` account cannot see; resolved per-run via `gh auth token -u`, never persisted).
    - **`telegram_chat`** — a Telegram cloud-chat `peer`: use its `@username`/public link when available, or its numeric dialog ID for private chats. Reads as the user authorized by `sq telegram-auth`, not as a bot. Optional `credential_id`, `from_user` (an `@username`), `filter_sender_ids`, `filter_keywords`, `filter_kinds`, `include_outgoing`, and `limit`. Detects new messages only; it cannot see Secret Chats or reliably detect later edits, deletions, or reactions.
@@ -88,6 +88,11 @@ Ask the user for, in order:
    latest summary of things. Do not seed `context.md` with a conversation transcript or chronological
    updates; those belong in `timeline.ndjson`. If they already gave context earlier in the
    conversation, use that; don't re-ask.
+
+   For an action-capable quest, also define the outcome, allowed action types, review gates,
+   completion evidence, explicit exclusions, and what should become a task, commitment, approval
+   draft, or brief. A read-only quest states that boundary explicitly. Load
+   `.yaas/engine/current/skills/yaas-action-closure/SKILL.md` when making these decisions.
 
 ### 2. Generate the quest ID
 

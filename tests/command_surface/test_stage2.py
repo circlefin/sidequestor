@@ -37,6 +37,10 @@ class Stage2CommandSurfaceTest(unittest.TestCase):
         self.assertIn("x-send", cli.LEGACY_COMMANDS)
         self.assertNotIn("x-send", cli.ISOLATED_COMMANDS)
 
+    def test_slack_file_routes_to_native_surface(self) -> None:
+        self.assertIn("slack-file", cli.LEGACY_COMMANDS)
+        self.assertNotIn("slack-file", cli.ISOLATED_COMMANDS)
+
     def test_public_help(self) -> None:
         result = run("--help")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -47,7 +51,7 @@ class Stage2CommandSurfaceTest(unittest.TestCase):
         commands = (
             "init", "instances", "setup", "start", "stop", "tick", "loop", "dashboard", "doctor",
             "migrate", "sync-resources", "upgrade", "watch", "ack", "approval", "log", "slack-send",
-            "telegram-send", "telegram-auth", "x-auth", "x-send", "react", "mcp-call", "jira-call",
+            "slack-file", "telegram-send", "telegram-auth", "x-auth", "x-send", "react", "mcp-call", "jira-call",
         )
         for command in commands:
             result = run(command, "--help")

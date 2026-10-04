@@ -42,7 +42,7 @@ yaas-triage/
 │                               housekeep.py, checker-health.py, watch-guard.py, add-watch.py,
 │                               approval-helper.py, ensure-watch-ids.py
 ├── surfaces/                 ← "talk to the outside": client.py, telegram-call.py, x-call.py,
-│                               credential helpers, slack-send.py, react-lifecycle.py
+│                               credential helpers, slack-send.py, slack-file.py, react-lifecycle.py
 ├── ops/                      ← "keep it alive and visible": dashboard-server.py, health-monitor.py,
 │                               rotate-logs.py, notify.py, doctor.sh, sync-yaas-v2.sh
 ├── tests/                    ← unit/ + behaviour/ + differential/ (goldens + mutations)
@@ -50,6 +50,7 @@ yaas-triage/
 └── skills/                   ← generic worker skills (loaded on demand)
     ├── yaas-quest-creation/  ← scaffolds new quest folders (new-quest.py)
     ├── yaas-gmail-reply/     ← threaded Gmail reply utility (gmail-reply.py)
+    ├── yaas-gdoc-anchored-comments/ ← guarded, verified inline Google Doc comments
     ├── yaas-answering-quality/ ← bot reply quality rules
     └── yaas-ops/             ← this file
 
@@ -180,7 +181,8 @@ Old quests may carry six dead arrays at the bottom (`threads`, `dm_partners`, `c
 ## Telegram and X credentials
 
 Telegram uses the authorized user's cloud history, not a bot update queue. Run
-`sq telegram-auth authorize API_ID [CREDENTIAL_ID]`; the phone number and API hash are prompted without echo,
+`sq telegram-auth authorize [API_ID] [CREDENTIAL_ID]`; when `API_ID` is omitted, it is read from the
+workspace `.env` key `TELEGRAM_API_ID`. The phone number and API hash are prompted without echo,
 and the Telethon `StringSession` is stored in macOS Keychain. `telegram_chat` accepts `peer` plus
 optional `filter_sender_ids`, `filter_keywords`, `filter_kinds`, `include_outgoing`, and `limit`.
 Both types accept `from_user` as an @username; `telegram_search` additionally requires `query`.
@@ -234,19 +236,65 @@ the next cycle. Workers claim with `start`, close successful work with `done`, a
 
 ### `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-gmail-reply/gmail-reply.py`
 
-Builds a threaded Gmail reply (RFC 2822 `In-Reply-To` + `References` headers) and sends via `gws gmail users messages send`. Used by quests that watch email and need to reply in-thread.
+Requires an explicit sender-only or reply-all decision, then delegates threading and quoted history to native `gws` Gmail reply helpers.
 
 ```bash
 GWS_BIN="${GWS_BIN:-$(command -v gws)}" \
-  python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-gmail-reply/gmail-reply.py" <gmail_message_id> --body "<reply text>"
-# Prints sent message ID on success, exits 1 on failure.
+  python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-gmail-reply/gmail-reply.py" \
+  <gmail_message_id> --reply-sender --draft --body "<reply text>"
+# Or use --reply-all. Exactly one mode is required.
 ```
 
-Reads `SIDEQUESTOR_FROM_EMAIL` from env for the From header. See `.yaas/engine/current/skills/yaas-gmail-reply/SKILL.md`.
+`--reply-sender` invokes `gws gmail +reply`; `--reply-all` invokes
+`gws gmail +reply-all`. Reply-all supports `--cc` and `--remove`; both are
+rejected with sender-only mode. The helper also supports `--html`,
+repeatable `--attach`, and requires exactly one of `--draft` or `--send`. Reads `SIDEQUESTOR_FROM_EMAIL` from env
+for the send-as alias. See `.yaas/engine/current/skills/yaas-gmail-reply/SKILL.md`.
+Draft first unless `allow_send: true` or an exact claimed approval authorizes
+the email and its audience. A temporary workaround for `googleworkspace/cli#911`
+preserves noncanonical original CC headers; remove it after the minimum supported
+GWS release contains the upstream fix.
 
 ### `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-quest-creation/new-quest.py`
 
 Deterministic quest scaffolding. Takes a JSON spec on argv or stdin, creates the four-file folder under `state/quests/active/`, validates fields, injects `last_checked_ts` so the worker can never forget it. See `.yaas/engine/current/skills/yaas-quest-creation/SKILL.md`.
+
+### `sq slack-file`
+
+`$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack-file.py`. The Slack MCP can neither upload a
+file nor return a file's bytes, so this goes to the Slack Web API with the same rotating user token.
+For interactive upload and download instructions, load
+`.yaas/engine/current/skills/yaas-slack-file/SKILL.md`.
+
+- `send '<json>'` uploads a local file into a conversation (`channel_id` must be `C…`/`D…`/`G…`). Same
+  checks as `slack-send.py`: dispatch target, active quest with `allow_send` or a claimed
+  `remote_request` approval, stale-thread hold, timeline logging with the file's SHA-256.
+- `approval-spec '<json>'` prints the `{action_type, target, message_text}` to merge into
+  `sq approval write`. The target pins path, filename, title, size and SHA-256.
+- `fetch '<json>'` downloads a message's attachments (`channel_id` + `ts`, or `file_id`) into a fresh
+  private temp dir. Images and PDFs only unless `any_type`; 20 MiB cap; never under `state/`.
+
+Exit codes: 0 done or held, 1 bad args or denied, 2 failed, 3 outcome unknown (Slack may have posted
+the file; never retry blindly), 4 transient (nothing posted; safe to retry). A posted upload whose
+timeline write failed still exits 0, with `"logged": false` and `log_error`.
+
+Scopes: `files:write` (send), `files:read` (fetch), and `*:history` to find a message's files. They
+are in `setup/yaas-app-config.json`; a workspace authorized before they were added must re-run
+`sq setup` and approve the new scopes. Workspace-specific rules for outbound messages (an identity
+prefix, Slack Connect handling) apply to `initial_comment` exactly as to `slack-send.py`; the helper
+does not add them.
+
+### `sq gdoc-comment`
+
+Adds real text-anchored Google Doc comments through a dedicated Chrome profile and Playwright.
+The writer enforces active-quest scope, `allow_send` or an exact claimed approval, dispatch
+idempotency, exclusive browser access, Drive verification, and quest timeline logging. Every write
+requires an idempotency key. One
+exact-case anchor is accepted per idempotency key, avoiding partial multi-comment writes. The `gws` CLI
+must be installed and authenticated with Drive access. The capability is enabled by default and
+can be disabled workspace-wide with
+`SIDEQUESTOR_GDOC_COMMENTS_ENABLED=0`. See
+`.yaas/engine/current/skills/yaas-gdoc-anchored-comments/SKILL.md`.
 
 ---
 
@@ -313,6 +361,7 @@ come up while debugging:
 |---|---|---|
 | `SIDEQUESTOR_CHECKER_CONNECTORS` | `slack,email,github,jira` | Comma-separated external connectors allowed to poll. Add `telegram` and `x` explicitly after authentication. Disabled connector watches and watermarks are preserved. Local schedule/approval checks always run. |
 | `SIDEQUESTOR_SLACK_CHECKERS_ENABLED` | 1 | `0` disables all local `slack_*` Python checks and the reaction sweep. Slack watermarks are held; schedules and worker MCP access are unaffected. |
+| `SIDEQUESTOR_GDOC_COMMENTS_ENABLED` | 1 | `0` disables the guarded external-write surface for text-anchored Google Doc comments. |
 | `SIDEQUESTOR_MAX_SPEND_1H` | 40 | Hourly dollar ceiling. On breach, checks still run but the dispatch is withheld and `gate_budget_exceeded` is logged. This is the first thing to check when nothing is dispatching despite dirty quests. |
 | `SIDEQUESTOR_MAX_SPEND_24H` | 250 | Daily dollar ceiling. |
 | `SIDEQUESTOR_MAX_DISPATCH_6H` | 250 | Dispatch-count ceiling. The only ceiling that works under the codex/cursor backends, which report no cost. |

@@ -15,53 +15,60 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Send a fresh (non-reply) Gmail message via gws CLI."""
+"""Send a fresh, non-reply Gmail message through the native gws helper."""
+
 import argparse
-import base64
-import json
 import os
 import subprocess
 import sys
-from email.message import EmailMessage
+from email.utils import parseaddr
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--to", required=True)
-    ap.add_argument("--subject", required=True)
-    ap.add_argument("--body-file", required=True)
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--to", required=True)
+    parser.add_argument("--subject", required=True)
+    parser.add_argument("--body-file", required=True)
+    args = parser.parse_args()
 
     sender = os.environ.get("SIDEQUESTOR_FROM_EMAIL") or os.environ.get("YAAS_FROM_EMAIL")
     if not sender:
-        print("SIDEQUESTOR_FROM_EMAIL not set", file=sys.stderr)
-        sys.exit(1)
+        parser.error("SIDEQUESTOR_FROM_EMAIL not set")
+    sender_address = parseaddr(sender)[1]
+    if not sender_address:
+        parser.error("SIDEQUESTOR_FROM_EMAIL must contain a valid email address")
 
-    with open(args.body_file, "r", encoding="utf-8") as f:
-        body = f.read()
-
-    msg = EmailMessage()
-    msg["From"] = sender
-    msg["To"] = args.to
-    msg["Subject"] = args.subject
-    msg.set_content(body)
-
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii").rstrip("=")
-    payload = {"userId": "me", "raw": raw}
+    with open(args.body_file, "r", encoding="utf-8") as body_file:
+        body = body_file.read()
 
     gws = os.environ.get("GWS_BIN", "gws")
-    result = subprocess.run(
-        [gws, "gmail", "users", "messages", "send", "--json", json.dumps(payload)],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print(result.stderr, file=sys.stderr)
-        sys.exit(result.returncode)
+    command = [
+        gws, "gmail", "+send", "--to", args.to, "--subject", args.subject,
+        "--body", body, "--from", sender_address,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    except FileNotFoundError as exc:
+        print(f"ERROR: gws executable not found: {exc.filename}", file=sys.stderr)
+        raise SystemExit(1)
+    except OSError as exc:
+        print(f"ERROR: could not run gws: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    except subprocess.TimeoutExpired:
+        print(
+            "ERROR: gws send timed out; delivery outcome may be unknown, do not retry blindly",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
-    # gws prints some banner + JSON; find first '{' line
-    out = result.stdout
-    print(out)
+    if result.returncode != 0:
+        if result.stdout.strip():
+            print(result.stdout.strip(), file=sys.stderr)
+        if result.stderr.strip():
+            print(result.stderr.strip(), file=sys.stderr)
+        raise SystemExit(result.returncode)
+
+    print(result.stdout.strip())
 
 
 if __name__ == "__main__":

@@ -83,6 +83,10 @@ class Transient(Exception):
     """Retryable upstream condition — skip the tick, don't dispatch."""
 
 
+class Misconfig(Exception):
+    """Definite authorization failure reported by the shared surface client."""
+
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import result
 
@@ -92,6 +96,8 @@ def jira_get(path, timeout=30):
     msg = detail[-1] if detail else f"jira-call.sh exit {r.returncode}"
     if r.returncode == EXIT_TRANSIENT:
         raise Transient(msg)
+    if r.returncode == 1:
+        raise Misconfig(msg)
     if r.returncode != 0 or not r.stdout.strip():
         raise RuntimeError(msg)
     return json.loads(r.stdout)
@@ -220,5 +226,7 @@ if __name__ == "__main__":
     except Transient as e:
         # Not dirty: skip the tick. Watermark is held, so the change is not lost.
         result.ratelimited(str(e))
+    except Misconfig as e:
+        result.misconfig(str(e))
     except Exception as e:
         result.error(f"{type(e).__name__}: {e}")

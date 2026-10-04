@@ -4,6 +4,7 @@
 import asyncio
 import getpass
 import json
+import os
 import sys
 
 from credential_store import CredentialStore
@@ -11,6 +12,17 @@ from slack_credentials import CredentialError
 
 
 SERVICE = "sidequestor-telegram-user"
+
+
+def _api_id_from_environment():
+    value = os.environ.get("TELEGRAM_API_ID", "").strip()
+    if not value:
+        raise CredentialError("Telegram API ID is required; pass API_ID or set TELEGRAM_API_ID")
+    try:
+        int(value)
+    except ValueError as exc:
+        raise CredentialError("TELEGRAM_API_ID must be an integer") from exc
+    return value
 
 
 def load_bundle(credential_id="default", store=None):
@@ -54,8 +66,8 @@ async def _authorize(api_id, phone, credential_id, api_hash):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
-        if argv and argv[0] == "authorize" and 2 <= len(argv) <= 3:
-            api_id = argv[1]
+        if argv and argv[0] == "authorize" and 1 <= len(argv) <= 3:
+            api_id = argv[1] if len(argv) >= 2 else _api_id_from_environment()
             credential_id = argv[2] if len(argv) == 3 else "default"
             phone = getpass.getpass("Telegram phone number (international format): ").strip()
             if not phone:
@@ -70,7 +82,7 @@ def main(argv=None):
             summary = {"credential_id": credential_id, "configured": True,
                        "user_id": bundle["user_id"], "username": bundle.get("username")}
         else:
-            print("usage: telegram_credentials.py authorize API_ID [CREDENTIAL_ID]\n"
+            print("usage: telegram_credentials.py authorize [API_ID] [CREDENTIAL_ID]\n"
                   "       telegram_credentials.py status [CREDENTIAL_ID]", file=sys.stderr)
             return 3
     except (CredentialError, ValueError) as exc:

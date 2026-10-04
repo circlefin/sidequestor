@@ -136,6 +136,14 @@ def normalize_ts(value):
     return f"{math.floor(float(value) * 1_000_000) / 1_000_000:.6f}"
 
 
+def normalize_identity_value(value):
+    """Match optional blank string identity fields as absent without mutating stored watches."""
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
 def find_watch(quest_id):
     if not quest_id or "/" in quest_id or ".." in quest_id:
         die(f"bad_quest_id:{quest_id}")
@@ -156,10 +164,16 @@ def make_watch_id(quest_id, index, watch):
 
 
 def validate(entry):
-    required, _ = _watch_shapes()
+    required, identity = _watch_shapes()
     wtype = entry.get("type")
     if wtype not in required:
         die(f"unknown_type:{wtype}:known are {', '.join(sorted(required))}")
+    for field in identity[wtype]:
+        value = normalize_identity_value(entry.get(field))
+        if value is None:
+            entry.pop(field, None)
+        else:
+            entry[field] = value
     if not any(all(entry.get(field) for field in alt) for alt in required[wtype]):
         if wtype == "schedule":
             die("schedule_needs_cron_and_tz_or_next_fire_ts")
@@ -178,6 +192,33 @@ def validate(entry):
         # careless reader while doing nothing here, and "true" would silently NOT expire.
         # Both directions are silent, so reject anything that is not a real JSON boolean.
         die(f"bad_ephemeral:{eph!r}:must be JSON true or false, not a string")
+    include_parent = entry.get("include_parent")
+    if include_parent is not None and not isinstance(include_parent, bool):
+        die(f"bad_include_parent:{include_parent!r}:must be JSON true or false")
+    if include_parent is not None and wtype != "slack_thread":
+        die(f"include_parent_needs_slack_thread:{wtype}")
+    one_shot_until = entry.get("one_shot_until_ts")
+    if include_parent is True and one_shot_until is None:
+        die("include_parent_needs_one_shot_until_ts")
+    if one_shot_until is not None:
+        if wtype != "slack_thread":
+            die(f"one_shot_until_ts_needs_slack_thread:{wtype}")
+        try:
+            value = float(one_shot_until)
+        except (TypeError, ValueError):
+            die(f"bad_one_shot_until_ts:{one_shot_until!r}")
+        if not (value > 0 and math.isfinite(value)):
+            die(f"bad_one_shot_until_ts:{one_shot_until!r}")
+        if entry.get("include_parent") is not True:
+            die("one_shot_until_ts_needs_include_parent_true")
+        try:
+            watermark = float(entry.get("last_checked_ts"))
+        except (TypeError, ValueError):
+            die("one_shot_until_ts_needs_explicit_last_checked_ts")
+        if not (watermark > 0 and math.isfinite(watermark) and watermark < value):
+            die("one_shot_until_ts_must_be_after_last_checked_ts")
+        if entry.get("ephemeral") is not True:
+            die("one_shot_until_ts_needs_ephemeral_true")
     refresh = entry.get("refresh_activity")
     if refresh is not None and not isinstance(refresh, bool):
         die(f"bad_refresh_activity:{refresh!r}:must be JSON true or false")
@@ -372,6 +413,8 @@ def main():
         entry["last_activity_ts"] = requested_at
     elif entry.get("last_activity_ts") is not None:
         entry["last_activity_ts"] = normalize_ts(entry["last_activity_ts"])
+    if entry.get("one_shot_until_ts") is not None:
+        entry["one_shot_until_ts"] = normalize_ts(entry["one_shot_until_ts"])
 
     # Lock a SIDECAR, not the data file. We replace watch.json's inode below, and a
     # lock held on the old inode would not serialise pathname replacement: two writers
@@ -394,7 +437,7 @@ def main():
             for w in watches:
                 if not isinstance(w, dict) or w.get("type") != entry["type"]:
                     continue
-                if all(w.get(k) == entry.get(k) for k in ident):
+                if all(normalize_identity_value(w.get(k)) == entry.get(k) for k in ident):
                     if refresh_activity:
                         try:
                             current = float(w.get("last_activity_ts") or 0)

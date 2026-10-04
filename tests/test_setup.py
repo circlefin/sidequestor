@@ -154,6 +154,10 @@ class SetupTests(unittest.TestCase):
             self.assertIn("sq new-quest '<spec_json>'", prompt.read_text())
             self.assertEqual(current_engine_version(workspace), ENGINE_VERSION)
             self.assertTrue((destination / "skills" / "yaas-ops" / "SKILL.md").is_file())
+            for parent in ("skills", ".agents/skills", ".claude/skills"):
+                link = workspace.root / parent / "yaas-slack-file"
+                self.assertTrue(link.is_symlink())
+                self.assertTrue((link / "SKILL.md").is_file())
 
     def test_sync_resources_is_idempotent_and_prunes_stale_skill_symlinks(self):
         with tempfile.TemporaryDirectory() as raw:

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .workspace import Workspace
 from .build_info import build_info
+from .job_path import environment_bin_dir, merge_path
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parent / "runtime"
@@ -71,6 +72,11 @@ def _load_workspace_env(environment: dict[str, str], workspace: Workspace) -> di
 
 def _environment(workspace: Workspace, extra_env: dict[str, str] | None = None) -> dict[str, str]:
     environment = dict(os.environ)
+    # Runtime scripts call bare `python3` and `sq`. An activated virtualenv used to put
+    # this installation first; uv and pipx installs are never activated.
+    own_bin = environment_bin_dir(sys.executable)
+    if own_bin:
+        environment["PATH"] = merge_path([own_bin], environment.get("PATH", "").split(os.pathsep))
     environment.update({
         "SIDEQUESTOR_WORKSPACE": str(workspace.root),
         "SIDEQUESTOR_RUNTIME_ROOT": str(RUNTIME_ROOT),

@@ -144,6 +144,82 @@ class RuntimeDocsTest(unittest.TestCase):
         self.assertIn("timeline.ndjson` is the chronological record", dispatch)
         self.assertIn("Do not append dated updates", dispatch)
 
+    def test_managed_decision_policy_skills_are_wired_into_runtime(self) -> None:
+        draft = (SKILLS_ROOT / "yaas-draft-readiness" / "SKILL.md").read_text()
+        closure = (SKILLS_ROOT / "yaas-action-closure" / "SKILL.md").read_text()
+        dispatch = (SKILLS_ROOT / "yaas-quest-dispatch" / "SKILL.md").read_text()
+        reactions = (SKILLS_ROOT / "yaas-reactions" / "SKILL.md").read_text()
+        gmail = (SKILLS_ROOT / "yaas-gmail-reply" / "SKILL.md").read_text()
+        creation = (SKILLS_ROOT / "yaas-quest-creation" / "SKILL.md").read_text()
+        operating = OPERATING.read_text()
+
+        self.assertIn("Map the decision state", draft)
+        self.assertIn("Closure routes", closure)
+        for text in (operating, dispatch):
+            self.assertIn("yaas-draft-readiness", text)
+            self.assertIn("yaas-action-closure", text)
+        self.assertIn("yaas-draft-readiness", reactions)
+        self.assertIn("yaas-draft-readiness", gmail)
+        self.assertIn("yaas-action-closure", creation)
+        self.assertIn("Use a `schedule` watch only for a due time", closure)
+        self.assertIn("use the matching surface watch", closure)
+
+    def test_approval_timeline_preserves_pre_review_and_final_bodies(self) -> None:
+        dispatch = (SKILLS_ROOT / "yaas-quest-dispatch" / "SKILL.md").read_text()
+        self.assertIn('"event":"draft_posted"', dispatch)
+        self.assertIn('"message_text":"<exact pre-review body>"', dispatch)
+        self.assertIn("exact final `message_text`", dispatch)
+        self.assertIn("mutable approval record is not evidence", dispatch)
+
+    def test_quest_dispatch_waits_for_a_conversational_turn_across_surfaces(self) -> None:
+        dispatch = (SKILLS_ROOT / "yaas-quest-dispatch" / "SKILL.md").read_text()
+        answering = (SKILLS_ROOT / "yaas-answering-quality" / "SKILL.md").read_text()
+        self.assertIn("Wait for your turn", dispatch)
+        self.assertIn("read the complete conversation", dispatch)
+        self.assertIn("read the complete thread without an `oldest` boundary", dispatch)
+        self.assertIn("watermark identifies what is new", dispatch)
+        self.assertIn("watermark-truncated excerpt alone", dispatch)
+        self.assertIn("who is talking to whom", dispatch)
+        self.assertIn("Routing-only messages", dispatch)
+        self.assertIn("for visibility", dispatch)
+        self.assertIn("ack the watch `nothing_to_do`", dispatch)
+        self.assertIn("Silence is a successful outcome", dispatch)
+        self.assertIn("does not create a conversational turn", dispatch)
+        self.assertNotIn("Reply first on every conversational surface", dispatch)
+        self.assertIn("Turn-taking comes before answering", answering)
+        self.assertIn("If humans are talking to each other, wait for their conclusion", answering)
+        self.assertIn("Do not repeat someone else's mention", answering)
+        self.assertIn("silence is correct", answering)
+        for surface in ("Slack", "Jira", "Telegram", "X conversations", "email", "GitHub"):
+            self.assertIn(surface, dispatch)
+        self.assertIn("legacy `watch_mode` field as inert metadata", dispatch)
+
+    def test_quest_dispatch_isolates_blocked_slack_mentions(self) -> None:
+        dispatch = (SKILLS_ROOT / "yaas-quest-dispatch" / "SKILL.md").read_text()
+        operating = OPERATING.read_text()
+        self.assertIn("Slack mention fan-out exception", dispatch)
+        self.assertIn("one microsecond", dispatch)
+        self.assertIn("prints `skip:duplicate`", dispatch)
+        self.assertIn("dispatched mention item says `complete: true`", dispatch)
+        self.assertIn('with `"ephemeral": true`', dispatch)
+        self.assertIn('`"include_parent": true`', dispatch)
+        self.assertIn('`"one_shot_until_ts":"<blocked_message_ts>"`', dispatch)
+        self.assertIn("confirm that the returned conversation contains", dispatch)
+        self.assertIn("housekeeping retires the bounded-purpose watch", dispatch)
+        self.assertIn("ack the original\n   `slack_mention` item as `handled`", dispatch)
+        self.assertIn("exact thread retries independently", dispatch)
+        self.assertIn("safely transferred to a one-shot exact", operating)
+
+    def test_quest_dispatch_ignores_its_own_github_pr_writes(self) -> None:
+        dispatch = (SKILLS_ROOT / "yaas-quest-dispatch" / "SKILL.md").read_text()
+        self.assertIn(
+            "If the only update after the recorded action is the quest's own GitHub comment or\n"
+            "review, ack `nothing_to_do` and do not write again. Act only when a later human "
+            "comment, review,\nstate change, or head commit adds new information. This guard is "
+            "mandatory for `involves:<self>`",
+            dispatch,
+        )
+
     def test_runtime_docs_reference_telegram_send_helper_and_limits(self) -> None:
         dispatch = (SKILLS_ROOT / "yaas-quest-dispatch" / "SKILL.md").read_text()
         ops = (SKILLS_ROOT / "yaas-ops" / "SKILL.md").read_text()
@@ -154,6 +230,27 @@ class RuntimeDocsTest(unittest.TestCase):
         self.assertIn("sq telegram-send", ops)
         self.assertIn("Pass `--send` to deliver", ops)
         self.assertIn("telegram-send.py", operating)
+
+    def test_gmail_reply_docs_require_an_explicit_native_reply_mode(self) -> None:
+        helper = (SKILLS_ROOT / "yaas-gmail-reply" / "gmail-reply.py").read_text()
+        gmail = (SKILLS_ROOT / "yaas-gmail-reply" / "SKILL.md").read_text()
+        dispatch = (SKILLS_ROOT / "yaas-quest-dispatch" / "SKILL.md").read_text()
+        ops = (SKILLS_ROOT / "yaas-ops" / "SKILL.md").read_text()
+        for text in (gmail, dispatch, ops):
+            self.assertIn("--reply-sender", text)
+            self.assertIn("--reply-all", text)
+        self.assertIn("Exactly one reply mode is required", gmail)
+        self.assertIn("`gws gmail +reply`", gmail)
+        self.assertIn("`gws gmail +reply-all`", gmail)
+        self.assertIn("quotes the original message", gmail)
+        self.assertIn("--cc` and `--remove` are valid only with `--reply-all`", gmail)
+        self.assertIn("allow_send: true", gmail)
+        self.assertIn("Draft first", gmail)
+        self.assertIn("allow_send: true", dispatch)
+        self.assertIn("--draft", dispatch)
+        self.assertIn("googleworkspace/cli#911", gmail)
+        self.assertIn("googleworkspace/cli#911", helper)
+        self.assertNotIn("MIMEText", helper)
 
     def test_doctor_does_not_source_workspace_dotenv(self) -> None:
         self.assertNotIn('source "$ENV_FILE"', DOCTOR.read_text())

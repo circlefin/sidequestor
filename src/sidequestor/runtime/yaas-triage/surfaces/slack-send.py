@@ -452,6 +452,7 @@ def main():
                     "ts": utc_now(), "event": "draft_posted",
                     "channel_id": channel_id, "thread_ts": thread_ts,
                     "approval_id": appr_id, "held_reason": reason,
+                    "message_text": message,
                     "note": (note or "") + " [auto-held by the stale-reply guard]"})
             print(json.dumps({"held": True, "reason": reason,
                               "approval_id": appr_id, "response_ts": "", "permalink": ""}))

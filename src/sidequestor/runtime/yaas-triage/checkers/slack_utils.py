@@ -18,8 +18,12 @@
 """
 checkers/slack_utils.py — shared utilities for Slack MCP checker scripts.
 """
+import json
+import math
 import re
+import subprocess
 import time
+from datetime import datetime, timezone
 
 
 PAGE_LIMIT      = 50     # messages per request
@@ -42,34 +46,227 @@ SLICE_ATTEMPTS  = 12     # request budget for the slice phase, shared between pa
 # indexed. Advancing to now would step over anything still in flight and bury it, since the
 # watermark only ever moves forward.
 SEARCH_INDEX_LAG = 120   # seconds; conservative, and the cost of being wrong is asymmetric
+SEARCH_PAGE_LIMIT = 20   # slack_search_public_and_private clamps its result page here
+SEARCH_MAX_SCAN_PAGES = 50
 
 
-def search_advance_to(newest_seen: float, now: float = None,
-                      index_lag: float = SEARCH_INDEX_LAG):
-    """The newest watermark a SEARCH-backed checker may honestly claim. Returns a float.
+class SlackSearchTransient(RuntimeError):
+    """A retryable Slack search failure whose cursor must remain unchanged."""
 
-    Read-backed checkers (slack_thread, slack_channel) get their boundary from drain(),
-    which proves coverage against the source. Search-backed checkers (slack_dm,
-    slack_mention) cannot make that proof, so they need this instead — and before this
-    existed they returned no advance_to at all, which is the dangerous case: tick.py's
-    fallback then advances the watermark to `now - lag_map[type]`, and lag_map is built
-    from optional `checkers/<type>.lag` files. `slack_mention.lag` happened to exist (90s);
-    `slack_dm.lag` did not, so a slack_dm watch advanced to EXACTLY NOW on every clean
-    search and any DM not yet indexed at that instant was buried permanently.
 
-    Depending on a file existing on disk for a data-loss-prevention guarantee is the wrong
-    shape, so the rule now lives here, in code, identically for both checkers.
+class SlackSearchAuth(RuntimeError):
+    """A definite authorization failure reported by the shared surface client."""
 
-    The rule: never claim more than `now - index_lag`, and never claim more than the newest
-    message actually seen. Passing newest_seen <= 0 (nothing found) still returns
-    `now - index_lag`, which lets a quiet watch make progress instead of stalling forever,
-    while keeping the recent, possibly-unindexed window unclaimed.
+
+def _search_cursor(payload):
+    match = re.search(r"cursor `([^`]+)`", str(payload.get("pagination_info") or ""))
+    return match.group(1) if match else None
+
+
+def search_since_date(since, index_lag=SEARCH_INDEX_LAG):
+    """Return a safe lower bound for Slack's exclusive, date-granular ``after`` filter."""
+    lower_bound = max(0.0, float(since) - 86400 - max(0.0, float(index_lag)))
+    return datetime.fromtimestamp(lower_bound, timezone.utc).strftime("%Y-%m-%d")
+
+
+def fetch_search_page(mcp_call, query, cursor=None, limit=SEARCH_PAGE_LIMIT, sort_dir="asc"):
+    """Fetch one Slack search page.
+
+    Returns ``(results_text, next_cursor)``. Retryable failures raise
+    ``SlackSearchTransient``; malformed or permanent failures raise ``RuntimeError``.
+    """
+    args = {"query": query, "limit": limit, "sort": "timestamp", "sort_dir": sort_dir}
+    if cursor:
+        args["cursor"] = cursor
+    try:
+        completed = subprocess.run(
+            [mcp_call, "slack_search_public_and_private", json.dumps(args)],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SlackSearchTransient("Slack search timeout") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        detail_lower = detail.lower()
+        if completed.returncode == 1:
+            raise SlackSearchAuth("Slack search authorization failed")
+        if (completed.returncode == 4 or "ratelimited" in detail_lower
+                or "rate_limited" in detail_lower):
+            raise SlackSearchTransient(detail or "Slack search transient")
+        raise RuntimeError(
+            f"mcp slack_search_public_and_private failed (exit {completed.returncode})"
+        )
+    if not completed.stdout.strip():
+        raise RuntimeError("mcp slack_search_public_and_private returned no payload")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        body_lower = completed.stdout.lower()
+        if "ratelimited" in body_lower or "rate_limited" in body_lower:
+            raise SlackSearchTransient(completed.stdout.strip()) from exc
+        raise RuntimeError(f"non-json response: {completed.stdout.strip()[:80]}") from exc
+    if "results" not in payload:
+        raise RuntimeError("Slack search response omitted results")
+    return payload["results"], _search_cursor(payload)
+
+
+_SEARCH_RESULT_START = re.compile(r"^### Result \d+ of \d+\s*$", re.MULTILINE)
+_SEARCH_TS = re.compile(r"^Message(?:_ts| TS):\s*([0-9]+\.[0-9]+)\s*$", re.MULTILINE)
+
+
+def parse_search_records(text, content_label, self_user_id=None):
+    """Return ``(timestamp, preview-or-None)`` records from a Slack search page.
+
+    ``None`` previews are ignored bot/self hits. Their timestamps remain in the result
+    so coverage is based on everything Slack returned, not only dispatchable messages.
+    """
+    starts = list(_SEARCH_RESULT_START.finditer(text))
+    if not starts:
+        if re.search(r"(?:^|\n)No results found\.\s*$", text):
+            return [], 0
+        if text.strip():
+            raise ValueError("unrecognized Slack search response shape")
+        return [], 0
+    records = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
+        block = text[start.end():end]
+        content_match = re.search(rf"^{re.escape(content_label)}:\s*", block, re.MULTILINE)
+        metadata = block[:content_match.start()] if content_match else block
+        timestamp_match = _SEARCH_TS.search(metadata)
+        if not timestamp_match:
+            raise ValueError("incomplete Slack search result record")
+        from_match = re.search(r"^From: [^\n]*", block, re.MULTILINE)
+        ignored = bool(from_match and "[BOT]" in from_match.group(0))
+        if from_match and self_user_id:
+            ignored = ignored or f"(ID: {self_user_id})" in from_match.group(0)
+        content = block[content_match.end():] if content_match else ""
+        content = content.split("\n---", 1)[0]
+        preview = None if ignored else " ".join(content.split())[:100]
+        records.append((float(timestamp_match.group(1)), preview))
+    return records, len(starts)
+
+
+def _strictly_before(timestamp):
+    return math.floor(timestamp * 1_000_000 - 1) / 1_000_000
+
+
+def _search_result(records, since, advance_to, complete=True):
+    dispatchable = [
+        (timestamp, preview)
+        for timestamp, preview in records
+        if since < timestamp <= advance_to and preview is not None
+    ]
+    preview = next((body for _timestamp, body in reversed(dispatchable) if body), "")
+    return len(dispatchable), preview, advance_to, complete
+
+
+def _bank_search_prefix(records, since, ceiling):
+    if not records:
+        return None
+    advance_to = min(_strictly_before(records[-1][0]), ceiling)
+    if advance_to <= since:
+        return None
+    return _search_result(records, since, advance_to)
+
+
+def drain_search(fetch_page, since, content_label, self_user_id=None, now=None,
+                 max_active_pages=MAX_PAGES,
+                 max_scan_pages=SEARCH_MAX_SCAN_PAGES):
+    """Drain an oldest-first Slack search without parking a saturated watermark.
+
+    Pages containing only records at or below ``since`` do not consume the active-page
+    budget. When the budget is reached, one lookahead page proves whether the boundary
+    timestamp is complete. The returned prefix is therefore safe to commit and the next
+    tick can continue forward instead of rereading the same newest-page suffix forever.
     """
     now = time.time() if now is None else now
-    ceiling = now - max(0.0, index_lag)
-    if newest_seen and newest_seen > 0:
-        return min(float(newest_seen), ceiling)
-    return ceiling
+    ceiling = now - SEARCH_INDEX_LAG
+    cursor = None
+    records = []
+    active_pages = 0
+    scanned_pages = 0
+
+    while scanned_pages < max_scan_pages:
+        try:
+            text, next_cursor = fetch_page(cursor)
+        except SlackSearchTransient:
+            banked = _bank_search_prefix(records, since, ceiling)
+            if banked:
+                return banked
+            raise
+        page, block_count = parse_search_records(text, content_label, self_user_id)
+        scanned_pages += 1
+        if page:
+            timestamps = [timestamp for timestamp, _preview in page]
+            if timestamps != sorted(timestamps):
+                raise ValueError("Slack search results were not sorted ascending")
+            if records and timestamps[0] < records[-1][0]:
+                raise ValueError("Slack search pagination moved backwards")
+            records.extend(page)
+            if any(timestamp > since for timestamp in timestamps):
+                active_pages += 1
+
+        if not next_cursor:
+            if block_count >= SEARCH_PAGE_LIMIT:
+                advance_to = min(_strictly_before(page[-1][0]), ceiling)
+                if advance_to <= since:
+                    return 0, "", None, False
+            else:
+                advance_to = max(since, ceiling)
+            break
+        if not page:
+            raise ValueError("Slack search returned an empty page with a cursor")
+        if active_pages >= max_active_pages:
+            try:
+                lookahead_text, _lookahead_cursor = fetch_page(next_cursor)
+            except SlackSearchTransient:
+                banked = _bank_search_prefix(records, since, ceiling)
+                if banked:
+                    return banked
+                raise
+            lookahead, _lookahead_count = parse_search_records(
+                lookahead_text, content_label, self_user_id
+            )
+            boundary = records[-1][0]
+            if lookahead and lookahead[0][0] < boundary:
+                raise ValueError("Slack search pagination moved backwards")
+            advance_to = boundary if lookahead and lookahead[0][0] > boundary else _strictly_before(boundary)
+            advance_to = min(advance_to, ceiling)
+            if advance_to <= since:
+                return 0, "", None, False
+            break
+        cursor = next_cursor
+    else:
+        return _bank_search_prefix(records, since, ceiling) or (0, "", None, False)
+
+    return _search_result(records, since, advance_to)
+
+
+def search_messages(mcp_call, query, since, content_label, self_user_id=None, now=None):
+    """Check Slack search efficiently, falling back to prefix draining only for a real backlog."""
+    now = time.time() if now is None else now
+    ceiling = now - SEARCH_INDEX_LAG
+    text, cursor = fetch_search_page(mcp_call, query, sort_dir="desc")
+    records, block_count = parse_search_records(text, content_label, self_user_id)
+    timestamps = [timestamp for timestamp, _preview in records]
+    if timestamps != sorted(timestamps, reverse=True):
+        raise ValueError("Slack search results were not sorted descending")
+
+    reached_watermark = bool(records and records[-1][0] <= since)
+    exhausted = not cursor and block_count < SEARCH_PAGE_LIMIT
+    if reached_watermark or exhausted:
+        return _search_result(list(reversed(records)), since, max(since, ceiling))
+
+    return drain_search(
+        lambda page_cursor: fetch_search_page(
+            mcp_call, query, page_cursor, sort_dir="asc"
+        ),
+        since,
+        content_label,
+        self_user_id=self_user_id,
+        now=now,
+    )
 
 
 def drain(fetch_page, since: float, filter_user_ids=None, filter_keywords=None,
@@ -375,7 +572,8 @@ _THREAD_FROM = re.compile(
 _THREAD_TS = re.compile(r"^Message TS:\s*([0-9]+\.[0-9]+)$", re.MULTILINE)
 
 
-def _parse_thread_page(text, since, filter_user_ids=None, filter_keywords=None):
+def _parse_thread_page(text, since, filter_user_ids=None, filter_keywords=None,
+                       include_parent=False, until=None):
     """Parse the distinct text shape returned by ``slack_read_thread``.
 
     Thread responses put ``From:`` and ``Message TS:`` inside parent/reply
@@ -407,11 +605,13 @@ def _parse_thread_page(text, since, filter_user_ids=None, filter_keywords=None):
         user_id = from_match.group(1)
         ts = float(ts_match.group(1))
         raw_seen += 1
+        if until is not None and ts > until:
+            continue
         if ts <= since:
             saw_old = True
 
         is_parent = start.group(0) == "=== THREAD PARENT MESSAGE ==="
-        if is_parent:
+        if is_parent and not include_parent:
             # slack_read_thread repeats the parent on every page. It identifies
             # the thread but is not new thread activity and must never dispatch.
             # It still counts as raw coverage so a page with a live cursor cannot
@@ -437,3 +637,9 @@ def _parse_thread_page(text, since, filter_user_ids=None, filter_keywords=None):
             newest = ts
             preview = body_text[:100]
     return count, preview, newest, saw_old, raw_seen
+
+
+def thread_page_has_ts(text, target_ts):
+    """Whether a Slack thread page contains an exact Message TS line."""
+    target = float(target_ts)
+    return any(float(match.group(1)) == target for match in _THREAD_TS.finditer(text))

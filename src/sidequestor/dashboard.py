@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .native import RUNTIME_ROOT, _environment
 from .workspace import Workspace
@@ -17,6 +18,7 @@ from .workspace import Workspace
 
 DASHBOARD_READY_TIMEOUT = 6.0
 DASHBOARD_PORT_START = 8877
+DASHBOARD_PORT_RELEASE_TIMEOUT = 60.0
 
 
 def _dashboard_process_file(workspace: Workspace) -> Path:
@@ -31,6 +33,21 @@ def read_dashboard_url(workspace: Workspace) -> str | None:
     return value or None
 
 
+def read_dashboard_port(workspace: Workspace) -> int | None:
+    """Return this workspace's published loopback dashboard port, if valid."""
+    url = read_dashboard_url(workspace)
+    if not url:
+        return None
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return None
+    return port if port is not None and 1 <= port <= 65535 else None
+
+
 def wait_for_dashboard_url(
     workspace: Workspace, timeout: float = DASHBOARD_READY_TIMEOUT,
 ) -> str | None:
@@ -42,6 +59,29 @@ def wait_for_dashboard_url(
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.05)
+
+
+def wait_for_dashboard_port(
+    port: int, timeout: float = DASHBOARD_PORT_RELEASE_TIMEOUT,
+) -> bool:
+    """Wait until the dashboard can bind its previous loopback port again."""
+    if not 1 <= port <= 65535:
+        raise ValueError(f"invalid dashboard port: {port}")
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                # Match dashboard-server.py so a released socket in TIME_WAIT does not
+                # unnecessarily force the instance onto another port.
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind(("127.0.0.1", port))
+            return True
+        except PermissionError:
+            raise
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
 
 
 def _dashboard_process_matches(pid: int, workspace: Workspace) -> bool:

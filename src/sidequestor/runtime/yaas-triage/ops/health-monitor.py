@@ -36,8 +36,9 @@ shells out to `osascript`. Nothing it does can be broken by the thing it watches
 
 What it checks
 ──────────────
-  triage_stalled     no tick has COMPLETED recently — the loop is dead or wedged
-  tick_hung          a tick started and never finished (the .pth crash shape)
+  triage_stalled     no tick has completed and no healthy dispatch explains it
+  tick_hung          an open tick exceeded the normal or dispatch-aware ceiling
+  worker_unhealthy   a current dispatch lost its heartbeat or exceeded its timeout
   tick_failures      the orchestrator has exited non-zero N times in a row
   checker_stuck      a watch's checker has failed enough to be promoted to misconfig
   approval_stuck     an approval has sat in `executing` past any plausible run
@@ -84,12 +85,20 @@ CHECKER_PROMOTE = 6
 APPROVAL_STUCK_MIN = 45.0
 EVENT_LOOKBACK_MIN = 60.0
 COOLDOWN_MIN = 360.0
+WORKER_TIMEOUT_S = 1800.0
+TICK_BUDGET_S = 3600.0
+WORKER_HEARTBEAT_GRACE_S = 60.0
+WORKER_EXIT_GRACE_S = 300.0
+WORKER_TIMEOUT_GRACE_S = 120.0
+CLOCK_SKEW_S = 30.0
+TRANSIENT_ALERT_CONFIRM_MIN = 1.0
 
 
 def configure(environment):
     """Apply the effective workspace environment to the monitor thresholds."""
     global STALL_MIN, HUNG_MIN, FAIL_STREAK, CHECKER_PROMOTE
     global APPROVAL_STUCK_MIN, EVENT_LOOKBACK_MIN, COOLDOWN_MIN
+    global WORKER_TIMEOUT_S, TICK_BUDGET_S, WORKER_HEARTBEAT_GRACE_S
 
     def number(key, default, integer=False):
         try:
@@ -109,6 +118,10 @@ def configure(environment):
     APPROVAL_STUCK_MIN = number("YAAS_HEALTH_APPROVAL_STUCK_MIN", 45)
     EVENT_LOOKBACK_MIN = number("YAAS_HEALTH_EVENT_LOOKBACK_MIN", 60)
     COOLDOWN_MIN = number("YAAS_HEALTH_COOLDOWN_MIN", 360)
+    WORKER_TIMEOUT_S = number("YAAS_WORKER_TIMEOUT", 1800)
+    TICK_BUDGET_S = number("YAAS_TICK_DISPATCH_BUDGET", 3600)
+    WORKER_HEARTBEAT_GRACE_S = max(
+        60.0, 2 * number("YAAS_WORKER_HEARTBEAT_SECONDS", 15) + 15.0)
 
 WATCHED_EVENTS = {
     "gate_watch_misconfigured":      "a watch is misconfigured and has stopped being checked",
@@ -128,7 +141,8 @@ def _parse(raw):
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
     except (TypeError, ValueError):
         return None
 
@@ -152,12 +166,48 @@ def _setting(repo, key, default=""):
     return str(value).strip() if value not in (None, "") else default
 
 
+def _dispatch_state(last_run: dict, worker: dict, now=None) -> str:
+    """Classify a worker belonging to the open tick, using lifecycle timestamps only."""
+    now = now or _now()
+    started = _parse(last_run.get("tick_started_utc"))
+    completed = _parse(last_run.get("last_triage_completed_utc"))
+    if not started or (completed and started <= completed):
+        return "none"
+    if not isinstance(worker, dict) or worker.get("schema") != 1:
+        return "none"
+    worker_started = _parse(worker.get("started_at"))
+    if not worker_started or worker_started < started:
+        return "none"
+    if worker.get("state") == "exited":
+        ended = _parse(worker.get("ended_at"))
+        if ended and ended >= started and -CLOCK_SKEW_S <= (now - ended).total_seconds() <= WORKER_EXIT_GRACE_S:
+            return "gap"
+        return "none"
+    if worker.get("state") != "running":
+        return "none"
+    heartbeat = _parse(worker.get("heartbeat_at"))
+    heartbeat_age = (now - heartbeat).total_seconds() if heartbeat else float("inf")
+    worker_age = (now - worker_started).total_seconds()
+    if not -CLOCK_SKEW_S <= heartbeat_age <= WORKER_HEARTBEAT_GRACE_S or worker_age < -CLOCK_SKEW_S:
+        return "stale_heartbeat"
+    try:
+        timeout = float(worker.get("timeout_s"))
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        timeout = WORKER_TIMEOUT_S
+    if worker_age > timeout + WORKER_TIMEOUT_GRACE_S:
+        return "overdue"
+    return "active"
+
+
 class Health:
     def __init__(self, repo: Path):
         self.repo = repo
         self.state = repo / "state"
         self.problems = []   # (key, signature, headline, detail)
         self.notes = []
+        self.post_dispatch_gap = False
 
     def flag(self, key, signature, headline, detail=""):
         self.problems.append({"key": key, "signature": str(signature),
@@ -175,6 +225,37 @@ class Health:
 
         completed = d.get("last_triage_completed_utc")
         started   = d.get("tick_started_utc")
+        worker = _read_json(self.state / "triage" / "worker-current.json", {})
+        worker_state = _dispatch_state(d, worker)
+        st, cp = _parse(started), _parse(completed)
+        worker_started = _parse(worker.get("started_at")) if isinstance(worker, dict) else None
+        worker_ended = _parse(worker.get("ended_at")) if isinstance(worker, dict) else None
+        self.post_dispatch_gap = bool(
+            st and (cp is None or st > cp) and isinstance(worker, dict)
+            and worker.get("schema") == 1 and worker.get("state") == "exited"
+            and worker_started and worker_started >= st and worker_ended and worker_ended >= st)
+        tick_age = (_now() - st).total_seconds() / 60.0 if st and (cp is None or st > cp) else None
+        # Several workers may run in one tick. Allow the dispatch budget plus one
+        # worker timeout and bookkeeping before declaring the whole tick hung.
+        hard_hung_min = max(HUNG_MIN, (TICK_BUDGET_S + WORKER_TIMEOUT_S) / 60.0 + 15.0)
+        if worker_state in ("active", "gap", "stale_heartbeat", "overdue"):
+            if worker_state in ("stale_heartbeat", "overdue"):
+                run_ref = worker.get("run_ref") or worker.get("started_at") or "unknown"
+                detail = ("worker heartbeat stopped" if worker_state == "stale_heartbeat"
+                          else "worker exceeded its timeout and cleanup grace")
+                targets = ", ".join(map(str, worker.get("targets") or [])) or "unknown"
+                self.flag("worker_unhealthy", f"{run_ref}:{worker_state}",
+                          "dispatch worker needs attention",
+                          f"{detail}; target(s): {targets}. Check logs/worker-latest.log")
+            elif worker_state == "active":
+                self.notes.append("current triage tick is dispatching with a fresh worker heartbeat")
+            else:
+                self.notes.append("current triage tick is between dispatch workers")
+            if tick_age is not None and tick_age > hard_hung_min:
+                self.flag("tick_hung", f"tick:{started}",
+                          "triage tick exceeded its dispatch ceiling",
+                          f"tick began {int(tick_age)} minutes ago; check logs/triage.log")
+            return
 
         comp_age = _age_min(completed)
         if comp_age is None:
@@ -182,7 +263,7 @@ class Health:
                       "triage has never recorded a completed tick",
                       "last_triage_completed_utc is missing or unparseable")
         elif comp_age > STALL_MIN:
-            self.flag("triage_stalled", f"{int(comp_age)}m",
+            self.flag("triage_stalled", f"since:{completed}",
                       "triage is not running",
                       f"no tick has completed for {int(comp_age)} minutes "
                       f"(threshold {int(STALL_MIN)}m). Check: sq doctor")
@@ -192,14 +273,13 @@ class Health:
         # A tick that STARTED but never finished is the crash-loop shape that went
         # undetected for 6.5 hours. It is only meaningful when the start stamp is
         # newer than the completion stamp.
-        st, cp = _parse(started), _parse(completed)
         if st and (cp is None or st > cp):
             hung_for = (_now() - st).total_seconds() / 60.0
-            if hung_for > HUNG_MIN:
-                self.flag("tick_hung", f"{int(hung_for)}m",
+            if hung_for > hard_hung_min:
+                self.flag("tick_hung", f"tick:{started}",
                           "a triage tick started and never finished",
                           f"tick began {int(hung_for)} minutes ago and has not completed "
-                          f"(threshold {int(HUNG_MIN)}m). Check logs/worker-latest.log")
+                          f"(threshold {int(hard_hung_min)}m). Check logs/worker-latest.log")
 
     def check_tick_failures(self):
         path = self.state / "triage" / "consecutive-tick-failures"
@@ -320,6 +400,33 @@ def _should_notify(alerts: dict, prob: dict) -> bool:
     return age is None or age > COOLDOWN_MIN
 
 
+def _recent_fired(rec) -> dict | None:
+    """Find the last fired alert, including one preserved beneath a pending change."""
+    if not isinstance(rec, dict):
+        return None
+    candidate = rec.get("previous") if rec.get("pending_since") else rec
+    if not isinstance(candidate, dict) or not candidate.get("signature"):
+        return None
+    age = _age_min(candidate.get("at"))
+    return candidate if age is not None and age <= COOLDOWN_MIN else None
+
+
+def _retain_alert_history(alerts: dict, problems: list) -> dict:
+    """Keep fired incidents through the cooldown, even if a condition briefly clears."""
+    live = {p["key"] for p in problems}
+    kept = {}
+    for key, rec in alerts.items():
+        if not isinstance(rec, dict):
+            continue
+        if key in live:
+            kept[key] = rec
+        else:
+            fired = _recent_fired(rec)
+            if fired:
+                kept[key] = fired
+    return kept
+
+
 def _notify(headline, detail, cmd=None):
     title, subtitle, body = "Sidequestor health", headline, detail[:200]
     if cmd:
@@ -382,7 +489,8 @@ def main():
         "notes": h.notes,
     }
 
-    # Always publish, so the dashboard shows the same verdict the notifier acted on.
+    # Always publish the monitor verdict for diagnostics; the dashboard derives its
+    # live phase independently from the same lifecycle records and thresholds.
     out = repo / "state" / "health-status.json"
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -392,20 +500,32 @@ def main():
     except OSError as exc:
         print(f"warn: could not write {out}: {exc}", file=sys.stderr)
 
-    if "--notify" in args and h.problems:
+    if "--notify" in args:
         alerts_path = repo / "state" / "triage" / "health-alerts.json"
         alerts = _read_json(alerts_path, {}) or {}
         fired = 0
         for prob in h.problems:
+            if prob["key"] == "worker_unhealthy" or (prob["key"] == "triage_stalled" and h.post_dispatch_gap):
+                prev = alerts.get(prob["key"])
+                if not isinstance(prev, dict) or prev.get("signature") != prob["signature"]:
+                    prior_fired = _recent_fired(prev)
+                    if prior_fired and prior_fired["signature"] == prob["signature"]:
+                        alerts[prob["key"]] = prior_fired
+                        continue
+                    alerts[prob["key"]] = {
+                        "signature": prob["signature"], "pending_since": status["ts"],
+                        **({"previous": prior_fired} if prior_fired else {})}
+                    continue
+                if prev.get("pending_since"):
+                    age = _age_min(prev["pending_since"])
+                    if age is None or age < TRANSIENT_ALERT_CONFIRM_MIN:
+                        continue
             if not _should_notify(alerts, prob):
                 continue
             _notify(prob["headline"], prob["detail"], notify_cmd)
             alerts[prob["key"]] = {"signature": prob["signature"], "at": status["ts"]}
             fired += 1
-        # Drop bookkeeping for conditions that have cleared, so a recurrence alerts
-        # again rather than being suppressed by a stale cooldown.
-        live = {p["key"] for p in h.problems}
-        alerts = {k: v for k, v in alerts.items() if k in live}
+        alerts = _retain_alert_history(alerts, h.problems)
         try:
             alerts_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = alerts_path.with_name(alerts_path.name + ".tmp")
