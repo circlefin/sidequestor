@@ -20,6 +20,11 @@ Load the matching managed skill:
 .yaas/engine/current/skills/yaas-reactions/SKILL.md
 ```
 
+Before composing or revising an outbound message, load
+`.yaas/engine/current/skills/yaas-draft-readiness/SKILL.md`. When an authorized quest may act on
+its findings, load `.yaas/engine/current/skills/yaas-action-closure/SKILL.md`. Read-only quests
+retain their stated report-only boundary.
+
 ## Runtime boundary
 
 The workspace contains state, configuration, quests, logs, and managed engine
@@ -49,8 +54,11 @@ the packaged runtime directory. Put mutable data in the workspace through the su
 - Never edit an existing watch or watermark. Add watches with `add-watch.py`; retire an
   obsolete watch with `sq watch retire <quest_id> <watch_id> "<reason>"` in Mode B only.
 - Ack only items included in the current dispatch. Never ack unrelated work.
-- Write timeline events with `log-event.py`; send Slack through `slack-send.py`
-  and save native Telegram drafts through `telegram-send.py`.
+- Write timeline events with `log-event.py`; send Slack through `slack-send.py`,
+  post Slack files through `slack-file.py send`, and save native Telegram drafts through
+  `telegram-send.py`. When a Slack read shows `Files: <name> (ID: F…, <type>, <size>)` on a
+  message you are acting on, fetch it with `slack-file.py fetch` and open the downloaded path
+  before answering; never infer an image's content from its filename.
 - Keep the latest summary of things in `context.md`. Rewrite that summary in place;
   chronology and log detail belong in `timeline.ndjson`.
 - Use the approval helper for review-queue items.
@@ -60,11 +68,18 @@ the packaged runtime directory. Put mutable data in the workspace through the su
   Claim it before execution. A claimed `slack_message` approval can authorize its quest's
   Slack send even when `allow_send` is false — but only to the channel and thread it was
   reviewed for. Send it somewhere else and the approval authorizes nothing.
+  A Slack file upload needs `allow_send: true` or a claimed `remote_request` approval created
+  from the `slack-file.py approval-spec` output: merge that whole object (`action_type`,
+  `target`, `message_text`) into the approval payload. It pins the exact file, title, comment
+  and thread, so changing any of them needs a fresh review.
   `telegram-send.py` saves a native Telegram cloud draft unless the action explicitly requests
   `send: true`. A direct send requires `allow_send: true` or an exact claimed `remote_request`
   approval bound to its peer, reply target, and message. Dispatched sends also require an
   `idempotency_key`. A `manual_instruction` does not override these controls.
-- If an action is blocked, log the blocker, ack the item `blocked`, and report it.
+- If an action is blocked, log the blocker, ack the item `blocked`, and report it. The managed
+  dispatch skill defines one narrow exception for a complete `slack_mention` fan-out: after an
+  individual conversation is live-read-verified and safely transferred to a one-shot exact thread
+  watch, the broad mention item is handled so unrelated conversations can commit.
 
 A backend-native workspace instruction file (`CLAUDE.md` under the Claude backend,
 `AGENTS.md` otherwise) may add user-specific instructions. It is optional, and

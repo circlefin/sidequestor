@@ -45,6 +45,7 @@ import hashlib
 import hmac
 import http.server
 import json
+import math
 import os
 import re
 import secrets
@@ -140,6 +141,7 @@ JIRA_HOST  = (_dotenv("JIRA_BASE_URL").replace("https://", "")
 WORKER_TIMEOUT_S = 1800  # compatibility fallback for pre-lifecycle-record worker logs
 WORKER_STATE_FILE = STATE_DIR / "triage" / "worker-current.json"
 WORKER_HEARTBEAT_GRACE_S = 60
+WORKER_TIMEOUT_GRACE_S = 120
 LIVE_TAIL_LINES  = 60   # panel wants the fuller transcript; pill only shows the target name
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 
@@ -575,6 +577,7 @@ def _lifecycle_matches_latest(current):
 
 def build_live_run() -> dict:
     not_running = {"running": False, "stale": False, "state": "idle",
+                   "overdue": False, "lifecycle": False,
                    "targets": [], "started_at": None, "tail": []}
     try:
         current = json.loads(WORKER_STATE_FILE.read_text())
@@ -586,16 +589,45 @@ def build_live_run() -> dict:
             and _lifecycle_matches_latest(current)):
         if current["state"] == "exited":
             return {**not_running, "state": "exited", "exit": current.get("exit"),
-                    "ended_at": current.get("ended_at")}
+                    "ended_at": current.get("ended_at"), "started_at": current.get("started_at"),
+                    "run_ref": current.get("run_ref"), "lifecycle": True,
+                    "targets": [str(t) for t in current.get("targets", []) if t]}
         targets = [str(t) for t in current.get("targets", []) if t]
         age = _heartbeat_age(current.get("heartbeat_at"))
-        stale = age is None or age > WORKER_HEARTBEAT_GRACE_S
+        started_age = _heartbeat_age(current.get("started_at"))
+        try:
+            heartbeat_interval = float(_dotenv("YAAS_WORKER_HEARTBEAT_SECONDS", "15"))
+            if not math.isfinite(heartbeat_interval) or heartbeat_interval <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            heartbeat_interval = 15
+        heartbeat_grace = max(WORKER_HEARTBEAT_GRACE_S, 2 * heartbeat_interval + 15)
+        stale = (age is None or age < -30 or age > heartbeat_grace
+                 or started_age is None or started_age < -30)
+        try:
+            configured_timeout = float(_dotenv("YAAS_WORKER_TIMEOUT", "1800"))
+            if not math.isfinite(configured_timeout) or configured_timeout <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            configured_timeout = 1800
+        try:
+            timeout = float(current.get("timeout_s"))
+            if not math.isfinite(timeout) or timeout <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            timeout = configured_timeout
+        overdue = started_age is not None and started_age > timeout + WORKER_TIMEOUT_GRACE_S
         return {
             "running": not stale,
             "stale": stale,
-            "state": "stale" if stale else "running",
+            "overdue": overdue,
+            "lifecycle": True,
+            "state": "stale" if stale else "overdue" if overdue else "running",
             "targets": targets,
             "started_at": current.get("started_at"),
+            "heartbeat_at": current.get("heartbeat_at"),
+            "timeout_s": timeout,
+            "run_ref": current.get("run_ref"),
             "tail": _worker_tail(_worker_log_lines(current.get("log"))),
         }
 
@@ -711,6 +743,15 @@ def build_open_items() -> dict:
         base = {"id": quest_dir.name, "title": meta.get("title", quest_dir.name),
                 "priority": meta.get("priority", "normal")}
 
+        watches = []
+        try:
+            watch_doc = json.loads((quest_dir / "watch.json").read_text())
+            if isinstance(watch_doc, dict) and isinstance(watch_doc.get("watches"), list):
+                watches = [watch for watch in watch_doc["watches"]
+                           if isinstance(watch, dict)]
+        except Exception:
+            pass
+
         # Positional scan (newest = highest index). last_* = index of newest of type.
         # nonblocked = newest event of ANY type except "blocked" — a later note/
         # recap/action means the worker recovered (matches isBlockedNow in the
@@ -719,8 +760,11 @@ def build_open_items() -> dict:
                 "material": -1, "nonblocked": -1}
         for idx, e in enumerate(evs):
             ev = e.get("event")
-            if ev == "blocked":            last["blocked"] = idx
-            else:                          last["nonblocked"] = idx
+            if ev == "blocked":
+                if not _watcher_block_recovered(e, watches):
+                    last["blocked"] = idx
+            else:
+                last["nonblocked"] = idx
             if ev in _OUT_EVENTS:          last["out"] = idx;   last["material"] = idx
             elif ev in _IN_EVENTS:         last["in"] = idx;    last["material"] = idx
             elif ev == "draft_posted":     last["draft"] = idx; last["material"] = idx
@@ -951,16 +995,76 @@ def build_briefs(limit: int = 30) -> list:
         })
     return briefs
 
-def _current_block_index(lines: list[str]) -> int:
+def _timeline_timestamp(value) -> float:
+    """Parse either a timeline ISO timestamp or a Slack-style numeric timestamp."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+_WATCHER_HOLD = re.compile(r"\bholding\b.*\bwatermark\b|\bwatermark\b.*\bheld\b",
+                           re.IGNORECASE)
+
+
+def _watcher_block_recovered(event: dict, watches: list[dict] | None) -> bool:
+    """Return whether a transient watcher watermark hold has since committed.
+
+    A worker can safely hold a watch's watermark when its live read is ambiguous. That is
+    operationally different from a quest being blocked: the next successful watcher commit
+    is the recovery evidence. Older timelines predate a structured blocker kind, so retain a
+    narrow text fallback for the phrase those workers recorded.
+    """
+    if not watches:
+        return False
+    kind = event.get("blocker_kind")
+    text = " ".join(str(event.get(key, "")) for key in ("reason", "note"))
+    if kind != "watcher_read_hold" and not _WATCHER_HOLD.search(text):
+        return False
+
+    blocked_at = _timeline_timestamp(event.get("ts"))
+    if blocked_at <= 0:
+        return False
+    watch_id = event.get("watch_id")
+    channel_id = event.get("channel_id") or event.get("channel")
+    thread_ts = event.get("thread_ts")
+    if not (watch_id or channel_id or thread_ts):
+        return False
+
+    matching = []
+    for watch in watches:
+        if not isinstance(watch, dict):
+            continue
+        if watch_id and watch.get("watch_id") != watch_id:
+            continue
+        if channel_id and (watch.get("channel_id") or watch.get("channel")) != channel_id:
+            continue
+        if thread_ts and watch.get("thread_ts") != thread_ts:
+            continue
+        matching.append(watch)
+    return any(_timeline_timestamp(watch.get("last_checked_ts")) > blocked_at
+               for watch in matching)
+
+
+def _current_block_index(lines: list[str], watches: list[dict] | None = None) -> int:
     """Return the current block's line index, or -1 after any later recovery event."""
     last_block = last_other = -1
     for idx, raw in enumerate(lines):
         try:
-            event = json.loads(raw).get("event", "")
+            record = json.loads(raw)
+            event = record.get("event", "")
         except Exception:
             continue
         if event == "blocked":
-            last_block = idx
+            if not _watcher_block_recovered(record, watches):
+                last_block = idx
         else:
             last_other = idx
     return last_block if last_block >= 0 and last_block > last_other else -1
@@ -992,16 +1096,27 @@ def build_dashboard(include_briefs: bool = False) -> dict:
         last_blocked = None
         last_seen_ts = None   # newest non-blocked event of ANY type (incl. notes):
                               # a later note means the worker recovered after a block
+        watches = []
+        try:
+            watch_doc = json.loads((quest_dir / "watch.json").read_text())
+            if isinstance(watch_doc, dict) and isinstance(watch_doc.get("watches"), list):
+                watches = [watch for watch in watch_doc["watches"]
+                           if isinstance(watch, dict)]
+        except Exception:
+            pass
         timeline_path = quest_dir / "timeline.ndjson"
         if timeline_path.exists():
             lines = [l for l in timeline_path.read_text().splitlines() if l.strip()]
-            blocked_now = _current_block_index(lines) >= 0
+            current_block_idx = _current_block_index(lines, watches)
+            blocked_now = current_block_idx >= 0
+            if blocked_now:
+                e = json.loads(lines[current_block_idx])
+                last_blocked = {"ts": e.get("ts"),
+                                "reason": (e.get("reason") or e.get("note") or "")[:80]}
             for raw in reversed(lines[-20:]):
                 try:
                     e = json.loads(raw)
                     ev = e.get("event", "")
-                    if blocked_now and ev == "blocked" and last_blocked is None:
-                        last_blocked = {"ts": e.get("ts"), "reason": (e.get("reason") or e.get("note") or "")[:80]}
                     if ev != "blocked" and last_seen_ts is None:
                         last_seen_ts = e.get("ts")
                     # Surface the last meaningful action — skip blocked/note/created noise
@@ -1046,6 +1161,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             "sidequestor_bootstrap": meta.get("sidequestor_bootstrap") is True,
             "backoff_count": 0,     # filled in below
             "backoff_watches": [],  # filled in below
+            "misconfigured_watches": [],
             "ratelimited": False,   # filled in below (transient, from run-log)
             "ratelimited_count": 0,
             "ratelimited_watches": [],
@@ -1078,6 +1194,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
                     "next_retry_ts": entry.get("next_retry_ts", "0"),
                     "last_error":    entry.get("last_error", ""),
                     "last_status":   entry.get("last_status", ""),
+                    "source":        "dispatch",
                 })
             for q in quests:
                 wl = backoff_by_quest.get(q["id"], [])
@@ -1172,6 +1289,27 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             triage_state = json.loads(triage_path.read_text())
         except Exception:
             pass
+    # Newer ticks persist their current watch outcomes. Prefer that snapshot over
+    # five-minute run-log recency, which can keep showing a resolved warning.
+    if isinstance(triage_state, dict) and isinstance(triage_state.get("watch_issues"), list):
+        current_by_quest: dict[str, dict[str, list]] = {}
+        for issue in triage_state["watch_issues"]:
+            if not isinstance(issue, dict) or not issue.get("quest"):
+                continue
+            if not checker_config.checker_enabled(issue.get("type", "")):
+                continue
+            bucket = current_by_quest.setdefault(issue["quest"],
+                                                  {"misconfig": [], "skip": []})
+            if issue.get("status") == "misconfig" and issue.get("error"):
+                continue  # a promoted generic error still retries through checker-health
+            if issue.get("status") in bucket:
+                bucket[issue["status"]].append(issue)
+        for q in quests:
+            current = current_by_quest.get(q["id"], {})
+            q["misconfigured_watches"] = current.get("misconfig", [])
+            q["ratelimited_watches"] = current.get("skip", [])
+            q["ratelimited_count"] = len(q["ratelimited_watches"])
+            q["ratelimited"] = bool(q["ratelimited_watches"])
 
     pending_review = []
     if APPROVALS_FILE.exists():
@@ -1360,12 +1498,80 @@ def _retry_wait_text(next_retry_ts, now: float | None = None) -> str:
     return f"in about {int(remaining // 86400)}d"
 
 
+def _hard_tick_ceiling_s() -> float:
+    """Mirror the independent health monitor's whole-tick ceiling for the UI."""
+    def positive(key, default):
+        try:
+            value = float(_dotenv(key, str(default)))
+            return value if math.isfinite(value) and value > 0 else default
+        except (TypeError, ValueError):
+            return default
+    return max(positive("YAAS_HEALTH_HUNG_MIN", 75) * 60,
+               positive("YAAS_TICK_DISPATCH_BUDGET", 3600)
+               + positive("YAAS_WORKER_TIMEOUT", 1800) + 15 * 60)
+
+
+def _stall_threshold_s() -> float:
+    """Use the monitor's configured completion-age threshold in the dashboard."""
+    try:
+        minutes = float(_dotenv("YAAS_HEALTH_STALL_MIN", "10"))
+        return minutes * 60 if math.isfinite(minutes) and minutes > 0 else 600
+    except (TypeError, ValueError):
+        return 600
+
+
+def _watch_issue(kind: str, watch: dict, now: float | None = None) -> dict:
+    """Give the UI a cause, urgency and next step without guessing from error text."""
+    watch_type = watch.get("type") or "unknown"
+    cause = watch.get("reason") or watch.get("last_error") or watch.get("last_status") or "No detail recorded"
+    issue = {"watch_id": watch.get("watch_id"), "watch_type": watch_type,
+             "cause": cause}
+    if kind == "misconfig":
+        if watch_type.startswith("x_"):
+            action = "Check X access with sq x-auth status, then review this watch."
+        elif watch_type.startswith("telegram_"):
+            action = "Check Telegram access with sq telegram-auth status, then review this watch."
+        elif watch_type.startswith("github_"):
+            action = "Check GitHub access with gh auth status, then review this watch."
+        elif watch_type.startswith("slack_"):
+            action = "Run sq doctor to check Slack access, then reconnect if needed."
+        elif watch_type == "jira":
+            action = "Run sq doctor and check the Jira API token and permissions."
+        else:
+            action = "Review this watch's settings and run sq doctor."
+        return {**issue, "severity": "action", "title": "Watch needs a fix",
+                "next": action}
+    if kind == "backoff":
+        retry = _retry_wait_text(watch.get("next_retry_ts"), now)
+        source = watch.get("source")
+        title = "Checker retrying" if source == "checker" else "Worker retrying"
+        return {**issue, "severity": "uncertain", "title": title,
+                "next": f"Automatic retry {retry}. Investigate if this continues."}
+    reason = str(cause).lower()
+    throttled = any(token in reason for token in ("429", "ratelimit", "rate limit"))
+    return {**issue, "severity": "transient",
+            "title": "Rate limited" if throttled else "Temporary read interruption",
+            "next": "Sidequestor will retry on the next tick."}
+
+
+def _quest_watch_issues(quest: dict, now: float | None = None) -> list[dict]:
+    issues = []
+    for key, kind in (("misconfigured_watches", "misconfig"),
+                      ("backoff_watches", "backoff"),
+                      ("ratelimited_watches", "transient")):
+        issues.extend(_watch_issue(kind, watch, now) for watch in quest.get(key) or [])
+    return issues
+
+
 def _quest_health_detail(quest: dict, now: float | None = None) -> str:
     """Explain whether a quest's watch state needs action or will self-recover."""
     parts = []
     blocked = quest.get("last_blocked") or {}
     if blocked:
         parts.append(f"Blocked: {blocked.get('reason') or 'no reason was recorded'}.")
+    for watch in quest.get("misconfigured_watches") or []:
+        issue = _watch_issue("misconfig", watch, now)
+        parts.append(f"{issue['watch_type']}: {issue['cause']}. {issue['next']}")
 
     backoffs = list(quest.get("backoff_watches") or [])
     if backoffs:
@@ -1382,11 +1588,10 @@ def _quest_health_detail(quest: dict, now: float | None = None) -> str:
     ratelimited = list(quest.get("ratelimited_watches") or [])
     if ratelimited:
         watch = ratelimited[0]
-        watch_type = watch.get("type") or "watch"
-        reason = watch.get("reason") or "the upstream service limited requests"
-        parts.append(f"{watch_type} was rate limited ({reason}). The loop will retry on a later tick.")
+        issue = _watch_issue("transient", watch, now)
+        parts.append(f"{issue['watch_type']}: {issue['title']} ({issue['cause']}). {issue['next']}")
 
-    if not backoffs and not ratelimited:
+    if not backoffs and not ratelimited and not quest.get("misconfigured_watches"):
         parts.append("No automatic retry is scheduled, so this needs your intervention.")
     return " ".join(parts)
 
@@ -1415,11 +1620,17 @@ def build_control() -> dict:
             "approval": card,
         })
     for quest in dashboard["quests"]:
-        if quest.get("status") == "blocked" or quest.get("backoff_count") or quest.get("ratelimited"):
+        issues = _quest_watch_issues(quest)
+        visible_issues = [issue for issue in issues if issue["severity"] != "transient"]
+        if quest.get("status") == "blocked" or visible_issues:
             attention.append({
                 "id": f"quest:{quest['id']}:health", "kind": "quest_health",
-                "priority": "high", "label": "Quest needs attention",
+                "priority": "high" if quest.get("status") == "blocked" or
+                            any(issue["severity"] == "action" for issue in visible_issues)
+                            else "normal",
+                "label": "Watch needs attention",
                 "detail": _quest_health_detail(quest),
+                "issues": visible_issues,
                 "quest_id": quest["id"], "quest_title": quest["title"],
             })
 
@@ -1434,6 +1645,8 @@ def build_control() -> dict:
             "activity_pagination": False,
         },
         "triage": dashboard["triage"],
+        "liveness": {"hard_tick_sec": _hard_tick_ceiling_s(),
+                     "stall_sec": _stall_threshold_s()},
         "live": dashboard["live_run"],
         "quests": dashboard["quests"],
         "attention": attention,
@@ -1526,7 +1739,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
         try:
             lines = [l for l in timeline_path.read_text().splitlines() if l.strip()]
             total = len(lines)
-            current_block_idx = _current_block_index(lines)
+            current_block_idx = _current_block_index(lines, watches)
             first_idx = max(0, len(lines) - _TIMELINE_CAP)
             for line_idx in range(len(lines) - 1, first_idx - 1, -1):
                 raw = lines[line_idx]
@@ -1732,10 +1945,32 @@ def build_quest_detail(quest_id: str) -> dict | None:
                 "reason":    e.get("reason"),
             })
 
+    misconfigured_watches = []
+    try:
+        checker_config = Config(str(RUNTIME_ROOT / "yaas-triage"))
+        triage_state = json.loads((STATE_DIR / "triage" / "last-run.json").read_text())
+        if isinstance(triage_state.get("watch_issues"), list):
+            current = [issue for issue in triage_state["watch_issues"]
+                       if isinstance(issue, dict) and issue.get("quest") == quest_id
+                       and checker_config.checker_enabled(issue.get("type", ""))]
+            misconfigured_watches = [issue for issue in current
+                                     if issue.get("status") == "misconfig"
+                                     and not issue.get("error")]
+            ratelimited_watches = [issue for issue in current
+                                   if issue.get("status") == "skip"]
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+
     open_items = {
         "blocked":           blocked_now,
         "backoff_watches": backoff_watches,
+        "misconfigured_watches": misconfigured_watches,
         "ratelimited_watches": ratelimited_watches,
+        "watch_issues": _quest_watch_issues({
+            "misconfigured_watches": misconfigured_watches,
+            "backoff_watches": backoff_watches,
+            "ratelimited_watches": ratelimited_watches,
+        }),
         "threads":           open_threads,
         "threads_total":     threads_total,
         "scheduled":         scheduled,

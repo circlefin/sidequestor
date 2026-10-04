@@ -192,6 +192,7 @@ def run(prompt, label, timeout=DEFAULT_TIMEOUT, log_dir=None, header=None):
         "supervisor_pid": os.getpid(),
         "started_at": started_at,
         "heartbeat_at": started_at,
+        "timeout_s": timeout,
         "ended_at": None,
         "exit": None,
         "timed_out": False,

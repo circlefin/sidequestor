@@ -188,13 +188,16 @@ def cmd_open(run_id: str, target: str, kind: str, items_json: str):
         if iid in seen:
             continue
         seen.add(iid)
-        norm.append({
+        item = {
             "item_id":   iid,
             "type":      it.get("type", ""),
             "status":    OPEN_STATUS,
             "note":      "",
             "acked_utc": None,
-        })
+        }
+        if isinstance(it.get("complete"), bool):
+            item["complete"] = it["complete"]
+        norm.append(item)
 
     MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
     path = _path(run_id)

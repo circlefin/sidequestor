@@ -4,6 +4,196 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.41 - 2026-10-05
+
+### Fixed
+- Slack file uploads reconcile `internal_error` and `fatal_error` completion responses,
+  which can follow a partial success. An unsettled result exits 3 rather than inviting a
+  retry that could duplicate the file and its comment.
+- Git upgrades preserve the recorded pipx installation suffix so they upgrade the selected
+  environment instead of installing or replacing the unsuffixed tool.
+
+## 0.1.40 - 2026-10-05
+
+### Fixed
+- `sq upgrade --installer pip` works again for pip installs that automatic detection cannot
+  confirm, such as a virtualenv under a `venvs/` directory or a pyenv, conda, or `--user`
+  interpreter. Since 0.1.37 these were refused even though the earlier pip-only upgrader handled
+  them. The override is still refused when a uv or pipx receipt or tool directory claims the
+  environment, or when pip is not installed in it. Affected installs on 0.1.37 through 0.1.39
+  cannot reach this fix through `sq upgrade`; run `python -m pip install --upgrade sidequestor`
+  with that installation's interpreter once, then `sq sync-resources` and `sq start`.
+
+## 0.1.39 - 2026-10-02
+
+### Added
+- `sq slack-file send` accepts `"interactive": true` for an explicitly requested manual upload
+  without a quest. It is refused inside a dispatch, with a `quest_id` or `approval_id`, on a stale
+  thread, and in force-draft mode, and it writes no quest timeline entry. Dispatch detection uses
+  `SIDEQUESTOR_DISPATCH_TARGET`, so this refusal guards against mistakes rather than acting as a
+  security boundary.
+- The packaged `yaas-slack-file` skill documents Slack uploads and downloads. Resource sync links it
+  into `skills/`, `.agents/skills/`, and `.claude/skills/`.
+
+## 0.1.38 - 2026-10-02
+
+### Added
+- `sq slack-file send` posts a local file (such as an image) into a Slack conversation, and
+  `sq slack-file fetch` downloads the images and PDFs attached to a message so a worker can open
+  them. The Slack MCP can do neither. Uploads go through the same checks as `slack-send.py`:
+  dispatch-target matching, `allow_send` or a claimed `remote_request` approval pinned to the
+  file's SHA-256 (from `sq slack-file approval-spec`), the stale-thread hold, and timeline logging.
+  An upload whose final step may have landed exits 3 instead of being retried. Downloads only send
+  the token to Slack-owned HTTPS hosts, stream with a size cap, and never write under `state/`.
+
+### Changed
+- The Slack app requests `files:read`, `files:write`, `channels:read`, `groups:read`, `im:read`,
+  `im:write`, `mpim:read`, `mpim:write`, `dnd:read`, `emoji:read`, `search:read.users` and the
+  `*:write.topic` scopes. Generate the updated manifest with `sq setup --manifest`, add the
+  scopes to the existing app, reinstall it, then run `sq setup` to re-authorize.
+
+## 0.1.37 - 2026-10-01
+
+### Changed
+- `uv tool install sidequestor` (or `pipx install sidequestor`) is now the recommended install: one
+  shared `sq` command works in every terminal without activating a virtualenv. Workspace
+  virtualenvs remain supported.
+- `sq upgrade` detects whether uv, pipx, or pip owns the installation and upgrades with that tool,
+  keeping installed extras. It refuses before stopping jobs when ownership is unclear, validates
+  explicit installer overrides against the running environment, and lists other running workspaces
+  that share the installation.
+- `sq gdoc-comment` checks that its browser driver can start before reserving the idempotency key.
+  A missing Playwright installation or a misconfigured driver override now fails without leaving
+  an indeterminate record, so the same key can be retried after the fix.
+- Launchd jobs and runtime scripts put the installation's own `bin` directory first on PATH, as an
+  activated virtualenv did, and keep the caller's PATH after it. When the selected agent CLI is
+  still missing, `sq start` consults the login shell's PATH. `SIDEQUESTOR_PATH` pins the PATH
+  explicitly. `sq start` and `sq doctor` report the agent CLI the jobs will use.
+
+## 0.1.36 - 2026-09-30
+
+### Changed
+- Telegram authorization may omit the API ID when `TELEGRAM_API_ID` is configured in the
+  workspace `.env`; the explicit API ID argument remains supported.
+
+## 0.1.35 - 2026-09-30
+
+### Fixed
+- The dashboard and open-items views clear a transient watcher watermark hold once that watch
+  successfully advances, without clearing an unrelated quest blocker. Unrecovered holds remain
+  visible.
+
+## 0.1.34 - 2026-09-30
+
+### Changed
+- The dashboard separates watches that need a configuration or authorization fix from checker or
+  worker backoffs under investigation and temporary rate limits that will retry automatically.
+  Watch cards explain the recorded cause and the next action; resolved checker warnings clear
+  from the current-tick snapshot.
+- A live dispatch shows as **Dispatching** even when the previous triage tick finished long ago.
+  Stopped worker heartbeats, overdue workers, and ticks past the dispatch ceiling have distinct
+  dashboard states.
+
+### Fixed
+- Long-running but healthy dispatches no longer trigger a false triage-stalled macOS alert.
+  Transient worker faults and long gaps between workers require confirmation before notification,
+  and notification cooldown survives brief recoveries or changes in the worker fault.
+- Slack and Jira checker outcomes retain enough error detail to distinguish access and watch
+  configuration problems from throttling and other temporary failures.
+
+## 0.1.33 - 2026-09-24
+
+### Added
+- Managed draft-readiness and action-closure policies now require current authoritative context,
+  explicit decision states, bounded execution routes, and durable triggers for delayed
+  commitments in outbound communication and action-capable quests.
+
+### Fixed
+- Slack replies automatically held for stale-thread review now preserve the exact original body
+  in the immutable quest timeline, alongside the approval record.
+- Delayed commitments now use schedule watches only for time-based triggers and the matching
+  surface watch for observable Slack, GitHub, Jira, or email conditions.
+
+## 0.1.32 - 2026-09-24
+
+### Changed
+- Gmail reply and fresh-send helpers now delegate threading, quoted history, and message
+  construction to the native `gws gmail +reply`, `+reply-all`, and `+send` helpers. Replies
+  require an explicit sender-only or reply-all mode and an explicit draft-or-send choice, with
+  support for reply-all recipient edits, HTML bodies, attachments, and send-as aliases.
+
+## 0.1.31 - 2026-09-18
+
+### Added
+- `sq gdoc-comment` and the managed `yaas-gdoc-anchored-comments` skill add verified,
+  text-anchored Google Doc comments through a dedicated Chrome profile. The writer enforces
+  quest scope, exact approvals, idempotency, exclusive browser access, Drive verification, and
+  timeline logging. The capability is enabled by default and can be disabled with
+  `SIDEQUESTOR_GDOC_COMMENTS_ENABLED=0`.
+- `sq credentials status` reports Slack credential-helper migration state without reading the
+  token, while `sq credentials repair-keychain` provides an explicit foreground recovery flow.
+
+### Changed
+- Slack refresh-token access now uses one immutable, versioned Keychain helper per macOS user
+  instead of a helper tied to a workspace or Python installation. Existing installs securely
+  adopt their previous helper identity on first upgrade; fresh installs use the stable identity
+  from their first authorization.
+- `sq upgrade` records the instance's actual published dashboard port, waits up to 60 seconds for
+  that port to become available after shutdown, and restarts on the same port. If upgrade checks
+  or credential migration fail, the affected instance remains stopped for safe recovery.
+- Playwright 1.48 or newer is installed as a core dependency for the guarded Google Docs browser
+  workflow.
+
+### Fixed
+- Slack credential refresh and repair are serialized globally for the current user, preventing
+  concurrent workspaces from rotating the same refresh token or racing a repair. Background
+  processes fail closed until the foreground helper migration is complete, avoiding repeated
+  unattended Keychain prompts; foreground repair allows up to 120 seconds for a response.
+- Anchored comment writes now validate CDP as loopback-only before any connection, use exact-case
+  unique matching, click Post Comment only once, and preserve a completed idempotency record if
+  timeline logging fails. Each idempotent invocation is limited to one anchor to prevent partial
+  multi-comment batches, and test-driver overrides require explicit test mode.
+
+## 0.1.30 - 2026-09-17
+
+### Changed
+- Quest dispatches now read the complete watched Slack thread before deciding whether the agent
+  has a conversational turn, rather than treating every new message as an invitation to reply.
+- Routing messages, acknowledgements, intermediate hand-offs, and human-to-human exchanges now
+  wait silently; the dispatch watermark still identifies the new activity after full context is
+  loaded.
+
+## 0.1.29 - 2026-09-17
+
+### Changed
+- Worker replies no longer assign work to colleagues unless the operator explicitly supplied the
+  instruction or the recipient already volunteered for that exact work in the same thread.
+- Unanswered quest threads receive at most one in-thread nudge before escalation is surfaced to
+  the operator; widening the audience or tagging senior colleagues now requires explicit approval.
+
+## 0.1.28 - 2026-09-09
+
+### Fixed
+- Complete Slack mention scans transfer an individually blocked conversation to a verified,
+  one-shot exact thread watch that includes top-level parent messages, allowing unrelated mentions
+  and the broad search watermark to commit without losing the blocked action's retry. Parent
+  inclusion is rejected outside this ephemeral bounded handoff protocol, and reads stop at the
+  transferred target so later thread replies cannot widen the retry.
+- GitHub issue and pull-request watch identity now includes the repository, search qualifiers, and
+  pinned account, with empty optional fields normalized before deduplication on both new and legacy
+  entries. This permits distinct scoped watches without creating phantom empty-string duplicates.
+- GitHub pull-request dispatches ignore updates caused only by their own prior comment or review,
+  preventing `involves:<self>` watches from producing repeated responses.
+
+## 0.1.27 - 2026-09-09
+
+### Fixed
+- Quest dispatches acknowledge new human replies and comments on the same conversational surface
+  before processing them, and retain the event for retry when the connector cannot write.
+- Slack DM and mention watches drain paginated search results safely, bank completed prefixes when
+  backlogs or transient failures interrupt a scan, and avoid skipping messages or parking their
+  watermarks on saturated result pages.
+
 ## 0.1.26 - 2026-09-07
 
 ### Added

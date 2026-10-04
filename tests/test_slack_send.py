@@ -125,7 +125,8 @@ class SlackSendAuthorizationTest(unittest.TestCase):
     def _run(self, payload: dict, *, target: str | None = None,
              approvals: list[dict] | None = None,
              response_channel_id: str = "C123",
-             response_body: str | None = None) -> tuple[int, str, str, MagicMock]:
+             response_body: str | None = None,
+             stale_reason: str | None = None) -> tuple[int, str, str, MagicMock]:
         stdout, stderr = io.StringIO(), io.StringIO()
         call = MagicMock(return_value=response_body or json.dumps({
             "message_context": {
@@ -137,7 +138,8 @@ class SlackSendAuthorizationTest(unittest.TestCase):
         env = {} if target is None else {"SIDEQUESTOR_DISPATCH_TARGET": target}
         with patch.object(self.mod, "REPO_ROOT", self.root), \
              patch.object(self.mod, "_call_slack", call), \
-             patch.object(self.mod, "_stale_reason", return_value=None), \
+             patch.object(self.mod, "_stale_reason", return_value=stale_reason), \
+             patch.object(self.mod, "_queue_for_review", return_value="appr-held"), \
              patch.object(self.mod.approval_store, "read_queue", return_value={
                  "items": approvals or [],
              }), \
@@ -149,6 +151,25 @@ class SlackSendAuthorizationTest(unittest.TestCase):
             except SystemExit as exc:
                 result = int(exc.code)
         return int(result or 0), stdout.getvalue(), stderr.getvalue(), call
+
+    def test_stale_held_draft_preserves_the_original_message_body(self) -> None:
+        quest_id = self._quest(allow_send=True)
+        code, output, error, call = self._run({
+            "quest_id": quest_id,
+            "channel_id": "C123",
+            "thread_ts": "1.000001",
+            "message": "Exact pre-review body",
+        }, target=quest_id, stale_reason="thread is stale")
+
+        self.assertEqual(code, 0, error)
+        call.assert_not_called()
+        self.assertTrue(json.loads(output)["held"])
+        timeline = (self.root / "state" / "quests" / "active" / quest_id
+                    / "timeline.ndjson")
+        event = json.loads(timeline.read_text())
+        self.assertEqual(event["event"], "draft_posted")
+        self.assertEqual(event["approval_id"], "appr-held")
+        self.assertEqual(event["message_text"], "Exact pre-review body")
 
     def test_user_id_send_records_resolved_dm_channel_id(self) -> None:
         quest_id = self._quest(allow_send=True)

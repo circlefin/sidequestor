@@ -138,9 +138,10 @@ any more:**
 `yaas-quest-creation/SKILL.md`. `tests/behaviour/doc-contracts.test.sh` fails with the exact file
 and expectation if you add a type or change a `.lag` value without updating them.
 
-**On `identity`:** think about it rather than copying the sibling. `github_issue` uses
-`["repo", "search"]` while `github_pr` uses `["repo"]`, because two issue watches on one repo
-with different qualifiers are genuinely different watches and collapsing them would drop one.
+**On `identity`:** think about it rather than copying the sibling. Both GitHub watch types include
+`repo`, `search`, and `gh_account`, because different qualifiers or credentials produce genuinely
+different result sets and collapsing them would drop one. Optional string identity fields are
+trimmed, and empty strings are treated as absent, before duplicate detection.
 
 **Rule: Slack-backed types MUST be named `slack_*`.** `tick.py` and `tick_dispatch.py` still group
 Slack types by the `startswith("slack_")` prefix rather than by the manifest's `upstream` field,

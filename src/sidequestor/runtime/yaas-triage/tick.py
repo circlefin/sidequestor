@@ -415,7 +415,8 @@ def check_quest(t, qid):
 
         if v == tick_check.MISCONFIG:
             rows.append({"qid": qid, "status": "misconfig", "watch_id": wid,
-                              "type": wtype, "reason": reason})
+                              "type": wtype, "reason": reason,
+                              "error": bool(verdict.get("error"))})
             had_skip = True
             # persist the error side effect if this was the error-promotion path
             if verdict.get("error"):
@@ -821,7 +822,18 @@ def run_tick(t):
                      "quests_skipped": skipped_count, "watches_skipped": watches_skipped,
                      "watches_misconfigured": watches_misconfigured,
                      "watches_in_backoff": watches_backoff,
-                     "watches_truncated": watches_truncated})
+                     "watches_truncated": watches_truncated,
+                     # A current snapshot lets the dashboard clear a warning as soon as a
+                     # watch recovers. Recent run-log events alone linger after recovery.
+                     "watch_issues": [
+                         {"quest": r["qid"], "watch_id": r.get("watch_id"),
+                          "type": r.get("type"), "status": r["status"],
+                          "error": bool(r.get("error")),
+                          "reason": r.get("reason", "")}
+                         for r in t.results
+                         if r["status"] == "misconfig"
+                         or (r["status"] == "skip" and r.get("ratelimited"))
+                     ]})
     housekeep(t, quest_dirs, skip_quests=activity_write_failures)
 
     # ── Decide: idle? ────────────────────────────────────────────────────────────
@@ -1169,6 +1181,12 @@ def dispatch_loop(t, dispatch_targets, targets_json):
     return worst_exit
 
 
+def _quest_dispatch_items(target, dirty_watches_json):
+    return [{"item_id": watch["watch_id"], "type": watch["type"],
+             "complete": watch.get("complete") is not False}
+            for watch in dirty_watches_json if watch["quest_id"] == target]
+
+
 def dispatch_one(t, target, timeout, dirty_watches_json):
     """One agent invocation for one target. Sets t.dispatch_* for the commit step."""
     t.dispatch_exit = 1
@@ -1189,8 +1207,7 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
                  for emoji, tss in pend.items() for ts in tss]
     else:
         kind = "quest"
-        items = [{"item_id": w["watch_id"], "type": w["type"]}
-                 for w in dirty_watches_json if w["quest_id"] == target]
+        items = _quest_dispatch_items(target, dirty_watches_json)
     if not items:
         t.log(f"DISPATCH SKIPPED: {target} — no dispatchable items in manifest")
         t.dispatch_exit = 8

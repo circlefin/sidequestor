@@ -1,4 +1,9 @@
 import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -122,6 +127,11 @@ class SlackThreadParserTest(unittest.TestCase):
         self.assertEqual(got[:3], (0, "", 0.0))
         self.assertEqual(got[3:], (False, 1))
 
+    def test_parent_can_be_counted_for_an_explicit_handoff(self):
+        parent = THREAD.split("=== THREAD REPLIES", 1)[0]
+        got = slack_utils._parse_thread_page(parent, 99.999999, include_parent=True)
+        self.assertEqual(got, (1, "parent", 100.0, False, 1))
+
     def test_empty_response_is_clean(self):
         self.assertEqual(
             slack_utils._parse_thread_page("", 100.0),
@@ -186,6 +196,49 @@ second reply
         )
         self.assertEqual(got, (2, "first reply *Sent using* <@U123|Sidequestor>",
                                102.0, True, None))
+
+
+class SlackThreadHandoffCheckerTest(unittest.TestCase):
+    def _check(self, messages: str, target_ts: str) -> dict:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-slack-handoff-") as raw:
+            mcp = Path(raw) / "mcp-call"
+            payload = json.dumps({"messages": messages, "pagination": ""})
+            mcp.write_text("#!/bin/sh\nprintf '%s\\n' '" + payload + "'\n")
+            mcp.chmod(0o755)
+            watch = {
+                "type": "slack_thread",
+                "channel_id": "C0AAAA1",
+                "thread_ts": "100.000000",
+                "last_checked_ts": "99.999999",
+                "include_parent": True,
+                "one_shot_until_ts": target_ts,
+                "reason": "retry blocked mention",
+            }
+            result = subprocess.run(
+                [sys.executable, str(CHECKERS / "slack_thread.py"), json.dumps(watch)],
+                text=True, capture_output=True, env={**os.environ, "MCP_CALL": str(mcp)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+    def test_handoff_target_parent_dispatches(self):
+        parent = THREAD.split("=== THREAD REPLIES", 1)[0]
+        result = self._check(parent, "100.000000")
+        self.assertEqual(result["outcome"], "dirty")
+        self.assertEqual(result["advance_to"], "100.000000")
+
+    def test_missing_handoff_target_fails_closed(self):
+        parent = THREAD.split("=== THREAD REPLIES", 1)[0]
+        result = self._check(parent, "101.000000")
+        self.assertEqual(result["outcome"], "error")
+        self.assertFalse(result["complete"])
+        self.assertIn("target message not observed", result["reason"])
+
+    def test_handoff_excludes_messages_after_target(self):
+        result = self._check(THREAD, "100.000000")
+        self.assertEqual(result["outcome"], "dirty")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["advance_to"], "100.000000")
 
 
 if __name__ == "__main__":

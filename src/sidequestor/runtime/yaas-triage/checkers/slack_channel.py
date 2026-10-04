@@ -76,7 +76,7 @@ def main():
             cause = result.transient_cause(r.stderr, "slack_read_channel")
             return "", None, f"TRANSIENT: {cause}; watermark held"
         if r.returncode == 1:
-            return "", None, f"slack auth failure on slack_read_channel"
+            return "", None, "AUTH: Slack authorization failed on slack_read_channel"
         # A non-zero exit is NOT automatically a hard error: mcp-call.sh exits 2 on
         # any JSON-RPC .error, and a rate limit arrives that way. Inspect the body
         # before classifying, or rate limits get misfiled as `error` and (before the
@@ -108,6 +108,8 @@ def main():
         # whenever the wording changed.
         if transient.startswith("TRANSIENT:"):
             result.ratelimited(transient)
+        elif transient.startswith("AUTH:"):
+            result.misconfig(transient[5:].strip())
         else:
             result.error(transient)
         return

@@ -237,6 +237,21 @@ def _ensure_inbox():
     return watch
 
 
+def _is_file_upload(target) -> bool:
+    return isinstance(target, dict) and target.get("action") == "file_upload"
+
+
+def _same_upload_kind(existing, new, existing_message, new_message) -> bool:
+    """Thread-level dedup, except a Slack file upload only matches the identical upload.
+
+    slack-file.py pins each upload's bytes in its target. Collapsing two different files
+    in one thread, or a file into a pending message there, would silently drop one.
+    """
+    if _is_file_upload(existing) or _is_file_upload(new):
+        return existing == new and existing_message == new_message
+    return True
+
+
 def cmd_write(payload_json: str):
     payload = json.loads(payload_json)
 
@@ -267,6 +282,8 @@ def cmd_write(payload_json: str):
             and i.get("status") == "pending_review"
             and i.get("target", {}).get("channel_id") == channel_id
             and i.get("target", {}).get("thread_ts") == thread_ts
+            and _same_upload_kind(i.get("target"), target,
+                                  i.get("message_text") or "", payload.get("message_text") or "")
         )
         if duplicate:
             return approval_store.NO_WRITE
