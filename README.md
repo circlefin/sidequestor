@@ -64,7 +64,7 @@ Background jobs record the PATH of the terminal that runs `sq start`, with the i
 install it or set `SIDEQUESTOR_PATH` in the workspace `.env` to a PATH that contains it, then run
 `sq start` again.
 
-Commands use the current directory when it is an initialized workspace. From elsewhere, pass `--workspace PATH` or set `SIDEQUESTOR_WORKSPACE`; the legacy `YAAS_WORKSPACE` name remains accepted.
+Commands use the current directory when it is an initialized workspace. From elsewhere, pass `--workspace PATH` or set `SIDEQUESTOR_WORKSPACE`; the legacy `YAAS_WORKSPACE` name is deprecated: it remains accepted for now but emits a `FutureWarning` and will be removed in a future release.
 
 ## How do I set up the Slack app?
 

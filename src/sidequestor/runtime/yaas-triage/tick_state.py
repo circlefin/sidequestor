@@ -36,10 +36,22 @@ modules.
 import json
 import os
 import re
+import warnings
 from pathlib import Path
 
 WATCH_MANIFEST_SCHEMA_VERSION = 1
 NON_WATCH_EXECUTABLES = {"cron-due", "reactions"}
+
+
+def _warn_legacy_alias(key):
+    """Signal that a ``YAAS_*`` input name is deprecated (issue #10)."""
+    warnings.warn(
+        f"Legacy environment variable {key} is deprecated; set "
+        f"{'SIDEQUESTOR_' + key[len('YAAS_'):]} instead. The YAAS_* alias remains "
+        "accepted for now and will be removed in a future release.",
+        FutureWarning,
+        stacklevel=3,
+    )
 
 # Slack has two id namespaces that look alike and are NOT interchangeable: a conversation
 # is C…, D… or G…, while a member is U… (or W… on Enterprise Grid).
@@ -171,7 +183,10 @@ def _load_env_file(repo_root, environ):
                 values["YAAS_" + key[len("SIDEQUESTOR_"):]] = value
         for key, value in list(values.items()):
             if key.startswith("YAAS_"):
-                values.setdefault("SIDEQUESTOR_" + key[len("YAAS_"):], value)
+                canonical = "SIDEQUESTOR_" + key[len("YAAS_"):]
+                if canonical not in values:
+                    _warn_legacy_alias(key)
+                    values[canonical] = value
         return values
 
     envf = Path(repo_root) / ".env"
@@ -198,6 +213,8 @@ def _load_env_file(repo_root, environ):
         if key not in dotenv:
             dotenv[key] = val
     for key, val in dotenv.items():
+        if key.startswith("YAAS_"):
+            _warn_legacy_alias(key)
         peer = ("YAAS_" + key[len("SIDEQUESTOR_"):]
                 if key.startswith("SIDEQUESTOR_")
                 else "SIDEQUESTOR_" + key[len("YAAS_"):]

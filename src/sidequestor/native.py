@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 from .workspace import Workspace
@@ -15,6 +16,17 @@ from .job_path import environment_bin_dir, merge_path
 RUNTIME_ROOT = Path(__file__).resolve().parent / "runtime"
 
 
+def _warn_legacy_alias(key: str) -> None:
+    """Signal that a ``YAAS_*`` input name is deprecated (issue #10)."""
+    warnings.warn(
+        f"Legacy environment variable {key} is deprecated; set "
+        f"{'SIDEQUESTOR_' + key[len('YAAS_'):]} instead. The YAAS_* alias remains "
+        "accepted for now and will be removed in a future release.",
+        FutureWarning,
+        stacklevel=2,
+    )
+
+
 def _apply_env_aliases(environment: dict[str, str]) -> dict[str, str]:
     """Expose canonical names while keeping the unchanged runtime contract."""
     for key, value in list(environment.items()):
@@ -22,7 +34,10 @@ def _apply_env_aliases(environment: dict[str, str]) -> dict[str, str]:
             environment["YAAS_" + key[len("SIDEQUESTOR_"):]] = value
     for key, value in list(environment.items()):
         if key.startswith("YAAS_"):
-            environment.setdefault("SIDEQUESTOR_" + key[len("YAAS_"):], value)
+            canonical = "SIDEQUESTOR_" + key[len("YAAS_"):]
+            if canonical not in environment:
+                _warn_legacy_alias(key)
+                environment[canonical] = value
     return environment
 
 
@@ -56,6 +71,8 @@ def _load_workspace_env(environment: dict[str, str], workspace: Workspace) -> di
         if key not in dotenv:
             dotenv[key] = value
     for key, value in dotenv.items():
+        if key.startswith("YAAS_"):
+            _warn_legacy_alias(key)
         peer = ("YAAS_" + key[len("SIDEQUESTOR_"):]
                 if key.startswith("SIDEQUESTOR_")
                 else "SIDEQUESTOR_" + key[len("YAAS_"):]
@@ -81,6 +98,7 @@ def _environment(workspace: Workspace, extra_env: dict[str, str] | None = None) 
         "SIDEQUESTOR_WORKSPACE": str(workspace.root),
         "SIDEQUESTOR_RUNTIME_ROOT": str(RUNTIME_ROOT),
         "SIDEQUESTOR_PYTHON": sys.executable,
+        "SIDEQUESTOR_ENGINE_ROOT": str(workspace.yaas_dir / "engine" / "current"),
         "YAAS_WORKSPACE": str(workspace.root),
         "YAAS_ENGINE_ROOT": str(workspace.yaas_dir / "engine" / "current"),
         "YAAS_RUNTIME_ROOT": str(RUNTIME_ROOT),
