@@ -4,6 +4,15 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## Unreleased
+
+### Deprecated
+- Providing configuration through legacy `YAAS_*` environment variables (process
+  environment, workspace `.env`, `YAAS_WORKSPACE`, `YAAS_CONFIG_HOME`) is deprecated
+  (#10). Legacy names remain accepted and keep their existing precedence rules, but
+  each legacy input now emits a `FutureWarning` naming the `SIDEQUESTOR_*` variable
+  to switch to. Internal `YAAS_*` exports for the bundled runtime are unchanged.
+
 ## 0.1.26 - 2026-09-07
 
 ### Added
