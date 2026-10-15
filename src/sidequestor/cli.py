@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import __version__
 from .build_info import build_info
-from .native import _environment, dry_tick, run_native, run_native_loop, run_native_tick
+from .native import _environment, _warn_legacy_alias, dry_tick, run_native, run_native_loop, run_native_tick
 from .dashboard import (
     read_dashboard_url,
     serve as serve_dashboard,
@@ -94,7 +94,14 @@ ISOLATED_COMMANDS = {"slack-send", "react", "mcp-call", "jira-call"}
 
 
 def _workspace_from_environment() -> str | None:
-    return os.environ.get("SIDEQUESTOR_WORKSPACE") or os.environ.get("YAAS_WORKSPACE")
+    configured = os.environ.get("SIDEQUESTOR_WORKSPACE")
+    if configured:
+        return configured
+    legacy = os.environ.get("YAAS_WORKSPACE")
+    if legacy:
+        _warn_legacy_alias("YAAS_WORKSPACE")
+        return legacy
+    return None
 
 
 def _usage() -> str:

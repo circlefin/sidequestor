@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,8 +18,20 @@ REACTION_WATERMARK = "reaction-watermark.json"
 
 
 def _config_home() -> Path:
-    configured = os.environ.get("SIDEQUESTOR_CONFIG_HOME") or os.environ.get("YAAS_CONFIG_HOME")
-    return Path(configured).expanduser() if configured else Path.home() / ".config"
+    configured = os.environ.get("SIDEQUESTOR_CONFIG_HOME")
+    if configured:
+        return Path(configured).expanduser()
+    legacy = os.environ.get("YAAS_CONFIG_HOME")
+    if legacy:
+        warnings.warn(
+            "Legacy environment variable YAAS_CONFIG_HOME is deprecated; set "
+            "SIDEQUESTOR_CONFIG_HOME instead. The YAAS_* alias remains accepted "
+            "for now and will be removed in a future release.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return Path(legacy).expanduser()
+    return Path.home() / ".config"
 
 
 @dataclass(frozen=True)

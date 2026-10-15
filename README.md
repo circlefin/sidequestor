@@ -50,7 +50,7 @@ Nothing of yours is moved or overwritten: `sidequestor init .` only adds `.yaas`
 
 The virtualenv supplies the commands, so `deactivate` puts the shell back the way you found it.
 
-Commands use the current directory when it is an initialized workspace. From elsewhere, pass `--workspace PATH` or set `SIDEQUESTOR_WORKSPACE`; the legacy `YAAS_WORKSPACE` name remains accepted.
+Commands use the current directory when it is an initialized workspace. From elsewhere, pass `--workspace PATH` or set `SIDEQUESTOR_WORKSPACE`; the legacy `YAAS_WORKSPACE` name is deprecated: it remains accepted for now but emits a `FutureWarning` and will be removed in a future release.
 
 ## How do I set up the Slack app?
 
