@@ -126,7 +126,8 @@ class SlackSendAuthorizationTest(unittest.TestCase):
              approvals: list[dict] | None = None,
              response_channel_id: str = "C123",
              response_body: str | None = None,
-             stale_reason: str | None = None) -> tuple[int, str, str, MagicMock]:
+             stale_reason: str | None = None,
+             queue_for_review=None) -> tuple[int, str, str, MagicMock]:
         stdout, stderr = io.StringIO(), io.StringIO()
         call = MagicMock(return_value=response_body or json.dumps({
             "message_context": {
@@ -136,10 +137,11 @@ class SlackSendAuthorizationTest(unittest.TestCase):
             "message_link": "https://example.test/message",
         }))
         env = {} if target is None else {"SIDEQUESTOR_DISPATCH_TARGET": target}
+        queue = queue_for_review or MagicMock(return_value="appr-held")
         with patch.object(self.mod, "REPO_ROOT", self.root), \
              patch.object(self.mod, "_call_slack", call), \
              patch.object(self.mod, "_stale_reason", return_value=stale_reason), \
-             patch.object(self.mod, "_queue_for_review", return_value="appr-held"), \
+             patch.object(self.mod, "_queue_for_review", queue), \
              patch.object(self.mod.approval_store, "read_queue", return_value={
                  "items": approvals or [],
              }), \
@@ -170,6 +172,25 @@ class SlackSendAuthorizationTest(unittest.TestCase):
         self.assertEqual(event["event"], "draft_posted")
         self.assertEqual(event["approval_id"], "appr-held")
         self.assertEqual(event["message_text"], "Exact pre-review body")
+
+    def test_stale_reply_that_cannot_be_queued_fails_instead_of_reporting_held(self) -> None:
+        # A worker treats `held` as handled. If the review queue write failed, the reply was
+        # neither sent nor queued, so claiming it was held would drop it silently.
+        quest_id = self._quest(allow_send=True)
+        failed = MagicMock(returncode=2, stdout="", stderr="error:approvals file locked")
+        with patch.object(self.mod.subprocess, "run", return_value=failed):
+            code, output, error, call = self._run({
+                "quest_id": quest_id,
+                "channel_id": "C123",
+                "thread_ts": "1.000001",
+                "message": "Reply that must not vanish",
+            }, target=quest_id, stale_reason="thread is stale",
+                queue_for_review=self.mod._queue_for_review)
+
+        self.assertEqual(code, 2, output)
+        call.assert_not_called()
+        self.assertEqual(output, "")
+        self.assertIn("approvals file locked", error)
 
     def test_user_id_send_records_resolved_dm_channel_id(self) -> None:
         quest_id = self._quest(allow_send=True)

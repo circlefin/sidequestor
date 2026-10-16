@@ -231,7 +231,8 @@ scan per peer to rebuild.
 Besides ordinary review drafts, the approval ledger carries dashboard-submitted manual quest
 instructions. `enqueue-instruction <json>` durably records one distinct reviewed item without
 touching `watch.json`; `tick.py` calls `arm-pending-instructions` under the global triage lock on
-the next cycle. Workers claim with `start`, close successful work with `done`, and use
+the next cycle. It is for the dashboard and `sq queue` only and refuses inside a dispatch.
+Workers claim with `start`, close successful work with `done`, and use
 `abandon <id> <reason>` only when an expired manual-instruction lease makes the outcome uncertain.
 
 ### `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-gmail-reply/gmail-reply.py`
@@ -248,7 +249,9 @@ GWS_BIN="${GWS_BIN:-$(command -v gws)}" \
 `--reply-sender` invokes `gws gmail +reply`; `--reply-all` invokes
 `gws gmail +reply-all`. Reply-all supports `--cc` and `--remove`; both are
 rejected with sender-only mode. The helper also supports `--html`,
-repeatable `--attach`, and requires exactly one of `--draft` or `--send`. Reads `SIDEQUESTOR_FROM_EMAIL` from env
+repeatable `--attach`, and requires exactly one of `--draft`, `--send` or `--approval-spec`.
+`--send` requires `--quest-id` and either `allow_send: true` or a claimed approval
+(`--approval-id`) matching the `--approval-spec` output. Reads `SIDEQUESTOR_FROM_EMAIL` from env
 for the send-as alias. See `.yaas/engine/current/skills/yaas-gmail-reply/SKILL.md`.
 Draft first unless `allow_send: true` or an exact claimed approval authorizes
 the email and its audience. A temporary workaround for `googleworkspace/cli#911`

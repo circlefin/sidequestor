@@ -284,6 +284,11 @@ def _queue_for_review(p, reason):
     out = subprocess.run(
         ["python3", str(SCRIPT_DIR.parent / "ledger" / "approval-helper.py"), "write", json.dumps(payload)],
         capture_output=True, text=True)
+    if out.returncode != 0:
+        # Nothing was sent or queued; reporting `held` here would drop the reply silently.
+        print(f"error: could not queue the held reply for review: "
+              f"{(out.stderr or out.stdout or '').strip()[:200]}", file=sys.stderr)
+        sys.exit(2)
     return (out.stdout or "").strip()
 
 

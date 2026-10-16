@@ -18,10 +18,13 @@
 """Send a fresh, non-reply Gmail message through the native gws helper."""
 
 import argparse
+import json
 import os
 import subprocess
 import sys
 from email.utils import parseaddr
+
+import gmail_policy
 
 
 def main():
@@ -29,6 +32,10 @@ def main():
     parser.add_argument("--to", required=True)
     parser.add_argument("--subject", required=True)
     parser.add_argument("--body-file", required=True)
+    parser.add_argument("--quest-id", default="")
+    parser.add_argument("--approval-id", default="")
+    parser.add_argument("--approval-spec", action="store_true",
+                        help="print the approval a reviewer must grant for this exact email")
     args = parser.parse_args()
 
     sender = os.environ.get("SIDEQUESTOR_FROM_EMAIL") or os.environ.get("YAAS_FROM_EMAIL")
@@ -41,10 +48,20 @@ def main():
     with open(args.body_file, "r", encoding="utf-8") as body_file:
         body = body_file.read()
 
+    target = {"surface": "gmail", "action": "send", "to": args.to, "subject": args.subject}
+    if args.approval_spec:
+        print(json.dumps(gmail_policy.approval_spec(target, body), ensure_ascii=False))
+        return
+    reason = gmail_policy.send_policy_reason(args.quest_id, args.approval_id, target, body)
+    if reason:
+        print(f"ERROR: send denied: {reason}", file=sys.stderr)
+        raise SystemExit(1)
+
     gws = os.environ.get("GWS_BIN", "gws")
+    # `--flag=value` throughout: gws rejects a separate value that starts with "-".
     command = [
-        gws, "gmail", "+send", "--to", args.to, "--subject", args.subject,
-        "--body", body, "--from", sender_address,
+        gws, "gmail", "+send", f"--to={args.to}", f"--subject={args.subject}",
+        f"--body={body}", f"--from={sender_address}",
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=60)

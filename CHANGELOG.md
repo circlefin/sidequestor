@@ -12,6 +12,20 @@ Versions are dated by the day the snapshot was published.
 - `sq setup` reports Codex and Claude Code CLI availability on the background-job PATH,
   offers npm installation for missing CLIs, and verifies a selected CLI before starting
   jobs. Cursor selection also checks for `cursor-agent`. CLI authentication remains separate.
+- `sq setup` states the risk when it applies the `bypassPermissions` default.
+
+### Fixed
+- Gmail `--send` (`gmail-reply.py`, `send_fresh.py`) now enforces the documented rule: an active
+  quest matching the dispatch target, and `allow_send: true` or a claimed approval pinning the
+  recipients, attachment hashes and body. `--approval-spec` prints the approval to request.
+- Jira watches no longer skip changes for users west of UTC: the JQL bound is written in the
+  user's Jira time zone instead of UTC.
+- A stale Slack reply that cannot be queued for review now fails instead of reporting `held`.
+- Gmail bodies, subjects and recipients that start with `-` reach `gws` intact.
+- Review cards show the file for Slack uploads and the message, added recipients and
+  attachments for Gmail replies.
+- `enqueue-instruction` refuses inside a dispatch, so a worker cannot queue an operator
+  instruction.
 
 ## 0.1.48 - 2026-10-15
 

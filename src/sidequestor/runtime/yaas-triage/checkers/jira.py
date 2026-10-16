@@ -68,8 +68,9 @@ import os
 import json
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 JIRA_CALL = os.environ.get("JIRA_CALL", os.path.join(SCRIPT_DIR, "..", "surfaces", "jira-call.sh"))
@@ -135,7 +136,11 @@ def main():
     caller_ordered = "order by" in jql.lower()
     bound = ""
     if since_ts > 0:
-        since_str = datetime.fromtimestamp(since_ts - 60, timezone.utc).strftime("%Y/%m/%d %H:%M")
+        # Jira parses JQL date literals in the caller's profile time zone, so a UTC literal
+        # lands hours late for anyone west of UTC and hides real changes. The extra hour
+        # covers a DST-ambiguous local time; the post-filter below restores exactness.
+        zone = ZoneInfo(jira_get("/rest/api/3/myself").get("timeZone") or "UTC")
+        since_str = datetime.fromtimestamp(since_ts - 3660, zone).strftime("%Y/%m/%d %H:%M")
         bound = f' AND updated >= "{since_str}"'
 
     if caller_ordered:

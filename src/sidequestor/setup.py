@@ -160,6 +160,11 @@ def provision_env(workspace: Workspace, *, input_fn=input, interactive: bool = T
             values[effort_key] = effort
         permission = existing.get(permission_key)
         if permission in _PLACEHOLDERS:
+            # Kept as the default because restricted modes block the helper scripts headless
+            # workers must run (Claude's acceptEdits denies `python3 ...` in -p mode).
+            print("Worker permission default is bypassPermissions: workers run shell, file and "
+                  "network actions without approval while reading untrusted Slack, email and "
+                  "GitHub text. Use it only in a workspace where that is acceptable.")
             permission = _prompt("Worker permission mode", "bypassPermissions", input_fn=input_fn) if interactive else "bypassPermissions"
             values[permission_key] = permission
 
