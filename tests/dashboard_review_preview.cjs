@@ -36,11 +36,11 @@ vm.runInContext(definitions.concat(names.map(declaration)).join('\n') + String.r
   assert.ok(upload.includes('q3&lt;b&gt;.pdf (2048 bytes)'), upload);
   assert.ok(upload.includes('/Users/me/q3&lt;b&gt;.pdf'), upload);
   assert.ok(upload.includes('C1 · thread 1.2'), upload);
-  // A reply approval pins added recipients and attachments; the reviewer must see them.
+  // A reply approval shows the resolved To/Cc audience, including original recipients.
   const reply=approvalCard({id:'r',quest_id:'q',action_type:'remote_request',message_text:'Deck attached',available_actions:['review'],
-    target:{surface:'gmail',action:'reply_all',message_id:'m-9',cc:['new@example.com'],remove:['old@example.com'],attachments:[{path:'/Users/me/deck.pdf',size:9,sha256:'ab'}],html:false}});
+    target:{surface:'gmail',action:'reply_all',message_id:'m-9',cc:['new@example.com'],recipients:{to:['alice@example.com'],cc:['bob@example.com','new@example.com']},remove:['old@example.com'],attachments:[{path:'/Users/me/deck.pdf',size:9,sha256:'ab'}],html:false}});
   assert.ok(reply.includes('Gmail reply-all'), reply);
-  assert.ok(reply.includes('message m-9 · cc new@example.com · remove old@example.com · attach /Users/me/deck.pdf (9 bytes)'), reply);
+  assert.ok(reply.includes('message m-9 · to alice@example.com · cc bob@example.com · cc new@example.com · remove old@example.com · attach /Users/me/deck.pdf (9 bytes)'), reply);
   assert.ok(reviewPreview('').includes('No proposed content.'));
   assert.ok(reviewPreview('plain text').includes('<p>plain text</p>'));
   assert.ok(!reviewPreview('<img src=x onerror=alert(1)>').includes('<img'));

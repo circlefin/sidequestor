@@ -639,6 +639,17 @@ class ApprovalDedupTest(unittest.TestCase):
         self.assertTrue(self._write("slack_message", thread))
         self.assertEqual(self._write("slack_message", thread), "")
 
+    def test_gmail_approvals_dedup_only_the_identical_email(self) -> None:
+        first = {"surface": "gmail", "action": "reply_all", "message_id": "m1",
+                 "recipients": {"to": ["alice@example.com"], "cc": []}}
+        second = {**first, "message_id": "m2"}
+        self.assertTrue(self._write("remote_request", first, "First reply"))
+        self.assertEqual(self._write("remote_request", first, "First reply"), "")
+        self.assertTrue(self._write("remote_request", first, "Revised reply"))
+        self.assertTrue(self._write("remote_request", second, "Second reply"))
+        items = json.loads((self.root / "state" / "pending-approvals.json").read_text())["items"]
+        self.assertEqual(len(items), 3)
+
 
 class FetchCommandTest(TransportTestCase):
     def setUp(self) -> None:

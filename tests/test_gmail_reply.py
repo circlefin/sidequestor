@@ -67,8 +67,10 @@ class GmailReplyTest(unittest.TestCase):
             "    print('API error envelope')\n"
             "    print('transport detail', file=sys.stderr)\n"
             "    raise SystemExit(7)\n"
-            "if 'get' in sys.argv:\n"
-            "    print(os.environ.get('GWS_METADATA', '{\"payload\":{\"headers\":[]}}'))\n"
+            "if 'getProfile' in sys.argv:\n"
+            "    print(os.environ.get('GWS_PROFILE', '{\"emailAddress\":\"me@example.com\"}'))\n"
+            "elif 'get' in sys.argv:\n"
+            "    print(os.environ.get('GWS_METADATA', '{\"payload\":{\"headers\":[{\"name\":\"From\",\"value\":\"Alice <alice@example.com>\"},{\"name\":\"To\",\"value\":\"me@example.com\"},{\"name\":\"Cc\",\"value\":\"bob@example.com\"}]}}'))\n"
             "else:\n"
             "    print(os.environ.get('GWS_SEND_OUTPUT', '{\"id\":\"sent-1\"}'))\n"
         )
@@ -261,8 +263,13 @@ class GmailReplyTest(unittest.TestCase):
                  "--cc", "new@example.com", "--attach", str(attachment), "--body", "Deck attached")
         spec = self.run_reply(*reply, "--approval-spec")
         self.assertEqual(spec.returncode, 0, spec.stderr)
-        self.assertEqual(self.recorded_calls(), [])
-        claim(self.root, json.loads(spec.stdout))
+        expected = json.loads(spec.stdout)
+        self.assertEqual(expected["target"]["recipients"], {
+            "to": ["alice@example.com"],
+            "cc": ["bob@example.com", "new@example.com"],
+        })
+        self.assertFalse(any("+reply-all" in call for call in self.recorded_calls()))
+        claim(self.root, expected)
 
         sent = self.run_reply(*reply, "--send")
         self.assertEqual(sent.returncode, 0, sent.stderr)
@@ -270,12 +277,49 @@ class GmailReplyTest(unittest.TestCase):
 
         widened = self.run_reply(*reply, "--cc", "outsider@example.com", "--send")
         self.assertEqual(widened.returncode, 1)
+        self.env["GWS_METADATA"] = json.dumps({"payload": {"headers": [
+            {"name": "From", "value": "Alice <alice@example.com>"},
+            {"name": "To", "value": "me@example.com"},
+            {"name": "Cc", "value": "bob@example.com, outsider@example.com"},
+        ]}})
+        changed_audience = self.run_reply(*reply, "--send")
+        self.assertEqual(changed_audience.returncode, 1)
+        self.env.pop("GWS_METADATA")
         attachment.write_bytes(b"different bytes")
         swapped = self.run_reply(*reply, "--send")
         self.assertEqual(swapped.returncode, 1)
         reworded = self.run_reply(*reply[:-1], "Something else", "--send")
         self.assertEqual(reworded.returncode, 1)
         self.assertEqual(sum("+reply-all" in call for call in self.recorded_calls()), 1)
+
+    def test_reply_all_spec_resolves_self_sent_message_and_removals(self) -> None:
+        self.env["GWS_METADATA"] = json.dumps({"payload": {"headers": [
+            {"name": "From", "value": "me@example.com"},
+            {"name": "To", "value": "alice@example.com, bob@example.com"},
+            {"name": "Cc", "value": "carol@example.com"},
+        ]}})
+        result = self.run_reply(
+            "message-3", "--reply-all", "--body", "Hello", "--remove", "bob@example.com",
+            "--cc", "new@example.com", "--approval-spec",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["target"]["recipients"], {
+            "to": ["alice@example.com"],
+            "cc": ["carol@example.com", "new@example.com"],
+        })
+
+    def test_sender_only_spec_uses_reply_to_header(self) -> None:
+        self.env["GWS_METADATA"] = json.dumps({"payload": {"headers": [
+            {"name": "From", "value": "alice@example.com"},
+            {"name": "Reply-To", "value": "team@example.com"},
+            {"name": "To", "value": "me@example.com"},
+        ]}})
+        result = self.run_reply("message-4", "--reply-sender", "--body", "Hello",
+                                "--approval-spec")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["target"]["recipients"], {
+            "to": ["team@example.com"], "cc": [],
+        })
 
 
 if __name__ == "__main__":

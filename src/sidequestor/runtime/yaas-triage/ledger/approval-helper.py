@@ -241,13 +241,11 @@ def _is_file_upload(target) -> bool:
     return isinstance(target, dict) and target.get("action") == "file_upload"
 
 
-def _same_upload_kind(existing, new, existing_message, new_message) -> bool:
-    """Thread-level dedup, except a Slack file upload only matches the identical upload.
-
-    slack-file.py pins each upload's bytes in its target. Collapsing two different files
-    in one thread, or a file into a pending message there, would silently drop one.
-    """
-    if _is_file_upload(existing) or _is_file_upload(new):
+def _same_review_request(existing, new, existing_message, new_message) -> bool:
+    """Keep Slack message thread dedup, but compare the full content of pinned actions."""
+    if (_is_file_upload(existing) or _is_file_upload(new)
+            or (isinstance(existing, dict) and existing.get("surface") == "gmail")
+            or (isinstance(new, dict) and new.get("surface") == "gmail")):
         return existing == new and existing_message == new_message
     return True
 
@@ -282,8 +280,8 @@ def cmd_write(payload_json: str):
             and i.get("status") == "pending_review"
             and i.get("target", {}).get("channel_id") == channel_id
             and i.get("target", {}).get("thread_ts") == thread_ts
-            and _same_upload_kind(i.get("target"), target,
-                                  i.get("message_text") or "", payload.get("message_text") or "")
+            and _same_review_request(i.get("target"), target,
+                                     i.get("message_text") or "", payload.get("message_text") or "")
         )
         if duplicate:
             return approval_store.NO_WRITE

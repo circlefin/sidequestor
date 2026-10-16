@@ -38,9 +38,11 @@ reply-all review must identify the full intended audience, including added or re
 the dispatch target, and it needs either `allow_send: true` or `--approval-id` naming a claimed
 approval for this exact email. To request one, rerun the same command with `--approval-spec`
 instead of `--send` and merge the printed `{action_type, target, message_text}` into
-`sq approval write`. The target pins the message, added and removed recipients, HTML mode and
-each attachment's SHA-256, and `message_text` is the body, so a changed audience, attachment or
-body needs a new review. `send_fresh.py` follows the same rule with `--to` and `--subject` pinned.
+`sq approval write`. For replies, `--approval-spec` reads the original Gmail message (and the
+account profile for reply-all) to show the resolved To/Cc audience on the review card. The send
+rechecks that audience. The target also pins the message, added and removed recipients, HTML mode
+and each attachment's SHA-256, and `message_text` is the body, so a changed audience, attachment
+or body needs a new review. `send_fresh.py` follows the same rule with `--to` and `--subject` pinned.
 
 ## Usage
 

@@ -120,6 +120,72 @@ def _reply_all_cc_workaround(message_id):
     return _mailboxes(values)
 
 
+def _reviewed_recipients(message_id, reply_all, added_cc, removed):
+    """Resolve the audience for a review from the same Gmail message used at send time.
+
+    The approval is checked again immediately before a reviewed send, so an edited original
+    message or a changed sending identity cannot silently change its audience.
+    """
+    output = _run_gws(
+        ["gmail", "users", "messages", "get", "--params",
+         json.dumps({"userId": "me", "id": message_id, "format": "metadata"})],
+        timeout=60, operation="reply audience read",
+    )
+    headers = _json_object(output).get("payload", {}).get("headers", [])
+    if not isinstance(headers, list):
+        raise GwsFailure(1, "ERROR: Gmail message has no readable recipient headers")
+
+    def addresses(name):
+        return _mailboxes([header.get("value", "") for header in headers
+                           if isinstance(header, dict) and header.get("name") == name])
+
+    sender = addresses("From")
+    if not sender:
+        raise GwsFailure(1, "ERROR: Gmail message has no From header")
+    reply_to = addresses("Reply-To") or sender
+    original_to = addresses("To")
+    # gws 0.22.5 only recognizes canonical Cc; the existing workaround passes other
+    # spellings through --cc. Include those addresses in the reviewed audience too.
+    original_cc = _mailboxes([header.get("value", "") for header in headers
+                              if isinstance(header, dict)
+                              and str(header.get("name", "")).casefold() == "cc"])
+
+    if not reply_all:
+        return {"to": reply_to, "cc": []}
+
+    profile = _json_object(_run_gws(
+        ["gmail", "users", "getProfile", "--params", '{"userId":"me"}'],
+        timeout=60, operation="sender profile read",
+    ))
+    primary = _mailboxes([profile.get("emailAddress", "")])
+    if not primary:
+        raise GwsFailure(1, "ERROR: Gmail profile has no emailAddress")
+    alias = _mailboxes([os.environ.get("SIDEQUESTOR_FROM_EMAIL")
+                        or os.environ.get("YAAS_FROM_EMAIL") or ""])
+    own = {address.casefold() for address in [*primary, *alias]}
+    excluded = own | {address.casefold() for address in _mailboxes(removed)}
+    self_reply = sender[0].casefold() in own
+    to_candidates = original_to if self_reply else reply_to
+    cc_candidates = [*original_cc, *_mailboxes(added_cc)] if self_reply else [
+        *original_to, *original_cc, *_mailboxes(added_cc)]
+
+    def unique(candidates, seen):
+        audience = []
+        for address in candidates:
+            key = address.casefold()
+            if key not in excluded and key not in seen:
+                seen.add(key)
+                audience.append(address)
+        return audience
+
+    seen = set()
+    to = unique(to_candidates, seen)
+    cc = unique(cc_candidates, seen)
+    if not to:
+        raise GwsFailure(1, "ERROR: no To recipient remains for this reply-all")
+    return {"to": to, "cc": cc}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("message_id")
@@ -167,6 +233,9 @@ def main():
             "message_id": args.message_id, "cc": _mailboxes(args.cc),
             "remove": _mailboxes(args.remove), "attachments": attachments, "html": args.html,
         }
+        if args.approval_spec or args.approval_id:
+            target["recipients"] = _reviewed_recipients(
+                args.message_id, args.reply_all, args.cc, args.remove)
         if args.approval_spec:
             print(json.dumps(gmail_policy.approval_spec(target, reply_body), ensure_ascii=False))
             return
