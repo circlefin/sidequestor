@@ -4,6 +4,15 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.50 - 2026-10-16
+
+### Fixed
+- Gmail reply approvals retain distinct requests for distinct messages, show the complete
+  resolved To/Cc audience, and verify that audience again before sending.
+- Recipient review matches `gws` parsing for repeated or malformed address headers and
+  pins the reviewed default sending alias. Ambiguous recipients fail closed.
+- Gmail review cards show the full reply audience rather than only added recipients.
+
 ## 0.1.49 - 2026-10-15
 
 ### Changed
@@ -18,13 +27,11 @@ Versions are dated by the day the snapshot was published.
 - Gmail `--send` (`gmail-reply.py`, `send_fresh.py`) now enforces the documented rule: an active
   quest matching the dispatch target, and `allow_send: true` or a claimed approval pinning the
   recipients, attachment hashes and body. `--approval-spec` prints the approval to request.
-- Distinct Gmail emails for one quest retain separate approval requests; reply reviews show the
-  resolved To/Cc audience and recheck it before sending.
 - Jira watches no longer skip changes for users west of UTC: the JQL bound is written in the
   user's Jira time zone instead of UTC.
 - A stale Slack reply that cannot be queued for review now fails instead of reporting `held`.
 - Gmail bodies, subjects and recipients that start with `-` reach `gws` intact.
-- Review cards show the file for Slack uploads and the message, full audience and
+- Review cards show the file for Slack uploads and the message, added recipients and
   attachments for Gmail replies.
 - `enqueue-instruction` refuses inside a dispatch, so a worker cannot queue an operator
   instruction.
