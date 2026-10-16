@@ -160,5 +160,43 @@ class ApprovalFailureTest(unittest.TestCase):
             self.assertEqual(item["processing_error"], "channel_not_found")
 
 
+class OperatorInstructionTest(unittest.TestCase):
+    """enqueue-instruction items are born reviewed and read as the operator's own words."""
+
+    def enqueue(self, dispatch_target: str | None) -> tuple[subprocess.CompletedProcess, list]:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-instruction-") as raw:
+            workspace = Path(raw)
+            quest = workspace / "state" / "quests" / "active" / "quest-1"
+            quest.mkdir(parents=True)
+            (quest / "watch.json").write_text(json.dumps({"watches": []}))
+            env = {**os.environ, "YAAS_WORKSPACE": str(workspace),
+                   "YAAS_RUNTIME_ROOT": str(RUNTIME_ROOT)}
+            env.pop("SIDEQUESTOR_DISPATCH_TARGET", None)
+            if dispatch_target is not None:
+                env["SIDEQUESTOR_DISPATCH_TARGET"] = dispatch_target
+            completed = subprocess.run(
+                [sys.executable, str(TRIAGE_ROOT / "ledger" / "approval-helper.py"),
+                 "enqueue-instruction",
+                 json.dumps({"quest_id": "quest-1", "instruction": "Email the deck to Bob"})],
+                text=True, capture_output=True, env=env,
+            )
+            approvals = workspace / "state" / "pending-approvals.json"
+            items = json.loads(approvals.read_text())["items"] if approvals.exists() else []
+        return completed, items
+
+    def test_operator_instruction_is_queued_reviewed_outside_a_dispatch(self) -> None:
+        completed, items = self.enqueue(None)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual([item["status"] for item in items], ["reviewed"])
+
+    def test_dispatched_worker_cannot_queue_an_operator_instruction(self) -> None:
+        # A worker steered by text it read must not mint work that the next worker
+        # treats as the operator's instruction.
+        completed, items = self.enqueue("quest-1")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("dispatch", completed.stderr)
+        self.assertEqual(items, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -415,6 +415,13 @@ def cmd_enqueue_instruction(payload_json: str) -> int:
     next tick, while that tick owns the global triage lock. Writing watch.json
     here would race the tick whose lock this queue exists to wait behind.
     """
+    # The item is born reviewed and read as the operator's words, so a dispatched worker must
+    # not mint one. Like slack-file.py's interactive refusal, this stops mistakes and casual
+    # injection; a worker with a shell can unset the variable.
+    if os.environ.get("SIDEQUESTOR_DISPATCH_TARGET", "").strip():
+        print("error:operator instructions cannot be queued from inside a dispatch",
+              file=sys.stderr)
+        return 2
     payload = json.loads(payload_json)
     quest_id = str(payload.get("quest_id") or "").strip()
     instruction = str(payload.get("instruction") or "").strip()

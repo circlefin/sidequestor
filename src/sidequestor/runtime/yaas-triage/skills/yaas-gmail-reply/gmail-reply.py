@@ -24,6 +24,8 @@ import subprocess
 import sys
 from email.utils import getaddresses, parseaddr
 
+import gmail_policy
+
 
 GWS = os.environ.get("GWS_BIN", "gws")
 
@@ -137,9 +139,13 @@ def main():
     parser.add_argument("--remove", action="append", default=[])
     parser.add_argument("--html", action="store_true")
     parser.add_argument("--attach", action="append", default=[])
+    parser.add_argument("--quest-id", default="")
+    parser.add_argument("--approval-id", default="")
     delivery = parser.add_mutually_exclusive_group(required=True)
     delivery.add_argument("--send", action="store_true")
     delivery.add_argument("--draft", action="store_true")
+    delivery.add_argument("--approval-spec", action="store_true",
+                          help="print the approval a reviewer must grant for this exact reply")
     args = parser.parse_args()
 
     if args.cc and not args.reply_all:
@@ -151,13 +157,32 @@ def main():
     if not reply_body:
         parser.error("no reply body provided")
 
+    if args.send or args.approval_spec:
+        try:
+            attachments = [gmail_policy.attachment_record(path) for path in args.attach]
+        except OSError as exc:
+            parser.error(f"cannot read attachment: {exc}")
+        target = {
+            "surface": "gmail", "action": "reply_all" if args.reply_all else "reply",
+            "message_id": args.message_id, "cc": _mailboxes(args.cc),
+            "remove": _mailboxes(args.remove), "attachments": attachments, "html": args.html,
+        }
+        if args.approval_spec:
+            print(json.dumps(gmail_policy.approval_spec(target, reply_body), ensure_ascii=False))
+            return
+        reason = gmail_policy.send_policy_reason(
+            args.quest_id, args.approval_id, target, reply_body)
+        if reason:
+            print(f"ERROR: send denied: {reason}", file=sys.stderr)
+            raise SystemExit(1)
+
     command = [
         "gmail",
         "+reply-all" if args.reply_all else "+reply",
         "--message-id",
         args.message_id,
-        "--body",
-        reply_body,
+        # `--flag=value` throughout: gws rejects a separate value that starts with "-".
+        f"--body={reply_body}",
     ]
 
     sender = os.environ.get("SIDEQUESTOR_FROM_EMAIL") or os.environ.get("YAAS_FROM_EMAIL")
@@ -165,7 +190,7 @@ def main():
         sender_address = parseaddr(sender)[1]
         if not sender_address:
             parser.error("SIDEQUESTOR_FROM_EMAIL must contain a valid email address")
-        command.extend(["--from", sender_address])
+        command.append(f"--from={sender_address}")
 
     cc = []
     if args.reply_all:
@@ -173,13 +198,13 @@ def main():
         cc.extend(_mailboxes(args.cc))
     cc = _mailboxes(cc)
     if cc:
-        command.extend(["--cc", ",".join(cc)])
+        command.append(f"--cc={','.join(cc)}")
     if args.remove:
-        command.extend(["--remove", ",".join(_mailboxes(args.remove))])
+        command.append(f"--remove={','.join(_mailboxes(args.remove))}")
     if args.html:
         command.append("--html")
     for attachment in args.attach:
-        command.extend(["--attach", attachment])
+        command.append(f"--attach={attachment}")
     if args.draft:
         command.append("--draft")
 

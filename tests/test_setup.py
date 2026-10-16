@@ -78,6 +78,24 @@ class SetupTests(unittest.TestCase):
             self.assertIn("SIDEQUESTOR_CLAUDE_PERMISSION_MODE=bypassPermissions",
                           workspace.env_file.read_text())
 
+    def test_bypass_default_is_announced_with_its_risk(self):
+        # Workers read untrusted Slack, email and GitHub text. Applying an unsandboxed,
+        # unapproved mode silently would hide that trade-off from the person installing.
+        for interactive in (False, True):
+            with self.subTest(interactive=interactive), tempfile.TemporaryDirectory() as raw:
+                workspace = init_workspace(raw)
+                workspace.env_file.write_text(
+                    "SIDEQUESTOR_AGENT=codex\n"
+                    "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+                )
+                answers = iter(["", "", ""])
+                output = StringIO()
+                with redirect_stdout(output):
+                    provision_env(workspace, input_fn=lambda _prompt: next(answers),
+                                  interactive=interactive)
+                self.assertIn("without approval", output.getvalue())
+                self.assertIn("untrusted", output.getvalue())
+
     def test_existing_permission_mode_is_preserved(self):
         with tempfile.TemporaryDirectory() as raw:
             workspace = init_workspace(raw)
@@ -86,9 +104,12 @@ class SetupTests(unittest.TestCase):
                 "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
                 "SIDEQUESTOR_CODEX_PERMISSION_MODE=workspace-write\n"
             )
-            provision_env(workspace, interactive=False)
+            output = StringIO()
+            with redirect_stdout(output):
+                provision_env(workspace, interactive=False)
             self.assertIn("SIDEQUESTOR_CODEX_PERMISSION_MODE=workspace-write",
                           workspace.env_file.read_text())
+            self.assertNotIn("untrusted", output.getvalue())
 
     def test_cli_check_installs_missing_cli_and_rechecks_job_path(self):
         with tempfile.TemporaryDirectory() as raw:

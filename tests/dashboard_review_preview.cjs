@@ -30,6 +30,17 @@ vm.runInContext(definitions.concat(names.map(declaration)).join('\n') + String.r
   assert.ok(markup.includes('source" hidden'));
   assert.ok(approvalCard({...spec,available_actions:[]}).includes('View source'));
   assert.ok(approvalCard({...spec,action_type:'slack_message'}).includes('sent using the source text'));
+  // The approval pins one file's bytes, so the reviewer must see which file it is.
+  const upload=approvalCard({id:'u',quest_id:'q',action_type:'remote_request',message_text:'Q3 numbers',available_actions:['review'],
+    target:{surface:'slack',action:'file_upload',channel_id:'C1',thread_ts:'1.2',file:'/Users/me/q3<b>.pdf',filename:'q3<b>.pdf',size:2048,sha256:'ab'}});
+  assert.ok(upload.includes('q3&lt;b&gt;.pdf (2048 bytes)'), upload);
+  assert.ok(upload.includes('/Users/me/q3&lt;b&gt;.pdf'), upload);
+  assert.ok(upload.includes('C1 · thread 1.2'), upload);
+  // A reply approval pins added recipients and attachments; the reviewer must see them.
+  const reply=approvalCard({id:'r',quest_id:'q',action_type:'remote_request',message_text:'Deck attached',available_actions:['review'],
+    target:{surface:'gmail',action:'reply_all',message_id:'m-9',cc:['new@example.com'],remove:['old@example.com'],attachments:[{path:'/Users/me/deck.pdf',size:9,sha256:'ab'}],html:false}});
+  assert.ok(reply.includes('Gmail reply-all'), reply);
+  assert.ok(reply.includes('message m-9 · cc new@example.com · remove old@example.com · attach /Users/me/deck.pdf (9 bytes)'), reply);
   assert.ok(reviewPreview('').includes('No proposed content.'));
   assert.ok(reviewPreview('plain text').includes('<p>plain text</p>'));
   assert.ok(!reviewPreview('<img src=x onerror=alert(1)>').includes('<img'));

@@ -34,6 +34,14 @@ Before composing the body, load
 `--draft` or `--send`, is required. Use `--draft` when direct sending is not authorized. A
 reply-all review must identify the full intended audience, including added or removed recipients.
 
+`--send` is enforced, not advisory: it requires `--quest-id`, the quest must be active and match
+the dispatch target, and it needs either `allow_send: true` or `--approval-id` naming a claimed
+approval for this exact email. To request one, rerun the same command with `--approval-spec`
+instead of `--send` and merge the printed `{action_type, target, message_text}` into
+`sq approval write`. The target pins the message, added and removed recipients, HTML mode and
+each attachment's SHA-256, and `message_text` is the body, so a changed audience, attachment or
+body needs a new review. `send_fresh.py` follows the same rule with `--to` and `--subject` pinned.
+
 ## Usage
 
 ```bash
@@ -54,8 +62,9 @@ GWS_BIN=$(command -v gws || echo /opt/homebrew/bin/gws) \
 - `--remove <emails>` removes recipients from a reply-all. The flag may be repeated.
 - `--html` treats the body as HTML and preserves Gmail-style HTML quoting.
 - `--attach <path>` adds an attachment. The flag may be repeated.
-- `--draft` creates a draft; `--send` delivers immediately. Exactly one is required.
-  Use `--send` only after the runtime authorization check succeeds.
+- `--draft` creates a draft; `--send` delivers immediately; `--approval-spec` prints the approval
+  this exact reply needs and sends nothing. Exactly one is required.
+- `--quest-id <id>` and, for a draft-only quest, `--approval-id <id>` authorize `--send`.
 
 The native `gws` helpers set `threadId`, `In-Reply-To`, and `References` and
 quote the original message. Sidequestor does not construct MIME or append history itself.
