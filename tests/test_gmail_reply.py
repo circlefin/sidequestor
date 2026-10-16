@@ -67,7 +67,9 @@ class GmailReplyTest(unittest.TestCase):
             "    print('API error envelope')\n"
             "    print('transport detail', file=sys.stderr)\n"
             "    raise SystemExit(7)\n"
-            "if 'getProfile' in sys.argv:\n"
+            "if 'sendAs' in sys.argv and 'list' in sys.argv:\n"
+            "    print(os.environ.get('GWS_SEND_AS', '{\"sendAs\":[{\"sendAsEmail\":\"me@example.com\",\"isDefault\":true}]}'))\n"
+            "elif 'getProfile' in sys.argv:\n"
             "    print(os.environ.get('GWS_PROFILE', '{\"emailAddress\":\"me@example.com\"}'))\n"
             "elif 'get' in sys.argv:\n"
             "    print(os.environ.get('GWS_METADATA', '{\"payload\":{\"headers\":[{\"name\":\"From\",\"value\":\"Alice <alice@example.com>\"},{\"name\":\"To\",\"value\":\"me@example.com\"},{\"name\":\"Cc\",\"value\":\"bob@example.com\"}]}}'))\n"
@@ -319,6 +321,42 @@ class GmailReplyTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["target"]["recipients"], {
             "to": ["team@example.com"], "cc": [],
+        })
+
+    def test_review_keeps_recipients_before_trailing_commas(self) -> None:
+        self.env["GWS_METADATA"] = json.dumps({"payload": {"headers": [
+            {"name": "From", "value": "ceo@example.com"},
+            {"name": "Reply-To", "value": "attacker@example.com,"},
+            {"name": "To", "value": "me@example.com"},
+            {"name": "Cc", "value": "alice@example.com, outsider@example.com,"},
+        ]}})
+        for mode in ("--reply-sender", "--reply-all"):
+            with self.subTest(mode=mode):
+                result = self.run_reply("message-5", mode, "--body", "Hello", "--approval-spec")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                audience = json.loads(result.stdout)["target"]["recipients"]
+                self.assertEqual(audience["to"], ["attacker@example.com"])
+                self.assertEqual(audience["cc"],
+                                 ["alice@example.com", "outsider@example.com"]
+                                 if mode == "--reply-all" else [])
+
+    def test_reply_all_spec_accounts_for_default_send_as_alias(self) -> None:
+        self.env.pop("SIDEQUESTOR_FROM_EMAIL")
+        self.env.pop("YAAS_FROM_EMAIL", None)
+        self.env["GWS_SEND_AS"] = json.dumps({"sendAs": [
+            {"sendAsEmail": "me@example.com", "isDefault": False},
+            {"sendAsEmail": "me@alias.com", "isDefault": True},
+        ]})
+        self.env["GWS_METADATA"] = json.dumps({"payload": {"headers": [
+            {"name": "From", "value": "me@alias.com"},
+            {"name": "To", "value": "alice@example.com"},
+            {"name": "Cc", "value": "carol@example.com"},
+        ]}})
+        result = self.run_reply("message-6", "--reply-all", "--body", "Hello",
+                                "--approval-spec")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["target"]["recipients"], {
+            "to": ["alice@example.com"], "cc": ["carol@example.com"],
         })
 
 

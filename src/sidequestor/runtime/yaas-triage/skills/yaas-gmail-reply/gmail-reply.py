@@ -22,7 +22,7 @@ import json
 import os
 import subprocess
 import sys
-from email.utils import getaddresses, parseaddr
+from email.utils import parseaddr
 
 import gmail_policy
 
@@ -85,14 +85,49 @@ def _sent_id(stdout):
     return response.get("id") or nested_id or stdout.strip()
 
 
+def _gws_mailbox(raw):
+    """Match gws 0.22.5 Mailbox::parse for audience comparisons."""
+    raw = raw.strip()
+    start = raw.rfind("<")
+    if start >= 0:
+        end = raw.find(">", start)
+        if end >= 0:
+            raw = raw[start + 1:end].strip()
+    return "".join(character for character in raw if ord(character) >= 32 and ord(character) != 127)
+
+
+def _gws_mailbox_tokens(raw):
+    """Split like gws: commas outside quoted strings delimit addresses."""
+    start = 0
+    in_quotes = False
+    previous_backslash = False
+    for index, character in enumerate(raw):
+        if character == "\\" and in_quotes:
+            previous_backslash = not previous_backslash
+            continue
+        if character == '"' and not previous_backslash:
+            in_quotes = not in_quotes
+        elif character == "," and not in_quotes:
+            token = raw[start:index].strip()
+            if token:
+                yield token
+            start = index + 1
+        previous_backslash = False
+    token = raw[start:].strip()
+    if token:
+        yield token
+
+
 def _mailboxes(values):
     addresses = []
     seen = set()
-    for _, address in getaddresses(values):
-        key = address.casefold()
-        if address and key not in seen:
-            seen.add(key)
-            addresses.append(address)
+    for value in values:
+        for token in _gws_mailbox_tokens(value):
+            address = _gws_mailbox(token)
+            key = address.casefold()
+            if address and key not in seen:
+                seen.add(key)
+                addresses.append(address)
     return addresses
 
 
@@ -139,8 +174,10 @@ def _reviewed_recipients(message_id, reply_all, added_cc, removed):
         return _mailboxes([header.get("value", "") for header in headers
                            if isinstance(header, dict) and header.get("name") == name])
 
-    sender = addresses("From")
-    if not sender:
+    from_headers = [header.get("value", "") for header in headers
+                    if isinstance(header, dict) and header.get("name") == "From"]
+    sender = [_gws_mailbox(from_headers[-1])] if from_headers else []
+    if not sender or not sender[0]:
         raise GwsFailure(1, "ERROR: Gmail message has no From header")
     reply_to = addresses("Reply-To") or sender
     original_to = addresses("To")
@@ -160,8 +197,20 @@ def _reviewed_recipients(message_id, reply_all, added_cc, removed):
     primary = _mailboxes([profile.get("emailAddress", "")])
     if not primary:
         raise GwsFailure(1, "ERROR: Gmail profile has no emailAddress")
-    alias = _mailboxes([os.environ.get("SIDEQUESTOR_FROM_EMAIL")
-                        or os.environ.get("YAAS_FROM_EMAIL") or ""])
+    configured_sender = os.environ.get("SIDEQUESTOR_FROM_EMAIL") or os.environ.get("YAAS_FROM_EMAIL")
+    if configured_sender:
+        alias = _mailboxes([parseaddr(configured_sender)[1]])
+    else:
+        send_as = _json_object(_run_gws(
+            ["gmail", "users", "settings", "sendAs", "list", "--params", '{"userId":"me"}'],
+            timeout=60, operation="send-as identity read",
+        ))
+        identities = send_as.get("sendAs", [])
+        defaults = [identity.get("sendAsEmail", "") for identity in identities
+                    if isinstance(identity, dict) and identity.get("isDefault")]
+        if len(defaults) != 1:
+            raise GwsFailure(1, "ERROR: cannot determine the default Gmail send-as address")
+        alias = _mailboxes(defaults)
     own = {address.casefold() for address in [*primary, *alias]}
     excluded = own | {address.casefold() for address in _mailboxes(removed)}
     self_reply = sender[0].casefold() in own
