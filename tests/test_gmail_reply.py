@@ -341,6 +341,7 @@ class GmailReplyTest(unittest.TestCase):
                                  if mode == "--reply-all" else [])
 
     def test_reply_all_spec_accounts_for_default_send_as_alias(self) -> None:
+        write_quest(self.root, allow_send=False)
         self.env.pop("SIDEQUESTOR_FROM_EMAIL")
         self.env.pop("YAAS_FROM_EMAIL", None)
         self.env["GWS_SEND_AS"] = json.dumps({"sendAs": [
@@ -352,12 +353,68 @@ class GmailReplyTest(unittest.TestCase):
             {"name": "To", "value": "alice@example.com"},
             {"name": "Cc", "value": "carol@example.com"},
         ]}})
-        result = self.run_reply("message-6", "--reply-all", "--body", "Hello",
+        reply = ("message-6", "--reply-all", "--body", "Hello")
+        result = self.run_reply(*reply, "--approval-spec")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        spec = json.loads(result.stdout)
+        self.assertEqual(spec["target"]["recipients"], {
+            "to": ["alice@example.com"], "cc": ["carol@example.com"],
+        })
+        self.assertEqual(spec["target"]["sender"], "me@alias.com")
+        claim(self.root, spec)
+        sent = self.run_reply(*reply, "--quest-id", QUEST, "--approval-id", "approval-1",
+                              "--send")
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertIn("--from=me@alias.com", self.recorded_calls()[-1])
+
+    def test_repeated_reply_to_headers_cannot_hide_a_recipient(self) -> None:
+        self.env["GWS_METADATA"] = json.dumps({"payload": {"headers": [
+            {"name": "From", "value": "ceo@example.com"},
+            {"name": "Reply-To", "value": '"<ceo@example.com>'},
+            {"name": "Reply-To", "value": '"<attacker@evil.com>, <ceo@example.com>'},
+            {"name": "To", "value": "me@example.com"},
+        ]}})
+        result = self.run_reply("message-7", "--reply-sender", "--body", "Hello",
+                                "--approval-spec")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["target"]["recipients"]["to"],
+                         ["attacker@evil.com", "ceo@example.com"])
+
+    def test_review_refuses_empty_reply_to_instead_of_showing_from(self) -> None:
+        self.env["GWS_METADATA"] = json.dumps({"payload": {"headers": [
+            {"name": "From", "value": "ceo@example.com"},
+            {"name": "Reply-To", "value": ","},
+        ]}})
+        result = self.run_reply("message-8", "--reply-sender", "--body", "Hello",
+                                "--approval-spec")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no usable recipient", result.stderr)
+
+    def test_unicode_casefold_does_not_hide_a_distinct_cc_address(self) -> None:
+        self.env["GWS_PROFILE"] = json.dumps({"emailAddress": "sam@example.com"})
+        self.env["SIDEQUESTOR_FROM_EMAIL"] = "sam@example.com"
+        self.env["GWS_METADATA"] = json.dumps({"payload": {"headers": [
+            {"name": "From", "value": "alice@example.com"},
+            {"name": "To", "value": "sam@example.com"},
+            {"name": "Cc", "value": "ſam@example.com"},
+        ]}})
+        result = self.run_reply("message-9", "--reply-all", "--body", "Hello",
                                 "--approval-spec")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["target"]["recipients"], {
-            "to": ["alice@example.com"], "cc": ["carol@example.com"],
+            "to": ["alice@example.com"], "cc": ["ſam@example.com"],
         })
+
+    def test_review_refuses_ambiguous_reparsed_cc_address(self) -> None:
+        self.env["GWS_METADATA"] = json.dumps({"payload": {"headers": [
+            {"name": "From", "value": "alice@example.com"},
+            {"name": "To", "value": "me@example.com"},
+            {"name": "CC", "value": '<"b@x.com> ", bob@ok.com'},
+        ]}})
+        result = self.run_reply("message-10", "--reply-all", "--body", "Hello",
+                                "--approval-spec")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cannot be reviewed safely", result.stderr)
 
 
 if __name__ == "__main__":

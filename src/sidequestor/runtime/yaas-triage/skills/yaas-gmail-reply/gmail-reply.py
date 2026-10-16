@@ -124,11 +124,16 @@ def _mailboxes(values):
     for value in values:
         for token in _gws_mailbox_tokens(value):
             address = _gws_mailbox(token)
-            key = address.casefold()
+            key = address.lower()
             if address and key not in seen:
                 seen.add(key)
                 addresses.append(address)
     return addresses
+
+
+def _ascii_lower(value):
+    return value.translate(str.maketrans(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
 
 
 def _reply_all_cc_workaround(message_id):
@@ -170,25 +175,43 @@ def _reviewed_recipients(message_id, reply_all, added_cc, removed):
     if not isinstance(headers, list):
         raise GwsFailure(1, "ERROR: Gmail message has no readable recipient headers")
 
+    def header_values(name):
+        return [value for header in headers if isinstance(header, dict)
+                and header.get("name") == name
+                and (value := header.get("value", ""))]
+
     def addresses(name):
-        return _mailboxes([header.get("value", "") for header in headers
-                           if isinstance(header, dict) and header.get("name") == name])
+        # gws joins repeated address headers before parsing. Parsing each one separately
+        # can hide recipients when quotes span two header values.
+        values = header_values(name)
+        return _mailboxes([", ".join(values)]) if values else []
 
     from_headers = [header.get("value", "") for header in headers
                     if isinstance(header, dict) and header.get("name") == "From"]
     sender = [_gws_mailbox(from_headers[-1])] if from_headers else []
     if not sender or not sender[0]:
         raise GwsFailure(1, "ERROR: Gmail message has no From header")
-    reply_to = addresses("Reply-To") or sender
+    reply_to = addresses("Reply-To") if header_values("Reply-To") else sender
+    if not reply_to:
+        raise GwsFailure(1, "ERROR: Gmail Reply-To has no usable recipient")
     original_to = addresses("To")
+    if not reply_all:
+        return {"to": reply_to, "cc": []}, None
+
     # gws 0.22.5 only recognizes canonical Cc; the existing workaround passes other
     # spellings through --cc. Include those addresses in the reviewed audience too.
-    original_cc = _mailboxes([header.get("value", "") for header in headers
-                              if isinstance(header, dict)
-                              and str(header.get("name", "")).casefold() == "cc"])
-
-    if not reply_all:
-        return {"to": reply_to, "cc": []}
+    noncanonical_cc = _mailboxes([header.get("value", "") for header in headers
+                                  if isinstance(header, dict)
+                                  and str(header.get("name", "")).lower() == "cc"
+                                  and header.get("name") != "Cc"])
+    # These addresses are fed back to gws as one --cc= value. Quotes or separators
+    # would make that second parse differ from the review, so reject them for review.
+    reparsed = [*noncanonical_cc, *_mailboxes(added_cc), *_mailboxes(removed)]
+    if any(any(character in address for character in '\",<>\\')
+           or any(character.isspace() for character in address)
+           for address in reparsed):
+        raise GwsFailure(1, "ERROR: recipient address cannot be reviewed safely")
+    original_cc = [*addresses("Cc"), *noncanonical_cc]
 
     profile = _json_object(_run_gws(
         ["gmail", "users", "getProfile", "--params", '{"userId":"me"}'],
@@ -211,9 +234,12 @@ def _reviewed_recipients(message_id, reply_all, added_cc, removed):
         if len(defaults) != 1:
             raise GwsFailure(1, "ERROR: cannot determine the default Gmail send-as address")
         alias = _mailboxes(defaults)
-    own = {address.casefold() for address in [*primary, *alias]}
-    excluded = own | {address.casefold() for address in _mailboxes(removed)}
-    self_reply = sender[0].casefold() in own
+    if len(alias) != 1:
+        raise GwsFailure(1, "ERROR: cannot determine the Gmail sending address")
+    own = {address.lower() for address in [*primary, *alias]}
+    excluded = own | {address.lower() for address in _mailboxes(removed)}
+    self_reply = any(_ascii_lower(sender[0]) == _ascii_lower(address)
+                     for address in [*primary, *alias])
     to_candidates = original_to if self_reply else reply_to
     cc_candidates = [*original_cc, *_mailboxes(added_cc)] if self_reply else [
         *original_to, *original_cc, *_mailboxes(added_cc)]
@@ -221,7 +247,7 @@ def _reviewed_recipients(message_id, reply_all, added_cc, removed):
     def unique(candidates, seen):
         audience = []
         for address in candidates:
-            key = address.casefold()
+            key = address.lower()
             if key not in excluded and key not in seen:
                 seen.add(key)
                 audience.append(address)
@@ -232,7 +258,7 @@ def _reviewed_recipients(message_id, reply_all, added_cc, removed):
     cc = unique(cc_candidates, seen)
     if not to:
         raise GwsFailure(1, "ERROR: no To recipient remains for this reply-all")
-    return {"to": to, "cc": cc}
+    return {"to": to, "cc": cc}, alias[0]
 
 
 def main():
@@ -283,8 +309,10 @@ def main():
             "remove": _mailboxes(args.remove), "attachments": attachments, "html": args.html,
         }
         if args.approval_spec or args.approval_id:
-            target["recipients"] = _reviewed_recipients(
+            target["recipients"], resolved_sender = _reviewed_recipients(
                 args.message_id, args.reply_all, args.cc, args.remove)
+            if resolved_sender:
+                target["sender"] = resolved_sender
         if args.approval_spec:
             print(json.dumps(gmail_policy.approval_spec(target, reply_body), ensure_ascii=False))
             return
@@ -309,6 +337,9 @@ def main():
         if not sender_address:
             parser.error("SIDEQUESTOR_FROM_EMAIL must contain a valid email address")
         command.append(f"--from={sender_address}")
+    elif args.approval_id and target.get("sender"):
+        # Pin the reviewed default alias even if gws's own send-as lookup later fails.
+        command.append(f"--from={target['sender']}")
 
     cc = []
     if args.reply_all:
