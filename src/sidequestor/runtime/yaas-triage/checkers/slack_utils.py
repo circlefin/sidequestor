@@ -114,11 +114,13 @@ _SEARCH_RESULT_START = re.compile(r"^### Result \d+ of \d+\s*$", re.MULTILINE)
 _SEARCH_TS = re.compile(r"^Message(?:_ts| TS):\s*([0-9]+\.[0-9]+)\s*$", re.MULTILINE)
 
 
-def parse_search_records(text, content_label, self_user_id=None):
+def parse_search_records(text, content_label, self_user_id=None, expected_channel_id=None):
     """Return ``(timestamp, preview-or-None)`` records from a Slack search page.
 
     ``None`` previews are ignored bot/self hits. Their timestamps remain in the result
     so coverage is based on everything Slack returned, not only dispatchable messages.
+    When ``expected_channel_id`` is set, hits in other conversations are ignored too;
+    missing channel metadata is an error so the DM watch cannot silently go clean.
     """
     starts = list(_SEARCH_RESULT_START.finditer(text))
     if not starts:
@@ -131,7 +133,12 @@ def parse_search_records(text, content_label, self_user_id=None):
     for index, start in enumerate(starts):
         end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
         block = text[start.end():end]
-        content_match = re.search(rf"^{re.escape(content_label)}:\s*", block, re.MULTILINE)
+        # DM search results have used both labels. Take the first delimiter so a
+        # later line in message text cannot be mistaken for metadata.
+        label = "(?:Content|Text)" if expected_channel_id else re.escape(content_label)
+        content_match = re.search(rf"^{label}:\s*", block, re.MULTILINE)
+        if expected_channel_id and not content_match:
+            raise ValueError("Slack search result omitted message content delimiter")
         metadata = block[:content_match.start()] if content_match else block
         timestamp_match = _SEARCH_TS.search(metadata)
         if not timestamp_match:
@@ -140,6 +147,13 @@ def parse_search_records(text, content_label, self_user_id=None):
         ignored = bool(from_match and "[BOT]" in from_match.group(0))
         if from_match and self_user_id:
             ignored = ignored or f"(ID: {self_user_id})" in from_match.group(0)
+        if expected_channel_id:
+            channels = re.findall(
+                r"^Channel: [^\n]*\(ID: ([A-Z0-9]+)\)\s*$", metadata, re.MULTILINE
+            )
+            if len(channels) != 1:
+                raise ValueError("Slack search result omitted unambiguous channel ID")
+            ignored = ignored or channels[0] != expected_channel_id
         content = block[content_match.end():] if content_match else ""
         content = content.split("\n---", 1)[0]
         preview = None if ignored else " ".join(content.split())[:100]
@@ -172,7 +186,7 @@ def _bank_search_prefix(records, since, ceiling):
 
 def drain_search(fetch_page, since, content_label, self_user_id=None, now=None,
                  max_active_pages=MAX_PAGES,
-                 max_scan_pages=SEARCH_MAX_SCAN_PAGES):
+                 max_scan_pages=SEARCH_MAX_SCAN_PAGES, expected_channel_id=None):
     """Drain an oldest-first Slack search without parking a saturated watermark.
 
     Pages containing only records at or below ``since`` do not consume the active-page
@@ -195,7 +209,9 @@ def drain_search(fetch_page, since, content_label, self_user_id=None, now=None,
             if banked:
                 return banked
             raise
-        page, block_count = parse_search_records(text, content_label, self_user_id)
+        page, block_count = parse_search_records(
+            text, content_label, self_user_id, expected_channel_id
+        )
         scanned_pages += 1
         if page:
             timestamps = [timestamp for timestamp, _preview in page]
@@ -226,7 +242,7 @@ def drain_search(fetch_page, since, content_label, self_user_id=None, now=None,
                     return banked
                 raise
             lookahead, _lookahead_count = parse_search_records(
-                lookahead_text, content_label, self_user_id
+                lookahead_text, content_label, self_user_id, expected_channel_id
             )
             boundary = records[-1][0]
             if lookahead and lookahead[0][0] < boundary:
@@ -243,12 +259,15 @@ def drain_search(fetch_page, since, content_label, self_user_id=None, now=None,
     return _search_result(records, since, advance_to)
 
 
-def search_messages(mcp_call, query, since, content_label, self_user_id=None, now=None):
+def search_messages(mcp_call, query, since, content_label, self_user_id=None, now=None,
+                    expected_channel_id=None):
     """Check Slack search efficiently, falling back to prefix draining only for a real backlog."""
     now = time.time() if now is None else now
     ceiling = now - SEARCH_INDEX_LAG
     text, cursor = fetch_search_page(mcp_call, query, sort_dir="desc")
-    records, block_count = parse_search_records(text, content_label, self_user_id)
+    records, block_count = parse_search_records(
+        text, content_label, self_user_id, expected_channel_id
+    )
     timestamps = [timestamp for timestamp, _preview in records]
     if timestamps != sorted(timestamps, reverse=True):
         raise ValueError("Slack search results were not sorted descending")
@@ -266,6 +285,7 @@ def search_messages(mcp_call, query, since, content_label, self_user_id=None, no
         content_label,
         self_user_id=self_user_id,
         now=now,
+        expected_channel_id=expected_channel_id,
     )
 
 

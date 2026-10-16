@@ -34,6 +34,7 @@ from .launchd import (
 )
 from .launchd import render, status as launchd_status, uninstall as uninstall_jobs
 from .migrations import migrate_workspace
+from . import quest_terminal
 from .resources import ENGINE_VERSION, current_engine_version, sync_resources
 from .setup import configured_agent, print_worker_instructions, run_setup
 from .upgrade import run_upgrade
@@ -62,7 +63,7 @@ COMMANDS = {
     "doctor": "validate a workspace and its engine",
     "migrate": "apply workspace schema migrations",
     "sync-resources": "refresh managed engine resources",
-    "upgrade": "upgrade the package and refresh managed resources",
+    "upgrade": "upgrade the package and refresh resources when in a workspace",
     "credentials": "inspect or repair the stable macOS Keychain helper",
     "new-quest": "scaffold a quest folder from a JSON spec",
     "watch": "manage watches",
@@ -79,6 +80,7 @@ COMMANDS = {
     "x-auth": "authorize or inspect an X user account",
     "x-send": "perform an X action as the authorized user",
     "gdoc-comment": "add verified text-anchored Google Doc comments",
+    **quest_terminal.COMMANDS,
 }
 
 LEGACY_COMMANDS = {
@@ -141,6 +143,7 @@ def _command_help(command: str) -> str:
         "x-auth": "sidequestor [--workspace PATH] x-auth authorize CLIENT_ID [CREDENTIAL_ID]\n       sidequestor [--workspace PATH] x-auth status [CREDENTIAL_ID]\n       sidequestor [--workspace PATH] x-auth revoke [CREDENTIAL_ID]",
         "x-send": "sidequestor [--workspace PATH] x-send ACTION [OPTIONS]\n       sidequestor [--workspace PATH] x-send '{\"action\":\"post\",\"text\":\"hello\"}'",
         "gdoc-comment": "sidequestor [--workspace PATH] gdoc-comment [approval-spec] '<payload_json>'",
+        **quest_terminal.USAGE,
     }
     usage = examples.get(command, f"sidequestor [--workspace PATH] {command} [ARGS...]")
     return f"usage: {usage}\n\n{COMMANDS[command]}"
@@ -632,6 +635,9 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
         if len(matches) != 1:
             raise SystemExit(f"instance not found or ambiguous: {target}")
         return _cmd_stop(load_workspace(matches[0]["path"]))
+    if (command == "upgrade" and not (workspace_path or instance or _workspace_from_environment())
+            and find_workspace_root() is None):
+        return run_upgrade(None, args)
     workspace = _workspace(workspace_path, instance)
     if command == "doctor":
         return _cmd_doctor(workspace)
@@ -656,6 +662,8 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
         return _cmd_loop(workspace, args)
     if command == "dashboard":
         return _cmd_dashboard(workspace, args)
+    if command in quest_terminal.COMMANDS:
+        return quest_terminal.run_command(workspace, command, args)
     if command in ISOLATED_COMMANDS:
         return run_isolated(workspace, command, args)
     if command in LEGACY_COMMANDS:

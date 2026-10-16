@@ -286,12 +286,14 @@ does not add them.
 
 ### `sq gdoc-comment`
 
-Adds real text-anchored Google Doc comments through a dedicated Chrome profile and Playwright.
+Adds real text-anchored Google Doc comments through the Docs API using `gws`.
 The writer enforces active-quest scope, `allow_send` or an exact claimed approval, dispatch
-idempotency, exclusive browser access, Drive verification, and quest timeline logging. Every write
+idempotency, serialized writes, Docs API verification, and quest timeline logging. Every write
 requires an idempotency key. One
 exact-case anchor is accepted per idempotency key, avoiding partial multi-comment writes. The `gws` CLI
-must be installed and authenticated with Drive access. The capability is enabled by default and
+must be installed and authenticated with Docs and Drive access as an author with comment access.
+The writer uses a document revision guard when available. Comments are limited to 2048 UTF-8 bytes.
+The capability is enabled by default and
 can be disabled workspace-wide with
 `SIDEQUESTOR_GDOC_COMMENTS_ENABLED=0`. See
 `.yaas/engine/current/skills/yaas-gdoc-anchored-comments/SKILL.md`.

@@ -4,6 +4,98 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.49 - 2026-10-15
+
+### Changed
+- Fresh `sq setup` workspaces default Codex and Claude worker permissions to
+  `bypassPermissions`. Existing nonempty permission settings are preserved.
+- `sq setup` reports Codex and Claude Code CLI availability on the background-job PATH,
+  offers npm installation for missing CLIs, and verifies a selected CLI before starting
+  jobs. Cursor selection also checks for `cursor-agent`. CLI authentication remains separate.
+
+## 0.1.48 - 2026-10-15
+
+### Changed
+- Quest creation and maintenance instructions require explicit Markdown headings for distinct
+  topics, bold labels for short attributes, and flat lists for fields, rules, and steps.
+  This improves dashboard context readability as quests are created or updated; existing
+  context files are not automatically reformatted.
+
+## 0.1.47 - 2026-10-15
+
+### Changed
+- Manual review opens with a formatted preview and displays the review context. Use **Edit**
+  to change the source or **View source** for read-only items, then **Preview** to return.
+  Unsaved text, editing mode, cursor position, and scroll survive dashboard polling.
+- Workers use basic Markdown for longer review explanations and action plans while preserving
+  the destination's syntax in outbound drafts. Sending still uses the source text; the preview
+  is approximate. Code-fenced proposals appear as literal source to preserve indentation.
+
+## 0.1.46 - 2026-10-12
+
+### Added
+- **Open in terminal** in the quest footer opens a Terminal window attached to a persistent
+  session for that quest; opening it again joins the same session. The session starts in the
+  quest folder with a summary and the `ask`, `ctx`, `trail`, `queue` and `help` helpers, also
+  available as `sq ask|ctx|trail|queue|terminal QUEST_ID`. It uses tmux when installed,
+  otherwise macOS's `screen`. The session is an ordinary shell: focused on the quest, not
+  restricted to it. `queue` needs a typed confirmation at an interactive terminal.
+- **Create interactively in Terminal instead** in the Create a quest dialog now opens a
+  workspace session whose `create` helper (also `sq create`) starts your agent on the
+  quest-creation skill, replacing the prompt to copy.
+
+### Changed
+- The quest composer now reads "Queue a precise instruction for this quest…".
+
+## 0.1.45 - 2026-10-09
+
+### Fixed
+- Slack DM watches count only messages from the watched conversation, not group DMs or other
+  conversations returned by Slack search. Those other hits still count toward search coverage,
+  so the watch can advance its watermark without dispatching the wrong conversation.
+
+## 0.1.44 - 2026-10-09
+
+### Fixed
+- `sq upgrade` works outside an initialized workspace as a package-only upgrade. It explicitly
+  says that resource sync, validation, and job restart were skipped; upgrading from a workspace
+  retains those steps.
+- Pip-managed upgrades bypass pip's cached package-index response, which could hide a release
+  just published to PyPI. The upgrader verifies the installed version afterward and reports a
+  no-op explicitly instead of claiming that an unchanged package was upgraded.
+
+## 0.1.43 - 2026-10-08
+
+### Fixed
+- `sq gdoc-comment` accepts comment-only access. Google does not return a document revision ID
+  to commenters, so the writer omits the optional revision guard for them while still checking
+  `canComment`, the saved state, and the exact quoted anchor.
+- Manual review identifies the destination and labels proposed agent actions separately from
+  messages. Recent action failures appear above earlier review concerns with distinct styling
+  and timestamps.
+
+## 0.1.42 - 2026-10-08
+
+### Changed
+- `sq gdoc-comment` writes text-anchored comments through the Google Docs API using `gws`.
+  Authenticate `gws` with Docs and Drive access as an author with edit access. Writes require
+  the document revision to prevent concurrent edits from shifting the selected anchor, and
+  succeed only when the API confirms the saved comment and exact quoted text. Quest approval,
+  idempotency, serialization, and timeline logging remain enforced.
+- Removed the Playwright dependency and dedicated Chrome launcher and driver. The
+  `SIDEQUESTOR_GDOC_CDP_URL` and `SIDEQUESTOR_GDOC_CHROME_PROFILE` settings are obsolete.
+
+### Fixed
+- Anchor matching checks all document tabs, including nested tabs, tables, headers, footers,
+  and footnotes, and uses UTF-16 indexes with tab and segment IDs. Ambiguous matches fail
+  before reserving an idempotency key.
+- Missing document revision IDs fail preflight without consuming the idempotency key.
+  Comment-only access is refused because it cannot provide the required revision guard.
+- Comments exceeding the API's 2048-byte UTF-8 limit fail validation before any network call
+  or idempotency reservation.
+- Completed comment writes can replay their stored result and finish timeline logging even
+  when `gws` is temporarily unavailable. Indeterminate writes remain held for inspection.
+
 ## 0.1.41 - 2026-10-05
 
 ### Fixed

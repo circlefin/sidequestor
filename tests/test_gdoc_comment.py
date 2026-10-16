@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -9,68 +8,13 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "src/sidequestor/runtime/yaas-triage/skills/yaas-gdoc-anchored-comments/gdoc-comment.py"
-DRIVER = ROOT / "src/sidequestor/runtime/yaas-triage/skills/yaas-gdoc-anchored-comments/playwright-driver.py"
-
-
-def load_driver():
-    spec = importlib.util.spec_from_file_location("sidequestor_gdoc_playwright_driver", DRIVER)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
 
 
 class GDocCommentTests(unittest.TestCase):
-    def workspace(self, root: Path, *, allow_send: bool) -> Path:
-        quest = root / "state/quests/active/review-doc"
-        quest.mkdir(parents=True)
-        (quest / "meta.json").write_text(json.dumps({"allow_send": allow_send}))
-        (quest / "timeline.ndjson").write_text("")
-        return quest
-
-    def driver(self, root: Path) -> tuple[Path, Path]:
-        calls = root / "driver-calls.ndjson"
-        script = root / "fake-driver.py"
-        script.write_text(textwrap.dedent(f"""\
-            import json, sys
-            payload = json.load(sys.stdin)
-            with open({str(calls)!r}, "a") as stream:
-                stream.write(json.dumps(payload) + "\\n")
-            print(json.dumps({{
-                "ok": True,
-                "doc_id": payload["doc_id"],
-                "results": [{{
-                    "anchor": item["text"],
-                    "comment": item["comment"],
-                    "comment_id": f"comment-{{index}}",
-                    "quoted_text": item["text"],
-                    "status": "anchored",
-                }} for index, item in enumerate(payload["anchors"], 1)],
-            }}))
-        """))
-        return script, calls
-
-    def run_helper(self, workspace: Path, driver: Path, payload: dict, **extra_env):
-        env = dict(os.environ)
-        env.update({
-            "SIDEQUESTOR_WORKSPACE": str(workspace),
-            "SIDEQUESTOR_DISPATCH_TARGET": "review-doc",
-            "SIDEQUESTOR_GDOC_COMMENTS_ENABLED": "1",
-            "SIDEQUESTOR_GDOC_COMMENT_DRIVER": str(driver),
-            "SIDEQUESTOR_GDOC_COMMENT_TEST_MODE": "1",
-            "SIDEQUESTOR_PYTHON": sys.executable,
-        })
-        env.update(extra_env)
-        return subprocess.run(
-            [sys.executable, str(HELPER), json.dumps(payload)],
-            text=True, capture_output=True, env=env,
-        )
-
     @staticmethod
     def payload(**updates):
         value = {
@@ -83,318 +27,339 @@ class GDocCommentTests(unittest.TestCase):
         value.update(updates)
         return value
 
+    def workspace(self, root: Path, *, allow_send: bool) -> Path:
+        quest = root / "state/quests/active/review-doc"
+        quest.mkdir(parents=True)
+        (quest / "meta.json").write_text(json.dumps({"allow_send": allow_send}))
+        (quest / "timeline.ndjson").write_text("")
+        return quest
+
+    def fake_gws(self, root: Path) -> tuple[Path, Path]:
+        calls = root / "gws-calls.ndjson"
+        script = root / "fake-gws"
+        script.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import json, os, sys
+            from pathlib import Path
+
+            args = sys.argv[1:]
+            calls = Path(os.environ["FAKE_GWS_CALLS"])
+            with calls.open("a") as stream:
+                stream.write(json.dumps(args) + "\\n")
+            if args[:3] == ["drive", "files", "get"]:
+                result = {"capabilities": {
+                    "canComment": os.environ.get("FAKE_CAN_COMMENT", "1") == "1",
+                    "canEdit": os.environ.get("FAKE_CAN_EDIT", "1") == "1",
+                }}
+            elif args[:3] == ["docs", "documents", "get"]:
+                result = {
+                    "documentId": "doc-123", "revisionId": "rev-1",
+                    "tabs": [{"tabProperties": {"tabId": "t.0"}, "documentTab": {
+                        "body": {"content": [{"paragraph": {"elements": [
+                            {"startIndex": 1, "endIndex": 8, "textRun": {"content": "Unique "}},
+                            {"startIndex": 8, "endIndex": 15, "textRun": {"content": "heading"}},
+                            {"startIndex": 15, "endIndex": 16, "textRun": {"content": "\\n"}},
+                        ]}}]}}}, {"tabProperties": {"tabId": "t.1"}, "documentTab": {
+                        "body": {"content": [{"table": {"tableRows": [{"tableCells": [
+                            {"content": [{"paragraph": {"elements": [
+                                {"startIndex": 2, "endIndex": 6, "textRun": {"content": "A😀B"}},
+                            ]}}]}
+                        ]}]}}]}}}],
+                }
+                if os.environ.get("FAKE_DUPLICATE") == "1":
+                    result["tabs"][1]["documentTab"]["body"]["content"] = (
+                        result["tabs"][0]["documentTab"]["body"]["content"])
+                if os.environ.get("FAKE_DOCUMENT"):
+                    result = json.loads(os.environ["FAKE_DOCUMENT"])
+                if os.environ.get("FAKE_NO_REVISION") == "1":
+                    result.pop("revisionId", None)
+            elif args[:3] == ["docs", "documents", "batchUpdate"]:
+                if os.environ.get("FAKE_WRITE_MODE") == "error":
+                    print("write request timed out", file=sys.stderr)
+                    raise SystemExit(2)
+                body = json.loads(args[args.index("--json") + 1])
+                request = body["requests"][0]["insertComment"]
+                quote = os.environ.get("FAKE_QUOTE", "Unique heading")
+                result = {
+                    "documentId": "doc-123",
+                    "commentUpdateState": "ALL_SAVED" if os.environ.get("FAKE_WRITE_MODE") != "unsaved" else "ALL_FAILED_UNKNOWN_REASON",
+                    "replies": [{"insertComment": {"commentThread": {
+                        "commentId": "comment-1", "anchorId": "kix.anchor-1",
+                        "plainTextQuote": quote,
+                        "headPost": {"content": request["content"]},
+                    }}}],
+                }
+            else:
+                print("unexpected gws call", file=sys.stderr)
+                raise SystemExit(2)
+            print("Using keyring backend: keyring")
+            print(json.dumps(result))
+        """))
+        script.chmod(0o755)
+        return script, calls
+
+    def run_helper(self, workspace: Path, gws: Path, payload: dict, **extra_env):
+        env = dict(os.environ)
+        env.update({
+            "SIDEQUESTOR_WORKSPACE": str(workspace),
+            "SIDEQUESTOR_DISPATCH_TARGET": "review-doc",
+            "SIDEQUESTOR_GDOC_COMMENTS_ENABLED": "1",
+            "GWS_BIN": str(gws),
+            "FAKE_GWS_CALLS": str(workspace / "gws-calls.ndjson"),
+        })
+        env.update(extra_env)
+        return subprocess.run(
+            [sys.executable, str(HELPER), json.dumps(payload)],
+            text=True, capture_output=True, env=env,
+        )
+
+    @staticmethod
+    def writes(calls: Path):
+        if not calls.exists():
+            return []
+        return [json.loads(line) for line in calls.read_text().splitlines()
+                if json.loads(line)[:3] == ["docs", "documents", "batchUpdate"]]
+
     def test_successful_write_is_logged_and_idempotent(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             quest = self.workspace(root, allow_send=True)
-            driver, calls = self.driver(root)
+            gws, calls = self.fake_gws(root)
 
-            first = self.run_helper(root, driver, self.payload())
-            second = self.run_helper(root, driver, self.payload())
+            first = self.run_helper(root, gws, self.payload())
+            gws.unlink()  # A completed key can replay even when Google is temporarily unavailable.
+            second = self.run_helper(root, gws, self.payload())
 
             self.assertEqual(0, first.returncode, first.stderr)
             self.assertEqual(0, second.returncode, second.stderr)
-            self.assertEqual(1, len(calls.read_text().splitlines()))
-            replay = json.loads(second.stdout)
-            self.assertTrue(replay["idempotent_replay"])
+            self.assertEqual(1, len(self.writes(calls)))
+            self.assertTrue(json.loads(second.stdout)["idempotent_replay"])
+            write = self.writes(calls)[0]
+            body = json.loads(write[write.index("--json") + 1])
+            self.assertEqual({"startIndex": 1, "endIndex": 15, "tabId": "t.0"},
+                             body["requests"][0]["insertComment"]["range"])
+            self.assertEqual("rev-1", body["writeControl"]["requiredRevisionId"])
             event = json.loads(quest.joinpath("timeline.ndjson").read_text().splitlines()[-1])
             self.assertEqual("gdoc_comments_added", event["event"])
-            self.assertEqual("google_docs", event["surface"])
-            self.assertEqual("doc-123", event["doc_id"])
             self.assertEqual(["comment-1"], event["comment_ids"])
-            self.assertEqual("Proposal review comments", event["note"])
 
-    def test_disabled_capability_fails_before_the_driver(self):
+    def test_non_bmp_anchor_uses_utf16_offsets_and_tab_id(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             self.workspace(root, allow_send=True)
-            driver, calls = self.driver(root)
+            gws, calls = self.fake_gws(root)
+            result = self.run_helper(root, gws, self.payload(
+                anchors=[{"text": "😀B", "comment": "Emoji anchor."}]), FAKE_QUOTE="😀B")
+            self.assertEqual(0, result.returncode, result.stderr)
+            write = self.writes(calls)[0]
+            body = json.loads(write[write.index("--json") + 1])
+            self.assertEqual({"startIndex": 3, "endIndex": 6, "tabId": "t.1"},
+                             body["requests"][0]["insertComment"]["range"])
 
-            result = self.run_helper(
-                root, driver, self.payload(), SIDEQUESTOR_GDOC_COMMENTS_ENABLED="0")
-
+    def test_ambiguous_anchor_fails_before_reserving_key(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.workspace(root, allow_send=True)
+            gws, calls = self.fake_gws(root)
+            result = self.run_helper(root, gws, self.payload(), FAKE_DUPLICATE="1")
             self.assertEqual(1, result.returncode)
-            self.assertIn("disabled", result.stderr)
-            self.assertFalse(calls.exists())
+            self.assertIn("ambiguous", result.stderr)
+            self.assertEqual([], self.writes(calls))
+            self.assertFalse((root / "state/gdoc-comment-idempotency.json").exists())
 
-    def test_allow_send_false_fails_before_the_driver(self):
+    def test_disabled_and_unapproved_writes_never_call_gws(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             self.workspace(root, allow_send=False)
-            driver, calls = self.driver(root)
-
-            result = self.run_helper(root, driver, self.payload())
-
-            self.assertEqual(1, result.returncode)
-            self.assertIn("allow_send false", result.stderr)
+            gws, calls = self.fake_gws(root)
+            disabled = self.run_helper(root, gws, self.payload(), SIDEQUESTOR_GDOC_COMMENTS_ENABLED="0")
+            unapproved = self.run_helper(root, gws, self.payload())
+            self.assertEqual(1, disabled.returncode)
+            self.assertIn("disabled", disabled.stderr)
+            self.assertEqual(1, unapproved.returncode)
+            self.assertIn("allow_send false", unapproved.stderr)
             self.assertFalse(calls.exists())
 
-    def test_claimed_approval_is_bound_to_the_exact_document_and_comments(self):
+    def test_comment_only_access_writes_without_revision_control(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.workspace(root, allow_send=True)
+            gws, calls = self.fake_gws(root)
+            accepted = self.run_helper(root, gws, self.payload(),
+                                       FAKE_CAN_COMMENT="1", FAKE_CAN_EDIT="0",
+                                       FAKE_NO_REVISION="1")
+            self.assertEqual(0, accepted.returncode, accepted.stderr)
+            self.assertEqual(1, len(self.writes(calls)))
+            write = self.writes(calls)[0]
+            body = json.loads(write[write.index("--json") + 1])
+            self.assertNotIn("writeControl", body)
+            self.assertEqual("Unique heading", json.loads(accepted.stdout)["results"][0]["quoted_text"])
+
+    def test_segment_anchors_include_segment_and_nested_tab_ids(self):
+        content = [{"paragraph": {"elements": [{
+            "startIndex": 0, "endIndex": 5, "textRun": {"content": "A😀B\n"},
+        }]}}]
+        for kind in ("headers", "footers", "footnotes"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                self.workspace(root, allow_send=True)
+                gws, calls = self.fake_gws(root)
+                document = {
+                    "documentId": "doc-123", "revisionId": "rev-1", "tabs": [{
+                        "tabProperties": {"tabId": "parent"}, "childTabs": [{
+                            "tabProperties": {"tabId": "child"},
+                            "documentTab": {kind: {"segment-1": {"content": content}}},
+                        }],
+                    }],
+                }
+                result = self.run_helper(root, gws, self.payload(
+                    anchors=[{"text": "😀B", "comment": "Segment comment."}]),
+                    FAKE_DOCUMENT=json.dumps(document), FAKE_QUOTE="😀B")
+                self.assertEqual(0, result.returncode, result.stderr)
+                write = self.writes(calls)[0]
+                body = json.loads(write[write.index("--json") + 1])
+                self.assertEqual({"startIndex": 1, "endIndex": 4, "tabId": "child",
+                                  "segmentId": "segment-1"},
+                                 body["requests"][0]["insertComment"]["range"])
+
+    def test_body_and_segment_duplicates_fail_before_reserving_key(self):
+        content = [{"paragraph": {"elements": [{
+            "startIndex": 1, "endIndex": 16,
+            "textRun": {"content": "Unique heading\n"},
+        }]}}]
+        for kind in ("headers", "footers", "footnotes"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                self.workspace(root, allow_send=True)
+                gws, calls = self.fake_gws(root)
+                document = {
+                    "documentId": "doc-123", "revisionId": "rev-1", "tabs": [{
+                        "tabProperties": {"tabId": "t.0"}, "documentTab": {
+                            "body": {"content": content},
+                            kind: {"segment-1": {"content": content}},
+                        },
+                    }],
+                }
+                result = self.run_helper(root, gws, self.payload(),
+                                         FAKE_DOCUMENT=json.dumps(document))
+                self.assertEqual(1, result.returncode)
+                self.assertIn("ambiguous (2 matches)", result.stderr)
+                self.assertEqual([], self.writes(calls))
+                self.assertFalse((root / "state/gdoc-comment-idempotency.json").exists())
+
+    def test_comment_utf8_limit_is_checked_before_network_or_reserving_key(self):
+        for comment in ("x" * 2049, "😀" * 513):
+            with self.subTest(bytes=len(comment.encode("utf-8"))), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                self.workspace(root, allow_send=True)
+                gws, calls = self.fake_gws(root)
+                result = self.run_helper(root, gws, self.payload(
+                    anchors=[{"text": "Unique heading", "comment": comment}]))
+                self.assertEqual(1, result.returncode)
+                self.assertIn("2048 UTF-8 bytes", result.stderr)
+                self.assertFalse(calls.exists())
+                self.assertFalse((root / "state/gdoc-comment-idempotency.json").exists())
+
+    def test_comment_at_utf8_limit_can_be_written(self):
+        for comment in ("x" * 2048, "😀" * 512):
+            with self.subTest(bytes=len(comment.encode("utf-8"))), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                self.workspace(root, allow_send=True)
+                gws, calls = self.fake_gws(root)
+                result = self.run_helper(root, gws, self.payload(
+                    anchors=[{"text": "Unique heading", "comment": comment}]))
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(1, len(self.writes(calls)))
+
+    def test_claimed_approval_is_bound_to_exact_document_and_comment(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             self.workspace(root, allow_send=False)
-            driver, calls = self.driver(root)
+            gws, calls = self.fake_gws(root)
             payload = self.payload(approval_id="approval-1")
-            approval_spec = subprocess.run(
+            spec = subprocess.run(
                 [sys.executable, str(HELPER), "approval-spec", json.dumps(self.payload())],
                 text=True, capture_output=True,
                 env={**os.environ, "SIDEQUESTOR_WORKSPACE": str(root)},
             )
-            self.assertEqual(0, approval_spec.returncode, approval_spec.stderr)
-            approval = json.loads(approval_spec.stdout)
+            self.assertEqual(0, spec.returncode, spec.stderr)
             (root / "state/pending-approvals.json").write_text(json.dumps({
-                "version": 1,
-                "items": [{
+                "version": 1, "items": [{
                     "id": "approval-1", "quest_id": "review-doc", "status": "executing",
-                    "lease_expires_at": "2999-01-01T00:00:00Z", **approval,
+                    "lease_expires_at": "2999-01-01T00:00:00Z", **json.loads(spec.stdout),
                 }],
             }))
-
-            result = self.run_helper(root, driver, payload)
-
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(1, len(calls.read_text().splitlines()))
-            changed = self.run_helper(root, driver, self.payload(
-                approval_id="approval-1",
-                idempotency_key="review-doc/doc-123/revision-2",
+            accepted = self.run_helper(root, gws, payload)
+            changed = self.run_helper(root, gws, self.payload(
+                approval_id="approval-1", idempotency_key="another-key",
                 anchors=[{"text": "Unique heading", "comment": "Different comment."}],
             ))
+            self.assertEqual(0, accepted.returncode, accepted.stderr)
             self.assertEqual(1, changed.returncode)
             self.assertIn("no claimed Google Doc approval", changed.stderr)
-            self.assertEqual(1, len(calls.read_text().splitlines()))
+            self.assertEqual(1, len(self.writes(calls)))
 
-    def test_every_write_requires_an_idempotency_key(self):
+    def test_missing_gws_does_not_consume_idempotency_key(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             self.workspace(root, allow_send=True)
-            driver, calls = self.driver(root)
-
-            result = self.run_helper(
-                root, driver, self.payload(idempotency_key=""), SIDEQUESTOR_DISPATCH_TARGET="")
-
+            result = self.run_helper(root, root / "missing-gws", self.payload())
             self.assertEqual(1, result.returncode)
-            self.assertIn("idempotency_key", result.stderr)
-            self.assertFalse(calls.exists())
-
-    def test_missing_playwright_fails_without_consuming_the_idempotency_key(self):
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            self.workspace(root, allow_send=True)
-            python = root / "python-without-playwright"
-            python.write_text("#!/bin/sh\nexit 3\n")
-            python.chmod(0o755)
-            env = dict(os.environ)
-            env.pop("SIDEQUESTOR_GDOC_COMMENT_DRIVER", None)
-            env.update({
-                "SIDEQUESTOR_WORKSPACE": str(root),
-                "SIDEQUESTOR_DISPATCH_TARGET": "review-doc",
-                "SIDEQUESTOR_GDOC_COMMENTS_ENABLED": "1",
-                "SIDEQUESTOR_PYTHON": str(python),
-            })
-
-            result = subprocess.run(
-                [sys.executable, str(HELPER), json.dumps(self.payload())],
-                text=True, capture_output=True, env=env,
-            )
-
-            self.assertEqual(1, result.returncode)
-            self.assertIn("Playwright is not installed", result.stderr)
-            self.assertNotIn("indeterminate", result.stderr)
+            self.assertIn("gws CLI is not installed", result.stderr)
             self.assertFalse((root / "state/gdoc-comment-idempotency.json").exists())
 
-    def test_driver_failure_is_recorded_as_indeterminate_and_not_retried(self):
+    def test_comment_permission_is_checked_before_reserving_key(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             self.workspace(root, allow_send=True)
-            driver = root / "failing-driver.py"
-            calls = root / "calls"
-            driver.write_text(textwrap.dedent(f"""\
-                from pathlib import Path
-                import sys
-                path = Path({str(calls)!r})
-                path.write_text(path.read_text() + "x" if path.exists() else "x")
-                print("browser disconnected after posting", file=sys.stderr)
-                raise SystemExit(2)
-            """))
+            gws, calls = self.fake_gws(root)
+            result = self.run_helper(root, gws, self.payload(), FAKE_CAN_COMMENT="0")
+            self.assertEqual(1, result.returncode)
+            self.assertIn("cannot comment", result.stderr)
+            self.assertEqual([], self.writes(calls))
+            self.assertFalse((root / "state/gdoc-comment-idempotency.json").exists())
 
-            first = self.run_helper(root, driver, self.payload())
-            second = self.run_helper(root, driver, self.payload())
-
+    def test_gws_write_error_is_indeterminate_and_not_retried(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.workspace(root, allow_send=True)
+            gws, calls = self.fake_gws(root)
+            first = self.run_helper(root, gws, self.payload(), FAKE_WRITE_MODE="error")
+            second = self.run_helper(root, gws, self.payload())
             self.assertEqual(2, first.returncode)
+            self.assertIn("indeterminate", first.stderr)
             self.assertEqual(2, second.returncode)
-            self.assertEqual("x", calls.read_text())
             self.assertIn("indeterminate prior attempt", second.stderr)
+            self.assertEqual(1, len(self.writes(calls)))
 
-    def test_completed_write_stays_complete_when_timeline_logging_fails(self):
+    def test_unsaved_or_wrong_quote_is_never_reported_as_success(self):
+        for extra in ({"FAKE_WRITE_MODE": "unsaved"}, {"FAKE_QUOTE": "Other text"}):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                self.workspace(root, allow_send=True)
+                gws, calls = self.fake_gws(root)
+                result = self.run_helper(root, gws, self.payload(), **extra)
+                self.assertEqual(2, result.returncode)
+                self.assertIn("did not verify", result.stderr)
+                self.assertEqual(1, len(self.writes(calls)))
+
+    def test_completed_write_can_finish_timeline_logging_on_replay(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             quest = self.workspace(root, allow_send=True)
-            driver, calls = self.driver(root)
+            gws, calls = self.fake_gws(root)
             timeline = quest / "timeline.ndjson"
             timeline.unlink()
             timeline.mkdir()
-
-            first = self.run_helper(root, driver, self.payload())
-
+            first = self.run_helper(root, gws, self.payload())
             self.assertEqual(2, first.returncode)
             self.assertIn("completed but timeline logging failed", first.stderr)
-            records = json.loads(
-                root.joinpath("state/gdoc-comment-idempotency.json").read_text())
-            self.assertEqual("complete", records[self.payload()["idempotency_key"]]["status"])
-
             timeline.rmdir()
             timeline.write_text("")
-            second = self.run_helper(root, driver, self.payload())
+            second = self.run_helper(root, gws, self.payload())
             self.assertEqual(0, second.returncode, second.stderr)
-            self.assertEqual(1, len(calls.read_text().splitlines()))
+            self.assertEqual(1, len(self.writes(calls)))
             self.assertTrue(json.loads(second.stdout)["logged"])
-
-    def test_driver_override_requires_explicit_test_mode(self):
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            self.workspace(root, allow_send=True)
-            driver, calls = self.driver(root)
-
-            result = self.run_helper(
-                root, driver, self.payload(), SIDEQUESTOR_GDOC_COMMENT_TEST_MODE="0")
-
-            self.assertEqual(1, result.returncode)
-            self.assertIn("test mode", result.stderr)
-            self.assertFalse(calls.exists())
-            self.assertFalse((root / "state/gdoc-comment-idempotency.json").exists())
-
-    def test_driver_result_must_match_the_requested_document_and_anchor(self):
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            self.workspace(root, allow_send=True)
-            driver = root / "forged-driver.py"
-            driver.write_text(textwrap.dedent("""\
-                import json, sys
-                payload = json.load(sys.stdin)
-                print(json.dumps({
-                    "ok": True,
-                    "doc_id": "another-document",
-                    "results": [{
-                        "anchor": "another anchor",
-                        "comment": payload["anchors"][0]["comment"],
-                        "comment_id": "comment-1",
-                        "quoted_text": payload["anchors"][0]["text"],
-                        "status": "anchored",
-                    }],
-                }))
-            """))
-
-            result = self.run_helper(root, driver, self.payload())
-
-            self.assertEqual(2, result.returncode)
-            self.assertIn("unverified", result.stderr)
-
-    def test_one_anchor_per_idempotent_write(self):
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            self.workspace(root, allow_send=True)
-            driver, calls = self.driver(root)
-            payload = self.payload(anchors=[
-                {"text": "First", "comment": "One"},
-                {"text": "Second", "comment": "Two"},
-            ])
-
-            result = self.run_helper(root, driver, payload)
-
-            self.assertEqual(1, result.returncode)
-            self.assertIn("exactly 1 item", result.stderr)
-            self.assertFalse(calls.exists())
-
-
-class PlaywrightDriverTests(unittest.TestCase):
-    def test_unattended_driver_rejects_comment_only_access(self):
-        driver = load_driver()
-        with patch.object(driver, "_json_from_gws", return_value={
-            "capabilities": {"canComment": True, "canEdit": False},
-        }):
-            with self.assertRaisesRegex(RuntimeError, "comment-only"):
-                driver._assert_capabilities("doc")
-
-    def test_reachable_non_loopback_cdp_endpoint_is_still_rejected(self):
-        driver = load_driver()
-        with patch.object(driver, "_cdp_ready", return_value=True):
-            with self.assertRaisesRegex(RuntimeError, "loopback HTTP"):
-                driver._ensure_chrome("http://example.com:9222")
-
-    def test_find_enables_match_case_and_presses_enter_on_the_find_input(self):
-        driver = load_driver()
-        checkbox = Mock()
-        checkbox.count.return_value = 1
-        checkbox.is_checked.return_value = True
-        dialog = Mock()
-        dialog.get_by_role.return_value = checkbox
-        dialog.inner_text.return_value = "1 of 1"
-        find = Mock()
-
-        page = Mock()
-        driver._select_unique_match(page, dialog, find, "Exact Anchor")
-
-        dialog.get_by_role.assert_called_once_with("checkbox", name="Match case")
-        checkbox.check.assert_called_once_with()
-        find.fill.assert_called_once_with("Exact Anchor")
-        find.press.assert_called_once_with("Enter")
-
-    def test_ambiguous_find_is_rejected_before_selection(self):
-        driver = load_driver()
-        checkbox = Mock()
-        checkbox.count.return_value = 1
-        checkbox.is_checked.return_value = True
-        dialog = Mock()
-        dialog.get_by_role.return_value = checkbox
-        dialog.inner_text.return_value = "1 of 2"
-        find = Mock()
-
-        with self.assertRaisesRegex(RuntimeError, "ambiguous"):
-            driver._select_unique_match(Mock(), dialog, find, "Repeated")
-        find.press.assert_not_called()
-
-    def test_post_button_is_clicked_only_once(self):
-        driver = load_driver()
-        composer = Mock()
-        button = Mock()
-        page = Mock()
-        page.locator.return_value.first = composer
-        page.get_by_role.return_value = button
-        verified = {
-            "anchor": "Anchor", "comment": "Comment", "comment_id": "new-id",
-            "quoted_text": "Anchor", "status": "anchored",
-        }
-        requested = {"text": "Anchor", "comment": "Comment"}
-
-        with patch.object(driver, "_new_verified_comment", return_value=verified):
-            result = driver._post_and_verify(page, "doc", {"old-id"}, requested)
-
-        self.assertEqual(verified, result)
-        composer.wait_for.assert_called_once_with(state="visible", timeout=8000)
-        composer.fill.assert_called_once_with("Comment")
-        button.click.assert_called_once_with()
-
-    def test_comment_verification_requires_exact_case(self):
-        driver = load_driver()
-        wrong = {
-            "old": {"id": "old", "content": "Comment"},
-            "wrong-case": {
-                "id": "wrong-case", "content": "Comment",
-                "quotedFileContent": {"value": "anchor"},
-            },
-        }
-        right = {
-            **wrong,
-            "right": {
-                "id": "right", "content": "Comment",
-                "quotedFileContent": {"value": "Anchor"},
-            },
-        }
-        with patch.object(driver, "_comments", side_effect=[wrong, right]), \
-                patch.object(driver.time, "sleep"):
-            result = driver._new_verified_comment(
-                "doc", {"old"}, {"text": "Anchor", "comment": "Comment"}, timeout=1)
-        self.assertEqual("right", result["comment_id"])
 
 
 if __name__ == "__main__":

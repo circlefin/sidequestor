@@ -11,6 +11,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from sidequestor import __version__
+from sidequestor.cli import main
 from sidequestor.upgrade import (
     Installer, _select_installer, detect_installer, github_requirement, installer_command,
     run_upgrade,
@@ -32,9 +34,12 @@ class UpgradeTests(unittest.TestCase):
             "sidequestor.upgrade.detect_installer", return_value=Installer("pip"),
         )
         self.installer_patch.start()
+        self.version_patch = patch("sidequestor.upgrade._installed_version", return_value="99.0.0")
+        self.version_patch.start()
         self.workspace = init_workspace(self.root / "workspace")
 
     def tearDown(self) -> None:
+        self.version_patch.stop()
         self.installer_patch.stop()
         self.config_patch.stop()
         self.temp.cleanup()
@@ -78,13 +83,57 @@ class UpgradeTests(unittest.TestCase):
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(
             commands[0],
-            [sys.executable, "-m", "pip", "install", "--upgrade", "sidequestor"],
+            [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", "sidequestor"],
         )
         self.assertEqual(commands[1][-1], "sync-resources")
         self.assertEqual(commands[2][-1], "doctor")
         self.assertTrue(all(str(self.workspace.root) in command for command in commands[1:]))
         self.assertNotIn("PYTHONPATH", run.call_args_list[1].kwargs["env"])
         self.assertIn("Sidequestor upgrade complete", output.getvalue())
+
+    def test_pypi_noop_is_reported_without_claiming_an_upgrade(self) -> None:
+        output = StringIO()
+        with patch("sidequestor.upgrade.production_status", return_value=None), \
+                patch("sidequestor.upgrade._installed_version", return_value=__version__), \
+                patch("sidequestor.upgrade.subprocess.run", side_effect=self._success), \
+                redirect_stdout(output):
+            self.assertEqual(run_upgrade(self.workspace, []), 0)
+
+        self.assertIn("No new Sidequestor package was installed", output.getvalue())
+        self.assertNotIn("Sidequestor upgrade complete", output.getvalue())
+
+    def test_upgrade_without_workspace_runs_package_only(self) -> None:
+        output = StringIO()
+        with patch("sidequestor.upgrade.production_status") as status, \
+                patch("sidequestor.upgrade.subprocess.run", side_effect=self._success) as run, \
+                redirect_stdout(output):
+            self.assertEqual(run_upgrade(None, []), 0)
+
+        status.assert_not_called()
+        self.assertEqual(len(run.call_args_list), 1)
+        self.assertEqual(run.call_args_list[0].args[0][-1], "sidequestor")
+        self.assertIn("No workspace selected", output.getvalue())
+        self.assertNotIn("Refreshing managed engine resources", output.getvalue())
+
+    def test_unverifiable_install_does_not_claim_success_or_sync(self) -> None:
+        error = StringIO()
+        with patch("sidequestor.upgrade.production_status", return_value=None), \
+                patch("sidequestor.upgrade._installed_version", return_value=None), \
+                patch("sidequestor.upgrade.subprocess.run", side_effect=self._success) as run, \
+                redirect_stdout(StringIO()), redirect_stderr(error):
+            self.assertEqual(run_upgrade(self.workspace, []), 1)
+
+        self.assertEqual(len(run.call_args_list), 1)
+        self.assertIn("could not be verified", error.getvalue())
+
+    def test_cli_accepts_upgrade_in_fresh_directory(self) -> None:
+        fresh = self.root / "fresh"
+        fresh.mkdir()
+        with patch.dict("os.environ", {"SIDEQUESTOR_WORKSPACE": "", "YAAS_WORKSPACE": ""}), \
+                patch("sidequestor.cli.Path.cwd", return_value=fresh), \
+                patch("sidequestor.cli.run_upgrade", return_value=0) as upgrade:
+            self.assertEqual(main(["upgrade"]), 0)
+        upgrade.assert_called_once_with(None, [])
 
     def test_git_upgrade_force_reinstalls_and_restores_running_jobs(self) -> None:
         output = StringIO()
@@ -407,10 +456,13 @@ class ManagedUpgradeTests(unittest.TestCase):
             "os.environ", {"SIDEQUESTOR_CONFIG_HOME": str(self.root / "config")}
         )
         self.config_patch.start()
+        self.version_patch = patch("sidequestor.upgrade._installed_version", return_value="99.0.0")
+        self.version_patch.start()
         self.workspace = init_workspace(self.root / "workspace")
         self.other = init_workspace(self.root / "other")
 
     def tearDown(self) -> None:
+        self.version_patch.stop()
         self.config_patch.stop()
         self.temp.cleanup()
 

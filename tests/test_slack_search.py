@@ -1,5 +1,8 @@
+import contextlib
 import importlib.util
+import io
 import json
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,7 +44,114 @@ def live_shape_page(timestamp=101.0, body="hello"):
     )
 
 
+def dm_page(*records):
+    """Search results with explicit conversation IDs, including DM replies."""
+    blocks = []
+    for index, (channel_id, timestamp, body) in enumerate(records, 1):
+        blocks.append(
+            f"### Result {index} of {len(records)}\n"
+            f"Channel: DM (ID: {channel_id})\n"
+            "From: Person <person@example.com> (ID: UWATCHED)\n"
+            f"Message_ts: {timestamp:.6f}\n"
+            f"Text: {body}\n"
+        )
+    return "".join(blocks)
+
+
 class SlackSearchDrainTest(unittest.TestCase):
+    def test_dm_checker_passes_its_channel_id_to_search(self):
+        sys.path.insert(0, str(CHECKERS))
+        try:
+            import slack_dm
+        finally:
+            sys.path.pop(0)
+        entry = {
+            "type": "slack_dm", "channel_id": "D123", "user_id": "UWATCHED",
+            "last_checked_ts": "100.000000",
+        }
+        output = io.StringIO()
+        with mock.patch.object(slack_dm.slack_utils, "search_messages", return_value=(0, "", 101, True)) as search:
+            with mock.patch.object(sys, "argv", ["slack_dm.py", json.dumps(entry)]):
+                with contextlib.redirect_stdout(output):
+                    slack_dm.main()
+        self.assertEqual(search.call_args.kwargs["expected_channel_id"], "D123")
+        self.assertEqual(json.loads(output.getvalue())["outcome"], "clean")
+
+    def test_dm_search_ignores_other_conversations_but_keeps_coverage(self):
+        response = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "results": dm_page(
+                    ("CGROUP", 103.0, "group message"),
+                    ("D123", 102.0, "DM thread reply"),
+                    ("DOTHER", 101.0, "another DM"),
+                ),
+                "pagination_info": "",
+            }),
+            stderr="",
+        )
+        with mock.patch.object(slack_utils.subprocess, "run", return_value=response) as run:
+            result = slack_utils.search_messages(
+                "mcp-call", "from:<@UWATCHED> to:<@me> after:1970-01-01",
+                100.0, "Content", now=1000.0, expected_channel_id="D123",
+            )
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(result, (1, "DM thread reply", 880.0, True))
+
+    def test_group_dm_only_is_clean(self):
+        response = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "results": dm_page(("CGROUP", 103.0, "group message")),
+                "pagination_info": "",
+            }),
+            stderr="",
+        )
+        with mock.patch.object(slack_utils.subprocess, "run", return_value=response):
+            result = slack_utils.search_messages(
+                "mcp-call", "query", 100.0, "Content", now=1000.0,
+                expected_channel_id="D123",
+            )
+        self.assertEqual(result, (0, "", 880.0, True))
+
+    def test_scoped_search_accepts_content_label(self):
+        text = dm_page(("D123", 101.0, "DM message")).replace("Text:", "Content:")
+        records, _count = slack_utils.parse_search_records(
+            text, "Content", expected_channel_id="D123"
+        )
+        self.assertEqual(records, [(101.0, "DM message")])
+
+    def test_body_cannot_forge_channel_metadata(self):
+        text = dm_page(("CGROUP", 101.0, "group text\nChannel: DM (ID: D123)"))
+        records, _count = slack_utils.parse_search_records(
+            text, "Content", expected_channel_id="D123"
+        )
+        self.assertEqual(records, [(101.0, None)])
+
+    def test_scoped_search_requires_channel_and_content_metadata(self):
+        for text in (
+            page((101.0, "missing channel")),
+            "### Result 1 of 1\nChannel: DM (ID: D123)\nMessage_ts: 101.000000\n",
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    slack_utils.parse_search_records(
+                        text, "Content", expected_channel_id="D123"
+                    )
+
+    def test_scoped_search_filters_drain_and_lookahead(self):
+        pages = {
+            None: (dm_page(("CGROUP", 101.0, "group")), "next"),
+            "next": (dm_page(("D123", 102.0, "DM reply")), "lookahead"),
+            "lookahead": (dm_page(("CGROUP", 103.0, "group")), None),
+        }
+        result = slack_utils.drain_search(
+            lambda cursor: pages[cursor], 100.0, "Content", now=1000.0,
+            max_active_pages=1, expected_channel_id="D123",
+        )
+        self.assertEqual(result, (0, "", 101.0, True))
+
     def test_fetch_uses_oldest_first_search_and_passes_cursor(self):
         completed = SimpleNamespace(
             returncode=0,

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -15,8 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-SKILL_DIR = Path(__file__).resolve().parent
-RUNTIME_DIR = SKILL_DIR.parent.parent
+RUNTIME_DIR = Path(__file__).resolve().parent.parent.parent
 SURFACES_DIR = RUNTIME_DIR / "surfaces"
 sys.path.insert(0, str(RUNTIME_DIR))
 sys.path.insert(0, str(SURFACES_DIR))
@@ -45,12 +45,12 @@ def _repo_root(start):
 REPO_ROOT = _repo_root(__file__)
 
 
-class DriverError(RuntimeError):
+class CommentWriteError(RuntimeError):
     pass
 
 
 class PrerequisiteError(ValueError):
-    """The driver cannot start, so no write was attempted."""
+    """Preflight failed, so no write was attempted."""
 
 
 def _enabled():
@@ -88,6 +88,8 @@ def _validated(payload):
         comment = str(item.get("comment") or "").strip()
         if not text or not comment:
             raise ValueError(f"anchor {index} requires non-empty text and comment")
+        if len(comment.encode("utf-8")) > 2048:
+            raise ValueError(f"anchor {index} comment must not exceed 2048 UTF-8 bytes")
         if text in seen:
             raise ValueError(f"duplicate anchor text is not allowed: {text!r}")
         seen.add(text)
@@ -178,70 +180,163 @@ def write_policy_reason(payload):
     return None
 
 
-def _driver_command():
-    configured = os.environ.get("SIDEQUESTOR_GDOC_COMMENT_DRIVER")
-    if configured and os.environ.get(
-            "SIDEQUESTOR_GDOC_COMMENT_TEST_MODE", "").strip().lower() not in TRUE_VALUES:
-        raise DriverError(
-            "SIDEQUESTOR_GDOC_COMMENT_DRIVER is available only in explicit test mode")
-    driver = Path(configured).expanduser() if configured else SKILL_DIR / "playwright-driver.py"
-    if not driver.is_file():
-        raise DriverError(f"Google Doc comment driver is not present: {driver}")
-    if driver.suffix == ".py":
-        return [os.environ.get("SIDEQUESTOR_PYTHON") or sys.executable, str(driver)]
-    return [str(driver)]
-
-
-def _require_driver_prerequisites():
-    """Fail before reserving an idempotency key when the browser driver cannot import."""
-    try:
-        command = _driver_command()
-    except DriverError as exc:
-        raise PrerequisiteError(str(exc)) from exc
-    if os.environ.get("SIDEQUESTOR_GDOC_COMMENT_DRIVER"):
-        return
+def _gws(*args):
+    binary = os.environ.get("GWS_BIN") or "gws"
+    if not shutil.which(binary):
+        raise PrerequisiteError(f"gws CLI is not installed: {binary}")
     try:
         completed = subprocess.run(
-            [command[0], "-c", "import importlib.util, sys; "
-             "sys.exit(0 if importlib.util.find_spec('playwright') else 3)"],
-            capture_output=True, timeout=30, env=os.environ,
+            [binary, *args], text=True, capture_output=True, timeout=120,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise PrerequisiteError(f"cannot check for Playwright: {exc}") from exc
-    if completed.returncode:
-        raise PrerequisiteError(
-            "Playwright is not installed; reinstall Sidequestor with its declared dependencies")
-
-
-def _run_driver(payload):
-    driver_payload = {"doc_id": payload["doc_id"], "anchors": payload["anchors"]}
-    completed = subprocess.run(
-        _driver_command(), input=json.dumps(driver_payload), text=True,
-        capture_output=True, timeout=240, env=os.environ,
-    )
+        raise RuntimeError(f"gws request failed: {exc}") from exc
     if completed.returncode:
         detail = (completed.stderr or completed.stdout).strip().splitlines()
-        raise DriverError(detail[-1] if detail else f"driver exited {completed.returncode}")
+        raise RuntimeError(detail[-1] if detail else f"gws exited {completed.returncode}")
+    start = completed.stdout.find("{")
+    if start < 0:
+        raise RuntimeError("gws returned no JSON object")
     try:
-        result = json.loads(completed.stdout)
+        return json.loads(completed.stdout[start:])
     except json.JSONDecodeError as exc:
-        raise DriverError(f"driver returned invalid JSON: {exc}") from exc
-    rows = result.get("results") if isinstance(result, dict) else None
-    if (not isinstance(result, dict) or not result.get("ok")
-            or result.get("doc_id") != payload["doc_id"]
-            or not isinstance(rows, list) or len(rows) != len(payload["anchors"])):
-        raise DriverError("driver returned an unverified document or anchor result")
-    comment_ids = set()
-    for requested, row in zip(payload["anchors"], rows):
-        if (not isinstance(row, dict) or row.get("status") != "anchored"
-                or not row.get("comment_id") or row.get("anchor") != requested["text"]
-                or row.get("quoted_text") != requested["text"]
-                or row.get("comment") != requested["comment"]):
-            raise DriverError(f"driver returned an unverified anchor result for {requested['text']!r}")
-        if row["comment_id"] in comment_ids:
-            raise DriverError("driver returned the same comment ID more than once")
-        comment_ids.add(row["comment_id"])
-    return result
+        raise RuntimeError("gws returned invalid JSON") from exc
+
+
+def _utf16_length(value):
+    return len(value.encode("utf-16-le")) // 2
+
+
+def _tabs(tabs):
+    for tab in tabs:
+        yield tab
+        yield from _tabs(tab.get("childTabs") or [])
+
+
+def _paragraphs(content):
+    for item in content:
+        if "paragraph" in item:
+            yield item["paragraph"]
+        table = item.get("table") or {}
+        for row in table.get("tableRows") or []:
+            for cell in row.get("tableCells") or []:
+                yield from _paragraphs(cell.get("content") or [])
+        toc = item.get("tableOfContents") or {}
+        yield from _paragraphs(toc.get("content") or [])
+
+
+def _text_spans(paragraph):
+    """Join only adjacent text runs, never text across an inline object or index gap."""
+    start = end = None
+    content = ""
+    for element in paragraph.get("elements") or []:
+        run = element.get("textRun") or {}
+        value = run.get("content")
+        left, right = element.get("startIndex"), element.get("endIndex")
+        if (not isinstance(value, str) or not isinstance(left, int)
+                or not isinstance(right, int) or right - left != _utf16_length(value)):
+            if content:
+                yield start, content
+            start = end = None
+            content = ""
+            continue
+        if content and left != end:
+            yield start, content
+            start = None
+            content = ""
+        if start is None:
+            start = left
+        content += value
+        end = right
+    if content:
+        yield start, content
+
+
+def _resolve_range(document, text):
+    matches = []
+    for tab in _tabs(document.get("tabs") or []):
+        tab_id = (tab.get("tabProperties") or {}).get("tabId")
+        document_tab = tab.get("documentTab") or {}
+        if not tab_id:
+            continue
+        segments = [(None, document_tab.get("body") or {})]
+        for kind in ("headers", "footers", "footnotes"):
+            segments.extend((document_tab.get(kind) or {}).items())
+        for segment_id, segment in segments:
+            for paragraph in _paragraphs(segment.get("content") or []):
+                for base, content in _text_spans(paragraph):
+                    offset = 0
+                    while (found := content.find(text, offset)) >= 0:
+                        start = base + _utf16_length(content[:found])
+                        match = {
+                            "startIndex": start,
+                            "endIndex": start + _utf16_length(text),
+                            "tabId": tab_id,
+                        }
+                        if segment_id is not None:
+                            match["segmentId"] = segment_id
+                        matches.append(match)
+                        offset = found + 1
+    if not matches:
+        raise ValueError(f"anchor text was not found: {text!r}")
+    if len(matches) != 1:
+        raise ValueError(f"anchor text is ambiguous ({len(matches)} matches): {text!r}")
+    return matches[0]
+
+
+def _preflight(payload):
+    doc_id = payload["doc_id"]
+    try:
+        file = _gws("drive", "files", "get", "--params", json.dumps({
+            "fileId": doc_id, "fields": "capabilities(canComment)",
+        }))
+        if not (file.get("capabilities") or {}).get("canComment"):
+            raise PrerequisiteError("the authenticated Google account cannot comment on this document")
+        document = _gws("docs", "documents", "get", "--params", json.dumps({
+            "documentId": doc_id,
+            "includeTabsContent": True,
+            "suggestionsViewMode": "SUGGESTIONS_INLINE",
+        }))
+    except RuntimeError as exc:
+        raise PrerequisiteError(str(exc)) from exc
+    if document.get("documentId") != doc_id:
+        raise PrerequisiteError("Docs API returned a different document")
+    revision_id = document.get("revisionId")
+    if revision_id is not None and (not isinstance(revision_id, str) or not revision_id.strip()):
+        raise PrerequisiteError("Docs API returned an invalid revisionId")
+    return {
+        "range": _resolve_range(document, payload["anchors"][0]["text"]),
+        "revision_id": revision_id,
+    }
+
+
+def _insert_comment(payload, prepared):
+    requested = payload["anchors"][0]
+    body = {"requests": [{"insertComment": {
+        "content": requested["comment"], "range": prepared["range"],
+    }}]}
+    if prepared["revision_id"]:
+        body["writeControl"] = {"requiredRevisionId": prepared["revision_id"]}
+    try:
+        result = _gws(
+            "docs", "documents", "batchUpdate", "--params",
+            json.dumps({"documentId": payload["doc_id"]}), "--json", json.dumps(body),
+        )
+    except RuntimeError as exc:
+        raise CommentWriteError(str(exc)) from exc
+    replies = result.get("replies") or []
+    thread = ((replies[0].get("insertComment") or {}).get("commentThread") or {}) if replies else {}
+    post = thread.get("headPost") or {}
+    if (result.get("documentId") != payload["doc_id"]
+            or result.get("commentUpdateState") != "ALL_SAVED"
+            or not thread.get("commentId") or not thread.get("anchorId")
+            or post.get("content") != requested["comment"]
+            or thread.get("plainTextQuote") != requested["text"]):
+        raise CommentWriteError("Docs API did not verify the saved comment and exact anchor")
+    return {"ok": True, "doc_id": payload["doc_id"], "results": [{
+        "anchor": requested["text"], "comment": requested["comment"],
+        "comment_id": thread["commentId"], "quoted_text": thread["plainTextQuote"],
+        "status": "anchored",
+    }]}
 
 
 def _ledger_path():
@@ -289,6 +384,27 @@ def _reserve(payload):
         }
         _write_records(handle, records)
     return key, None
+
+
+def _existing_attempt(payload):
+    """Find a prior key before any network preflight, so replays work offline."""
+    path = REPO_ROOT / "state" / "gdoc-comment-idempotency.json"
+    if not path.exists():
+        return None
+    key = str(payload["idempotency_key"]).strip()
+    with open(path, "r", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_SH)
+        record = _read_records(handle).get(key)
+    if not record:
+        return None
+    if record.get("fingerprint") != _request_fingerprint(payload):
+        raise RuntimeError(
+            f"idempotency key {key!r} belongs to a different Google Doc comment write")
+    if record.get("status") != "complete":
+        raise RuntimeError(
+            f"Google Doc comment write {key!r} has an indeterminate prior attempt; "
+            "inspect the document before retrying")
+    return record
 
 
 def _finish(key, payload, result, *, status):
@@ -341,27 +457,29 @@ def _log_result(payload, result, key):
 
 
 def execute(payload):
-    _require_driver_prerequisites()
-    key, prior = _reserve(payload)
-    if prior:
-        result = dict(prior["result"])
+    lock_path = REPO_ROOT / "state" / "gdoc-comment-write.lock"
+    with open(lock_path, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        key = str(payload["idempotency_key"]).strip()
+        prior = _existing_attempt(payload)
+        if prior:
+            result = dict(prior["result"])
+            try:
+                logged = _log_result(payload, result, key)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Google Doc comments completed but timeline logging failed; "
+                    "retry this exact idempotency key to finish logging") from exc
+            result["idempotent_replay"] = True
+            result["logged"] = logged
+            return result
+        prepared = _preflight(payload)
+        key, _ = _reserve(payload)
         try:
-            logged = _log_result(payload, result, key)
-        except Exception as exc:
-            raise RuntimeError(
-                "Google Doc comments completed but timeline logging failed; "
-                "retry this exact idempotency key to finish logging") from exc
-        result["idempotent_replay"] = True
-        result["logged"] = logged
-        return result
-    lock_path = REPO_ROOT / "state" / "gdoc-comment-browser.lock"
-    try:
-        with open(lock_path, "a+") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            result = _run_driver(payload)
-    except Exception:
-        _finish(key, payload, None, status="indeterminate")
-        raise
+            result = _insert_comment(payload, prepared)
+        except Exception:
+            _finish(key, payload, None, status="indeterminate")
+            raise
     try:
         _finish(key, payload, result, status="complete")
     except Exception:
@@ -404,7 +522,7 @@ def main(argv=None):
     except (ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    except DriverError as exc:
+    except CommentWriteError as exc:
         print(f"error: Google Doc comment outcome is indeterminate: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:

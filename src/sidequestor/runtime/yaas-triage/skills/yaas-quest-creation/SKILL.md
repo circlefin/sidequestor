@@ -89,6 +89,18 @@ Ask the user for, in order:
    updates; those belong in `timeline.ndjson`. If they already gave context earlier in the
    conversation, use that; don't re-ask.
 
+   **Format the context as Markdown for the dashboard.** For a longer brief, split distinct
+   topics into short sections with explicit headings, such as `### Objective`, `### Source`,
+   `### Eligibility`, and `### Review method`. The scaffold inserts this body under
+   `## Why this quest exists`, so use level-three headings inside it rather than adding
+   another title. Use `**Label:** value` for short attributes and flat bullet or numbered
+   lists for field mappings, eligibility rules, and procedural steps. Do not leave labels
+   such as `Objective:`, `Fields:`, or `Eligibility:` as unformatted paragraph prefixes.
+   Put a blank line before and after headings and before lists; use inline code for field
+   names, query expressions, and commands, and Markdown links for sources. Avoid tables,
+   nested lists, and fenced code blocks, which the context renderer does not support.
+   Keep a short context short; add sections only when they help the reader scan it.
+
    For an action-capable quest, also define the outcome, allowed action types, review gates,
    completion evidence, explicit exclusions, and what should become a task, commitment, approval
    draft, or brief. A read-only quest states that boundary explicitly. Load

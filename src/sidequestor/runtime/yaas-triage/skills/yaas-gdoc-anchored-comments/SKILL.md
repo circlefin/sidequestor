@@ -5,40 +5,35 @@ description: Add real text-anchored comments to a Google Doc from a Sidequestor 
 
 # Anchored Google Doc comments
 
-Use the guarded writer. Do not invoke the Playwright driver directly: `sq gdoc-comment` enforces
-quest scope, approval, idempotency, serialization, Drive verification, and timeline logging.
+Use the guarded writer rather than calling `gws` directly: `sq gdoc-comment` enforces quest scope,
+approval, idempotency, serialization, Docs API verification, and timeline logging.
 
 Each anchor text must occur exactly once in the document. The writer fails closed on zero or
-multiple exact-case matches and never types user text through the global keyboard. Each invocation
+multiple exact-case matches across all tabs, including headers, footers, and footnotes. Each invocation
 accepts exactly one anchor so the idempotency record and external write have the same boundary.
-Use a distinct idempotency key for each additional comment. The writer supports edit-capable
-documents in unattended mode; comment-only documents require an attended foreground workflow.
+Use a distinct idempotency key for each additional comment. The writer resolves text in the Docs
+API's `SUGGESTIONS_INLINE` view and uses UTF-16 indexes, the tab ID, and any segment ID to anchor
+the comment. Comments must not exceed 2048 UTF-8 bytes.
 
 ## Prerequisites
 
-The `gws` CLI must be installed and authenticated as the same Google account, with Drive access.
-The writer uses it to check commenting capabilities and to verify the new comment ID, content, and
-quoted anchor after the browser action. Verify access before the first write:
+The `gws` CLI must be installed and authenticated with Docs and Drive access as the intended
+comment author. The writer checks `canComment` before writing; the Docs API determines whether the
+account can insert the comment. Comment-only access is supported. If the API returns a revision ID,
+the writer binds the write to it to prevent concurrent edits from shifting the anchor. Google only
+returns revision IDs to editors, so comment-only writes rely on the response's exact quoted anchor
+for verification. Verify access before the first write:
 
 ```bash
 gws drive files get --params '{"fileId":"<DOC_ID>","fields":"capabilities(canComment,canEdit)"}'
 ```
 
-## One-time Google authentication
-
-The helper uses a dedicated Chrome profile. Authenticate it once in a visible window:
-
-```bash
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/skills/yaas-gdoc-anchored-comments/launch-chrome.sh" "https://docs.google.com/document/d/<DOC_ID>/edit"
-```
-
-After login, the writer can reuse the profile and starts Chrome headlessly when CDP is not already
-running. The capability is enabled by default. `SIDEQUESTOR_GDOC_COMMENTS_ENABLED=0` disables it.
+The capability is enabled by default. `SIDEQUESTOR_GDOC_COMMENTS_ENABLED=0` disables it.
 
 ## Write
 
-Pass one JSON payload. Every write requires a unique `idempotency_key` so a completed browser
-action can be replayed safely if timeline logging fails.
+Pass one JSON payload. Every write requires a unique `idempotency_key` so a completed API write
+can be replayed safely if timeline logging fails.
 
 ```bash
 sq gdoc-comment '{
@@ -53,10 +48,10 @@ sq gdoc-comment '{
 }'
 ```
 
-The command succeeds only when Drive returns a new comment ID whose content and
-`quotedFileContent.value` exactly match the request. A browser interruption after a possible post
-is recorded as indeterminate and is never retried automatically. The Post Comment control is
-clicked only once; if verification times out, inspect the document instead of replaying the write.
+The command succeeds only when `documents.batchUpdate` reports `commentUpdateState: ALL_SAVED` and
+returns a new comment ID, anchor ID, exact comment content, and matching `plainTextQuote`. If the
+API call fails or its result cannot be verified, the idempotency key is marked indeterminate and
+is never retried automatically. Inspect the document before attempting another write.
 
 ## Approval when `allow_send` is false
 

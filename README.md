@@ -19,7 +19,8 @@ A short checklist, so nothing surprises you halfway through:
   (`brew install uv` or `brew install pipx`). uv also downloads Python ≥ 3.11 when the Mac does
   not have it.
 - The command-line tools `jq`, `curl`, `openssl`, `security` and `open`.
-- An already-authenticated `claude`, `codex`, **or** `cursor-agent` CLI. Sidequestor never logs in for you.
+- An authenticated `claude`, `codex`, **or** `cursor-agent` CLI before workers start. Setup can
+  offer to install a missing Claude Code or Codex CLI if npm is available; Sidequestor never logs in for you.
 
 Telegram user-session watches require the optional `sidequestor[telegram]` extra. The Slack setup
 script checks the command-line tools it needs before it runs, and
@@ -41,7 +42,7 @@ cd ~/path/to/existing-workspace
 sidequestor init .
 # Save the ready-to-paste Slack YAML manifest.
 sq setup --manifest > slack-app-manifest.yaml
-# Run interactive onboarding; choose bypassPermissions when using the Codex backend.
+# Run interactive onboarding; bypassPermissions is the default worker permission mode.
 sq setup
 # Start triage, heartbeat, and the dashboard and print the dashboard URL.
 sq start
@@ -78,11 +79,11 @@ For an existing app, generate the updated manifest with `sq setup --manifest`, a
 requested user scopes in the app's OAuth settings, reinstall the app, and run `sq setup` again to
 re-authorize the token. File uploads need `files:write`; attachment downloads need `files:read`.
 
-The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-5.6-luna` at `high` effort. You can select `cursor` to use the authenticated `cursor-agent` CLI; leave `SIDEQUESTOR_CURSOR_MODEL` unset to use Cursor's default model, or set it to pin a model.
+The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-5.6-luna` at `high` effort. Setup checks both the Codex and Claude Code CLIs and offers an npm installation for either missing CLI when Codex or Claude is selected. It checks `cursor-agent` when Cursor is selected. npm installation requires Node.js; the Claude Code npm package requires Node.js 22 or later. Installation is optional, but the selected worker CLI must be available before setup starts jobs. CLI login remains a separate step. You can select `cursor` to use the authenticated `cursor-agent` CLI; leave `SIDEQUESTOR_CURSOR_MODEL` unset to use Cursor's default model, or set it to pin a model.
 
 ## What permissions does the worker need?
 
-For unattended Codex work, choose `bypassPermissions` at the Worker permission mode prompt. This lets Codex execute filesystem, shell, and network/MCP operations without per-action approval. Cursor uses its own CLI execution mode and Sidequestor auto-approves its MCP calls; Claude uses its native permission mode. Use unattended backends only in a workspace where that behavior is acceptable.
+For unattended work, `sq setup` defaults to `bypassPermissions` for Codex and Claude. Press Enter to accept it if a blank permission setting prompts you, or enter another supported permission mode. Claude's bypass mode disables its permission checks; Codex's bypass mode disables approvals and its sandbox, allowing filesystem, shell, and network actions without per-action approval. Cursor uses its own CLI execution mode and Sidequestor auto-approves its MCP calls. Use unattended backends only in a workspace where that behavior is acceptable. Existing nonempty permission settings are preserved. If a permission setting is removed entirely, the runtime's own fallback is `acceptEdits` for Claude or `workspace-write` for Codex.
 
 ```bash
 # Allow Claude workers to execute unattended tool actions.
@@ -173,14 +174,20 @@ require an active quest with `allow_send: true` or an exact claimed `remote_requ
 Dispatched writes also require an `idempotency_key`; an interrupted attempt is held for inspection
 instead of retried blindly. Availability and billing still depend on the X app's current access tier.
 
-`sq gdoc-comment` adds verified text-anchored comments through the Google Docs editor. It uses a
-dedicated authenticated Chrome profile, refuses ambiguous anchor text, requires `allow_send` or an
-exact claimed approval, and logs quest-owned writes. Each invocation accepts one exact-case anchor
-and always requires an independently unique idempotency key. Google Chrome and the `gws` CLI must
-be installed, and `gws` must be authenticated with Drive access for capability checks and
-post-write verification. The surface is enabled by default; set
+`sq gdoc-comment` adds verified text-anchored comments through the Google Docs API using the
+`gws` CLI. It refuses ambiguous anchor text, requires `allow_send` or an exact claimed approval,
+and logs quest-owned writes. Each invocation accepts one exact-case anchor and requires a unique
+idempotency key. The CLI must be authenticated with Docs and Drive access, and the author must have
+comment access. When the API provides a document revision ID, the writer uses it to guard against
+concurrent edits. Comments are limited to 2048
+UTF-8 bytes. The response must report
+`ALL_SAVED` and quote the requested anchor. The surface is enabled by default; set
 `SIDEQUESTOR_GDOC_COMMENTS_ENABLED=0` in the workspace `.env` to disable it. See the installed
-`yaas-gdoc-anchored-comments` skill for one-time Chrome authentication and the payload format.
+`yaas-gdoc-anchored-comments` skill for the payload format.
+
+When upgrading from the browser-based writer, authenticate `gws` with Docs access as well as Drive
+access. Remove obsolete `SIDEQUESTOR_GDOC_CDP_URL` and `SIDEQUESTOR_GDOC_CHROME_PROFILE` settings
+from the workspace `.env`.
 
 To test without permitting a worker to send anything, initialize a disposable workspace, enable
 the connectors, create a quest in its dashboard, add a watch, then use `tick --dry-run`:
@@ -254,11 +261,64 @@ sq stop INSTANCE_ID
 sq --version
 ```
 
+## How do I work on one quest in a terminal?
+
+Select a quest in the dashboard and choose **Open in terminal**. Sidequestor opens a Terminal
+window attached to that quest's own session. The session keeps running after you close the
+window, and opening it again joins the same session instead of starting another. Sessions are
+named `sq-<instance>-<quest-id>`, so the same quest ID in two workspaces never shares one.
+
+The session starts in the quest's folder with a short summary of the quest and these helpers:
+
+```bash
+ask "draft a reply with the docs link"   # start your agent with the quest's context
+ask --claude "…"                         # use another installed agent this once
+ctx                                      # mission and watches
+trail                                    # recent timeline
+queue "check again tomorrow"             # same as the dashboard's instruction box
+help                                     # show the summary again
+```
+
+`ask` starts the agent chosen during `sq setup` (`SIDEQUESTOR_AGENT`, Codex by default) in
+interactive mode, so you approve its actions as it works. `queue` asks you to confirm first,
+and only accepts that confirmation from an interactive terminal. The same commands work
+anywhere as `sq ask QUEST_ID …`, `sq ctx QUEST_ID`, and so on.
+
+To create a quest by conversation instead of the form, choose **Create interactively in
+Terminal instead** in the dashboard's **Create a quest** dialog. It opens one session for the
+workspace with a `create "<mission>"` helper (also `sq create`), which starts your agent on the
+quest-creation skill; the agent asks what to watch and shows you the quest before creating it.
+
+The session is a normal shell running as you. It is focused on the quest, not restricted to
+it, and it is not recorded in the quest timeline. Install tmux (`brew install tmux`) for the
+best experience; without it Sidequestor uses macOS's built-in `screen`, and without either
+each click opens a fresh shell. Set `SIDEQUESTOR_TERMINAL_APP` (for example `iTerm`) to use
+another terminal app.
+
+Quest context is stored in `context.md` and rendered as Markdown in the dashboard. Agents are
+instructed to use headings for distinct topics, bold labels for short attributes, and flat
+lists for fields, rules, and steps when creating or updating context. Existing contexts keep
+their saved formatting until an agent or you updates them; an upgrade does not reformat them.
+
+## How do I review proposed actions?
+
+Open a manual review item in the dashboard to read its context and formatted proposal.
+Use **Edit** to change the source text, then **Preview** to read it again. Read-only items
+offer **View source** instead. Dashboard polling preserves unsaved edits and the selected view.
+Approve or save an edit to persist your changes; switching views alone does not save them.
+
+The preview supports basic headings, paragraphs, flat lists, emphasis, code spans, and links.
+Code-fenced proposals are shown as literal source. Outbound messages use the source text in
+their destination's syntax, so Slack and email formatting may differ from the preview.
+
 ## How do I upgrade?
 
 ```bash
-# Upgrade to the latest stable PyPI release, refresh resources, validate, and restart.
+# From a workspace: upgrade, refresh resources, validate, and restart previously running jobs.
 sq upgrade
+
+# From elsewhere, select a workspace for the same full lifecycle.
+sq --workspace /path/to/workspace upgrade
 
 # Or install one explicit branch, tag, or commit from GitHub.
 sq upgrade --source https://github.com/OWNER/sidequestor.git --ref BRANCH
@@ -271,8 +331,11 @@ stops before touching anything. `--installer pip` covers pip installs it cannot 
 venv under a `venvs/` directory or a pyenv, conda, or `--user` interpreter, unless a uv or pipx
 receipt or tool directory claims the environment. `--installer uv` or `pipx` can recover from a
 missing receipt only when that manager confirms it owns the running environment; Git upgrades
-require a valid receipt to preserve installed extras. It stops production
-jobs only when they were previously marked running, upgrades the package, then uses a fresh Python process
+require a valid receipt to preserve installed extras. Pip-managed PyPI upgrades bypass pip's HTTP
+cache so a newly published release is not hidden by an older index response. The installed version
+is checked after the installer runs; an unchanged version is reported as a no-op, not an upgrade.
+When run from an initialized workspace (or with `--workspace PATH`), it stops production jobs only
+when they were previously marked running, upgrades the package, then uses a fresh Python process
 to sync resources and run `sq doctor`. Previously running jobs restart only after both checks
 succeed. The upgrader preserves each instance's actual published dashboard port and waits up to
 60 seconds for that port to be released before restarting. Git installs require confirmation
@@ -281,6 +344,12 @@ pass `--yes` for a non-interactive run. Use `--pre` to consider PyPI pre-release
 `--no-restart` to leave previously running jobs stopped. Git sources are limited to HTTPS GitHub
 repository URLs and require an explicit `--ref`; a commit SHA is reproducible while a branch can
 move.
+
+Outside a workspace, `sq upgrade` upgrades only the package. It does not stop or restart any
+running jobs, or sync and validate workspace resources. Select an initialized workspace when you
+want the full lifecycle. Versions before 0.1.44 require a workspace even for a package-only
+upgrade; from a fresh folder, upgrade once with the installing tool directly, then use `sq upgrade`
+normally.
 
 One uv or pipx installation is shared by every workspace, so `sq upgrade` restarts only the
 workspace it runs in and lists any other running workspaces that need `sq --workspace PATH start`

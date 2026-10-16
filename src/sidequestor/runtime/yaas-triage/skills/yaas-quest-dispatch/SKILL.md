@@ -50,6 +50,17 @@ in place when the situation changes. `timeline.ndjson` is the chronological reco
 actions, messages, and milestones. Do not append dated updates, copied conversations, tool
 output, or timeline-style log dumps to `context.md`.
 
+When creating or updating that summary, preserve readable Markdown: use explicit `##` section
+headings and `###` subsections for distinct topics, `**Label:** value` for short attributes,
+and flat bullet or numbered lists for field mappings, decision rules, and steps. In a long
+brief, give Objective, Source, Eligibility, and Review method their own headings where relevant;
+do not leave `Objective:`, `Fields:`, or `Eligibility:` as plain paragraph prefixes. Keep the
+existing heading hierarchy (use `###` within the scaffold's `## Why this quest exists` section).
+Separate headings from content with blank lines and put a blank line before lists. Use inline
+code for field names, queries, and commands, and Markdown links for sources. Avoid tables,
+nested lists, and fenced code blocks, which the context renderer does not support. Keep short
+contexts concise and preserve the meaning of every operational rule when reformatting.
+
 Read the other files **only when a specific decision requires them**:
 
 - **`watch.json`** — select every exact `watch_id` named in the dispatch prompt to get its source coordinates and watermark. For email watches, use that entry's `query` and `last_checked_ts`, then re-run `gws gmail users messages list` + `get` to fetch full content. For Slack watches, query the source named by the selected entry directly.
@@ -233,7 +244,9 @@ Use this queue when you cannot or should not act immediately and the action need
 
 **Writing a review item:**
 
-Use `sq approval write '<json>'` — it routes to the packaged approval helper and handles dedup, flock, and ID generation atomically. Pass a JSON object with: `quest_id`, `quest_title`, `action_type` (`slack_message` / `file_edit` / `remote_request`), `target` (`{channel_id, thread_ts}`), `message_text`, `context` (2-3 sentences: what triggered this, who is involved, why review is needed), `risk_reason`. The command prints the new approval ID on success, or nothing if an identical pending entry already exists (dedup by `quest_id` + target).
+Use `sq approval write '<json>'` — it routes to the packaged approval helper and handles dedup, flock, and ID generation atomically. Pass a JSON object with: `quest_id`, `quest_title`, `action_type` (`slack_message` / `file_edit` / `remote_request`), `target` (`{channel_id, thread_ts}`), `message_text`, `context` (concise explanation of what triggered this, who is involved, and why review is needed), `risk_reason`. The command prints the new approval ID on success, or nothing if an identical pending entry already exists (dedup by `quest_id` + target).
+
+The dashboard presents review content as a formatted preview with source editing. For longer `context` explanations and action plans in `file_edit` or `remote_request` `message_text`, use basic Markdown: short headings, paragraphs, and flat bullet or numbered lists. Put the decision or proposed action first. Keep short items short; avoid tables and nested lists, which the preview does not support. Code-fenced content is displayed as literal source. For outbound message drafts, `message_text` must remain the exact proposed body using the destination's formatting syntax (for example, Slack mrkdwn); do not add review-only headings or convert it to dashboard Markdown. Apply the same guidance to revised drafts and worker replies in the review conversation.
 
 ```bash
 APPR_ID=$(sq approval write \

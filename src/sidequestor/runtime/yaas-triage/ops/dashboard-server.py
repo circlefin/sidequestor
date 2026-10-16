@@ -36,6 +36,8 @@ Endpoints:
     POST /api/reclaim/<id>    → recover an expired executing lease
     POST /api/quests          → create an explicitly-marked bootstrap quest
     POST /api/workspace/open  → open this workspace in Cursor or the default app
+    POST /api/quest/<id>/terminal → open the quest's terminal session (sq terminal)
+    POST /api/quests/terminal → open the terminal session for creating a quest
 """
 
 from __future__ import annotations  # PEP 604 unions below must not be
@@ -144,6 +146,8 @@ WORKER_HEARTBEAT_GRACE_S = 60
 WORKER_TIMEOUT_GRACE_S = 120
 LIVE_TAIL_LINES  = 60   # panel wants the fuller transcript; pill only shows the target name
 MAX_REQUEST_BODY_BYTES = 64 * 1024
+# Kept in step with sidequestor.quest_terminal.QUEST_ID, which validates again.
+QUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
 
 
 # ── Auth / hardening ──────────────────────────────────────────────────────────
@@ -2304,10 +2308,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._handle_open_workspace()
             return
 
+        if path == "/api/quests/terminal":
+            self._run_terminal_command(["--new-quest"])
+            return
+
         parts = [p for p in path.strip("/").split("/") if p]
         # Expected: ["api", "<action>", "<id>"]
         if len(parts) == 3 and parts[0] == "api" and parts[1] in approval_state.HTTP_ACTIONS:
             self._handle_review(parts[2], parts[1], payload)
+            return
+
+        # Quest terminal: ["api", "quest", "<quest_id>", "terminal"]
+        if len(parts) == 4 and parts[:2] == ["api", "quest"] and parts[3] == "terminal":
+            self._handle_open_terminal(urllib.parse.unquote(parts[2]))
             return
 
         # Manual quest dispatch: ["api", "prompt", "<quest_id>"]
@@ -2362,6 +2375,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "error": "could not open workspace in Cursor or the default application",
             "detail": "; ".join(errors),
         }, 500)
+
+    def _handle_open_terminal(self, quest_id: str):
+        """Open the quest's terminal session; the browser supplies only a quest id."""
+        if not QUEST_ID_RE.fullmatch(quest_id):
+            self._send_json({"error": "invalid quest id"}, 400)
+            return
+        if not (STATE_DIR / "quests" / "active" / quest_id).is_dir():
+            self._send_json({"error": "quest not found"}, 404)
+            return
+        self._run_terminal_command([quest_id])
+
+    def _run_terminal_command(self, target: list[str]):
+        # The package owns session naming, launch files and locking; `sq terminal` is the
+        # same code path a user runs by hand.
+        try:
+            cp = subprocess.run(
+                [sys.executable, "-m", "sidequestor", "--workspace", str(REPO_ROOT),
+                 "terminal", *target, "--json"],
+                capture_output=True, text=True, timeout=20, cwd=str(REPO_ROOT),
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            self._send_json({"error": f"could not open terminal: {e}"}, 500)
+            return
+        try:
+            result = json.loads((cp.stdout or "").strip().splitlines()[-1])
+        except (IndexError, ValueError):
+            result = {}
+        if cp.returncode != 0 or not isinstance(result, dict) or not result.get("ok"):
+            error = result.get("error") if isinstance(result, dict) else None
+            self._send_json({
+                "error": error or "could not open terminal",
+                "detail": (cp.stderr or "").strip()[:300],
+            }, 500)
+            return
+        self._send_json(result)
 
     def _handle_prompt(self, quest_id: str, payload: dict):
         """Durably queue one operator-authorized instruction for a quest."""

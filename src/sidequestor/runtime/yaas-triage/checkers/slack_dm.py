@@ -53,6 +53,7 @@ def main():
             query,
             since,
             content_label="Content",
+            expected_channel_id=entry["channel_id"],
         )
     except slack_utils.SlackSearchAuth as exc:
         result.misconfig(str(exc))

@@ -101,6 +101,9 @@ def installer_command(
     """Return the upgrade command for the tool that owns this installation."""
     if installer.name == "pip":
         command = [sys.executable, "-m", "pip", "install", "--upgrade"]
+        if not git_requirement:
+            # A recently published release can be hidden by pip's cached index response.
+            command.append("--no-cache-dir")
         if pre:
             command.append("--pre")
         if git_requirement:
@@ -261,7 +264,7 @@ def _fresh_cli(workspace: Workspace, command: str, *args: str) -> list[str]:
 
 
 def _run(
-    command: list[str], workspace: Workspace, *, fresh_import: bool = False,
+    command: list[str], workspace: Workspace | None, *, fresh_import: bool = False,
     extra_env: dict[str, str] | None = None,
 ) -> int:
     environment = None
@@ -273,12 +276,27 @@ def _run(
         environment.pop("PYTHONPATH", None)
     try:
         result = subprocess.run(
-            command, cwd=workspace.root, check=False, env=environment,
+            command, cwd=workspace.root if workspace else Path.cwd(), check=False, env=environment,
         )
     except OSError as exc:
         print(f"could not execute {command[0]}: {exc}", file=sys.stderr)
         return 1
     return result.returncode if result.returncode >= 0 else 1
+
+
+def _installed_version() -> str | None:
+    """Read the installed distribution with a fresh interpreter after replacement."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-I", "-c",
+             "from importlib.metadata import version; print(version('sidequestor'))"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    return result.stdout.strip() or None
 
 
 def _restart_command(workspace: Workspace, dashboard_port: int | None) -> list[str]:
@@ -326,7 +344,7 @@ def _confirm_git_upgrade(requirement: str, assume_yes: bool) -> bool:
     return input("Continue? [y/N]: ").strip().lower() in {"y", "yes"}
 
 
-def run_upgrade(workspace: Workspace, args: list[str]) -> int:
+def run_upgrade(workspace: Workspace | None, args: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="sidequestor upgrade")
     parser.add_argument("--source", help="GitHub repository URL instead of PyPI")
     parser.add_argument("--ref", "--branch", dest="ref", help="Git branch, tag, or commit")
@@ -369,11 +387,11 @@ def run_upgrade(workspace: Workspace, args: list[str]) -> int:
     except ValueError as exc:
         print(f"cannot upgrade: {exc}", file=sys.stderr)
         return 1
-    others = _other_running_workspaces(workspace)
+    others = _other_running_workspaces(workspace) if workspace else []
 
-    manifest = production_status(workspace)
+    manifest = production_status(workspace) if workspace else None
     was_running = bool(manifest and manifest.get("running"))
-    dashboard_port = read_dashboard_port(workspace) if was_running else None
+    dashboard_port = read_dashboard_port(workspace) if was_running and workspace else None
     if was_running:
         try:
             if not stop_production(workspace):
@@ -383,29 +401,53 @@ def run_upgrade(workspace: Workspace, args: list[str]) -> int:
             print(f"could not stop Sidequestor before upgrading: {exc}", file=sys.stderr)
             return 1
         print(f"Stopped Sidequestor instance {workspace.instance_id} for upgrade.")
+    elif workspace is None:
+        print("No workspace selected; this will upgrade the package without stopping running jobs.")
 
     print(f"Upgrading Sidequestor {__version__} with {installer.name} ({sys.prefix})")
     try:
         install_code = _run(install_command, workspace, extra_env=installer.env)
     except KeyboardInterrupt:
         print("Package installation interrupted.", file=sys.stderr)
-        _restore_after_install_failure(
-            workspace, was_running and not values.no_restart, dashboard_port,
-        )
+        if workspace:
+            _restore_after_install_failure(
+                workspace, was_running and not values.no_restart, dashboard_port,
+            )
         return 130
     if install_code:
-        _restore_after_install_failure(
-            workspace, was_running and not values.no_restart, dashboard_port,
-        )
+        if workspace:
+            _restore_after_install_failure(
+                workspace, was_running and not values.no_restart, dashboard_port,
+            )
         return install_code
 
     if not os.path.exists(sys.executable):
         print(
             f"Upgrade installed, but the interpreter {sys.executable} no longer exists; "
-            "Sidequestor remains stopped. Run `sq start` from the upgraded installation.",
+            "run `sq start` from the upgraded installation to repair any affected workspace.",
             file=sys.stderr,
         )
         return 1
+
+    installed_version = _installed_version()
+    if not installed_version:
+        print(
+            "Upgrade installed, but the installed Sidequestor version could not be verified; "
+            "check the installation before restarting any workspace.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if workspace is None:
+        print("No workspace selected; managed resources were not synced, validated, or restarted.")
+        if not requirement and installed_version == __version__:
+            print(
+                f"No new Sidequestor package was installed; still {installed_version}. "
+                "Check the package index if you expected a newer release."
+            )
+        else:
+            print(f"Sidequestor package upgrade complete ({__version__} -> {installed_version}).")
+        return 0
 
     # This process still has the old package imported. Every post-install operation must
     # run in a child interpreter so resources and launchd plists come from the new build.
@@ -457,5 +499,12 @@ def run_upgrade(workspace: Workspace, args: list[str]) -> int:
         )
         for other in others:
             print(f"  sq --workspace {other.root} start")
-    print("Sidequestor upgrade complete.")
+    if not requirement and installed_version == __version__:
+        print(
+            f"No new Sidequestor package was installed; still {installed_version}. "
+            "Resources were synced and the workspace was validated. "
+            "Check the package index if you expected a newer release."
+        )
+    else:
+        print(f"Sidequestor upgrade complete ({__version__} -> {installed_version}).")
     return 0
