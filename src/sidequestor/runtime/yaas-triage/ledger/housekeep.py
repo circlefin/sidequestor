@@ -25,7 +25,7 @@ up forever as a phantom open item. Both have happened. So the retire decisions, 
 used to be one jq expression and two inline Python heredocs inside the original shell orchestrator, are pure
 predicates here with a unit test each.
 
-THE FOUR RULES (each returns True = retire this entry):
+THE FIVE RULES (each returns True = retire this entry):
 
   slack_thread   its latest known activity is older than the quest's retire window. Activity
                  is max(thread_ts, created_ts, last_activity_ts), so adding a watch to an old
@@ -66,6 +66,12 @@ THE FOUR RULES (each returns True = retire this entry):
                  while a reply-catcher opened on a `C…` channel would never expire. A watch that
                  should persist is simply not marked, so permanence is the default and no
                  per-quest exception list is needed.
+
+  handoff        a one-shot Slack thread handoff whose processing watermark and observed-activity
+                 cursor both reached its declared `one_shot_until_ts`. The checker may include the
+                 thread parent for this bounded retry; successful acknowledgement advances through
+                 that message, then this rule removes the temporary watch on the next housekeeping
+                 pass. This rule runs before the general ephemeral expiry rule.
 
 The write is atomic (temp + os.replace), matching every other watch.json writer. Goldens
 assert the surviving watch set, so behaviour here is pinned by the differential harness as
@@ -179,6 +185,18 @@ def retire_schedule(w):
         return False
 
 
+def retire_handoff(w):
+    """A bounded Slack retry whose processing and observed-activity cursors reached target."""
+    if w.get("type") != "slack_thread" or "one_shot_until_ts" not in w:
+        return False
+    try:
+        target = float(w["one_shot_until_ts"])
+        return (float(w.get("last_checked_ts") or 0) >= target
+                and float(w.get("last_activity_ts") or 0) >= target)
+    except (TypeError, ValueError):
+        return False
+
+
 def _created_epoch(w):
     """created_ts as a finite epoch, or 0.0 meaning 'unknown, backfill it'.
 
@@ -239,6 +257,7 @@ def partition(watches, cutoff_epoch, done_ids, ephemeral_cutoff_epoch=None, now=
         "slack_thread": 0,
         "approval": 0,
         "schedule": 0,
+        "handoff": 0,
         "ephemeral": 0,
         "malformed_slack_thread": 0,
     }
@@ -253,6 +272,8 @@ def partition(watches, cutoff_epoch, done_ids, ephemeral_cutoff_epoch=None, now=
             counts["approval"] += 1
         elif retire_schedule(w):
             counts["schedule"] += 1
+        elif retire_handoff(w):
+            counts["handoff"] += 1
         elif retire_ephemeral(w, ephemeral_cutoff_epoch, now):
             counts["ephemeral"] += 1
         else:
@@ -321,6 +342,8 @@ def cmd_retire(watch_path, meta_path, approvals_path, now):
         print(f"Retired {counts['approval']} completed approval watch(es)")
     if counts["schedule"]:
         print(f"Retired {counts['schedule']} fired one-shot schedule watch(es)")
+    if counts["handoff"]:
+        print(f"Retired {counts['handoff']} completed Slack handoff watch(es)")
     if counts["ephemeral"]:
         print(f"Retired {counts['ephemeral']} expired ephemeral watch(es) "
               f"(created more than {eph_hours}h ago)")

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import re
+import shlex
 import unittest
 from pathlib import Path
+
+from sidequestor.quest_terminal import creation_prompt, launcher, new_quest_target
+from sidequestor.workspace import Workspace
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD_HTML = PACKAGE_ROOT / "src" / "sidequestor" / "runtime" / "dashboard.html"
@@ -39,15 +43,21 @@ class QuestCreationBootstrapTest(unittest.TestCase):
                          "function isInitialising(q){return q.sidequestor_bootstrap===true}")
 
     def test_terminal_fallback_shell_quotes_workspace_path(self):
-        self.assertIn("function shellQuote", self.html)
-        self.assertIn("'cd '+shellQuote(p)", self.html)
-        self.assertNotIn("'cd '+p", self.html)
+        # The browser no longer builds a shell command; the package writes the launcher
+        # with every path shlex-quoted.
+        self.assertIn("post('/api/quests/terminal')", self.html)
+        self.assertNotIn("'cd '+", self.html)
+        workspace = Workspace(Path("/tmp/it's a $(workspace)"), "0123456789abcdef", "ws")
+        target = new_quest_target(workspace)
+        script = launcher(target, Path("/tmp/session dir"), "sq-01234567-_new-quest", "none", None, None)
+        self.assertIn(f"cd {shlex.quote(str(workspace.root))} || exit 1", script)
 
     def test_terminal_fallback_uses_auto_discovered_creation_skill(self):
-        self.assertIn("auto-discovered Sidequestor quest-creation skill", self.html)
-        self.assertIn("via `sq new-quest`", self.html)
-        self.assertNotIn("from sidequestor.native import RUNTIME_ROOT", self.html)
-        self.assertNotIn(".yaas/engine/current/OPERATING.md", self.html)
+        prompt = creation_prompt("track the launch")
+        self.assertIn("quest-creation skill", prompt)
+        self.assertIn("`sq new-quest`", prompt)
+        self.assertNotIn("RUNTIME_ROOT", prompt)
+        self.assertNotIn(".yaas/engine/current/OPERATING.md", prompt)
 
     def test_field_guide_describes_dashboard_bootstrap_creation(self):
         self.assertIn("Sidequestor visibly bootstraps exact watches", self.html)

@@ -1,13 +1,16 @@
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from importlib.resources import files
+from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from sidequestor.launchd import _production_jobs
 from sidequestor.resources import ENGINE_VERSION, current_engine_version, sync_resources
-from sidequestor.setup import print_worker_instructions, provision_env
+from sidequestor.setup import check_worker_clis, print_worker_instructions, provision_env, run_setup
 from sidequestor.workspace import init_workspace
 from sidequestor.workspace import list_instances
 
@@ -59,6 +62,168 @@ class SetupTests(unittest.TestCase):
             content = workspace.env_file.read_text()
             self.assertIn("SIDEQUESTOR_CODEX_MODEL=gpt-5.6-luna", content)
             self.assertIn("SIDEQUESTOR_CODEX_EFFORT=high", content)
+            self.assertIn("SIDEQUESTOR_CODEX_PERMISSION_MODE=bypassPermissions", content)
+
+    def test_interactive_empty_permission_answer_uses_bypass_default(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            workspace.env_file.write_text(
+                "SIDEQUESTOR_AGENT=claude\n"
+                "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+            )
+            answers = iter(["", "", ""])
+
+            provision_env(workspace, input_fn=lambda _prompt: next(answers), interactive=True)
+
+            self.assertIn("SIDEQUESTOR_CLAUDE_PERMISSION_MODE=bypassPermissions",
+                          workspace.env_file.read_text())
+
+    def test_bypass_default_is_announced_with_its_risk(self):
+        # Workers read untrusted Slack, email and GitHub text. Applying an unsandboxed,
+        # unapproved mode silently would hide that trade-off from the person installing.
+        for interactive in (False, True):
+            with self.subTest(interactive=interactive), tempfile.TemporaryDirectory() as raw:
+                workspace = init_workspace(raw)
+                workspace.env_file.write_text(
+                    "SIDEQUESTOR_AGENT=codex\n"
+                    "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+                )
+                answers = iter(["", "", ""])
+                output = StringIO()
+                with redirect_stdout(output):
+                    provision_env(workspace, input_fn=lambda _prompt: next(answers),
+                                  interactive=interactive)
+                self.assertIn("without approval", output.getvalue())
+                self.assertIn("untrusted", output.getvalue())
+
+    def test_existing_permission_mode_is_preserved(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            workspace.env_file.write_text(
+                "SIDEQUESTOR_AGENT=codex\n"
+                "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+                "SIDEQUESTOR_CODEX_PERMISSION_MODE=workspace-write\n"
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                provision_env(workspace, interactive=False)
+            self.assertIn("SIDEQUESTOR_CODEX_PERMISSION_MODE=workspace-write",
+                          workspace.env_file.read_text())
+            self.assertNotIn("untrusted", output.getvalue())
+
+    def test_cli_check_installs_missing_cli_and_rechecks_job_path(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            found = {"codex": None, "claude": "/bin/claude", "cursor": None}
+            prompts = []
+
+            def answer(prompt):
+                prompts.append(prompt)
+                return "yes"
+
+            def install(*_args, **_kwargs):
+                found["codex"] = "/bin/codex"
+                return SimpleNamespace(returncode=0)
+
+            with patch("sidequestor.setup.resolve_job_path", return_value=SimpleNamespace(value="/bin")), \
+                 patch("sidequestor.setup.find_agent", side_effect=lambda name, _path: found[name]), \
+                 patch("sidequestor.setup.shutil.which", return_value="/bin/npm"), \
+                 patch("sidequestor.setup.subprocess.run", side_effect=install) as run, \
+                 redirect_stdout(StringIO()) as output:
+                ready = check_worker_clis(workspace, Path("/usr/bin/python3"), agent="codex",
+                                          input_fn=answer)
+
+            self.assertTrue(ready)
+            self.assertEqual(len(prompts), 1)
+            run.assert_called_once_with(["/bin/npm", "install", "-g", "@openai/codex"],
+                                        cwd=workspace.root, check=False)
+            self.assertIn("claude CLI: installed", output.getvalue())
+
+    def test_cli_check_reports_both_and_requires_selected_cli(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            with patch("sidequestor.setup.resolve_job_path", return_value=SimpleNamespace(value="/bin")), \
+                 patch("sidequestor.setup.find_agent", return_value=None), \
+                 redirect_stdout(StringIO()) as output:
+                ready = check_worker_clis(workspace, Path("/usr/bin/python3"), agent="claude",
+                                          interactive=False)
+
+            self.assertFalse(ready)
+            self.assertIn("codex CLI: missing", output.getvalue())
+            self.assertIn("claude CLI: missing", output.getvalue())
+
+    def test_successful_npm_install_outside_job_path_explains_location(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            answers = iter(["yes", "no"])
+
+            def run(args, **_kwargs):
+                if args[1:] == ["prefix", "-g"]:
+                    return SimpleNamespace(returncode=0, stdout="/opt/node\n")
+                return SimpleNamespace(returncode=0)
+
+            with patch("sidequestor.setup.resolve_job_path", return_value=SimpleNamespace(value="/bin")), \
+                 patch("sidequestor.setup.find_agent", return_value=None), \
+                 patch("sidequestor.setup.shutil.which", side_effect=[None, "/opt/node/bin/npm"]), \
+                 patch("sidequestor.setup.subprocess.run", side_effect=run), \
+                 redirect_stdout(StringIO()) as output:
+                ready = check_worker_clis(workspace, Path("/usr/bin/python3"), agent="codex",
+                                          input_fn=lambda _prompt: next(answers))
+
+            self.assertFalse(ready)
+            self.assertIn("/opt/node/bin is not on", output.getvalue())
+            self.assertNotIn("To install codex later", output.getvalue())
+
+    def test_missing_npm_does_not_attempt_install(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            answers = iter(["yes", "no"])
+            with patch("sidequestor.setup.resolve_job_path", return_value=SimpleNamespace(value="/bin")), \
+                 patch("sidequestor.setup.find_agent", return_value=None), \
+                 patch("sidequestor.setup.shutil.which", return_value=None), \
+                 patch("sidequestor.setup.subprocess.run") as run, \
+                 redirect_stdout(StringIO()) as output:
+                ready = check_worker_clis(workspace, Path("/usr/bin/python3"), agent="codex",
+                                          input_fn=lambda _prompt: next(answers))
+            self.assertFalse(ready)
+            run.assert_not_called()
+            self.assertIn("npm is unavailable", output.getvalue())
+
+    def test_cursor_check_requires_cursor_agent_without_install_prompts(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            with patch("sidequestor.setup.resolve_job_path", return_value=SimpleNamespace(value="/bin")), \
+                 patch("sidequestor.setup.find_agent", return_value=None), \
+                 redirect_stdout(StringIO()) as output:
+                ready = check_worker_clis(workspace, Path("/usr/bin/python3"), agent="cursor",
+                                          input_fn=lambda _prompt: self.fail("unexpected install prompt"))
+            self.assertFalse(ready)
+            self.assertIn("Cursor CLI: missing", output.getvalue())
+
+    def test_setup_checks_clis_after_slack_prompt_before_starting_jobs(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            workspace.env_file.write_text(
+                "SIDEQUESTOR_AGENT=codex\n"
+                "SIDEQUESTOR_CHECKER_CONNECTORS=slack\n"
+                "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=1\n"
+            )
+            prompts = []
+
+            def decline(prompt):
+                prompts.append(prompt)
+                return "n"
+
+            with patch("sidequestor.setup.sync_resources"), \
+                 patch("sidequestor.setup.provision_env"), \
+                 patch("sidequestor.setup.check_worker_clis", return_value=False) as check, \
+                 patch("sidequestor.setup.install_production") as install, \
+                 redirect_stdout(StringIO()):
+                result = run_setup(workspace, Path("/usr/bin/python3"), input_fn=decline)
+            self.assertEqual(result, 1)
+            self.assertTrue(any("Slack OAuth" in prompt for prompt in prompts))
+            check.assert_called_once()
+            install.assert_not_called()
 
     def test_cursor_provisioning_uses_cursor_defaults_without_foreign_knobs(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -154,6 +319,10 @@ class SetupTests(unittest.TestCase):
             self.assertIn("sq new-quest '<spec_json>'", prompt.read_text())
             self.assertEqual(current_engine_version(workspace), ENGINE_VERSION)
             self.assertTrue((destination / "skills" / "yaas-ops" / "SKILL.md").is_file())
+            for parent in ("skills", ".agents/skills", ".claude/skills"):
+                link = workspace.root / parent / "yaas-slack-file"
+                self.assertTrue(link.is_symlink())
+                self.assertTrue((link / "SKILL.md").is_file())
 
     def test_sync_resources_is_idempotent_and_prunes_stale_skill_symlinks(self):
         with tempfile.TemporaryDirectory() as raw:

@@ -44,9 +44,14 @@ For the `reactions` target, execute exactly these steps:
 
 1. **Read `state/triage/pending_reactions.json`** — shape `{ "<emoji>": ["<msg_ts>", ...] }`.
 2. **For each `(emoji, msg_ts)` pair:**
-   a. `slack_read_thread` to get the message + thread context.
+   a. `slack_read_thread` to get the message + thread context. If the reacted message (or the thread
+      context you rely on) lists `Files:` with an image or PDF, fetch and open it before acting:
+      `slack-file.py fetch '{"channel_id":"C...","ts":"<msg_ts>"}'` (read-only). `save` records what the
+      attachment shows, not just its filename.
    b. **For action reactions, mark processing first:** swap the trigger reaction to the configured `loading` emoji (§ Reaction lifecycle) before doing the work. The configured `save` emoji has no lifecycle swap.
-   c. Act per the table above.
+   c. Act per the table above. Before composing a `process` reply or `draft`, load
+      `.yaas/engine/current/skills/yaas-answering-quality/SKILL.md` and
+      `.yaas/engine/current/skills/yaas-draft-readiness/SKILL.md`.
    d. **Commitment check (§ 3b applies here).** Before sending, scan your draft reply for commitment phrases ("I'll", "will rerun", "will confirm", "let me"). If the thread asks you to DO something, do the work first and reply once with the result — never reply with a promise and exit. Verify capability (available tools, credentials in `.env`) before deciding you can't. If the action genuinely cannot complete in-tick, spawn a quest (§ New quests from reactions) before exiting so the promise has a trigger — a commitment tracked nowhere never resurfaces.
    e. **For action reactions, mark done:** once the action is complete and every in-tick commitment is done, swap configured `loading` → configured `done` (§ Reaction lifecycle). If blocked / spun into a quest / skipped, leave it at the configured `loading` emoji.
    f. **Append `msg_ts`** to the emoji's state file. This is how we avoid re-processing.
@@ -64,6 +69,18 @@ python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack-send.py" '{"channe
 
 Omitting `quest_id` deliberately selects send-only mode. The helper still enforces the stale
 reply guard and keeps every backend on the same Slack identity.
+
+When a `process` reply needs to include a file (a chart or screenshot you produced), post it with
+`slack-file.py send`, also without `quest_id`, in the same thread:
+
+```bash
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack-file.py" send '{"channel_id":"C...","thread_ts":"...","file":"<local path>","initial_comment":"..."}'
+```
+
+Slack has no file drafts, so a `draft` reaction cannot attach a file: draft the text, and name the
+file and its local path to the user in the DM instead of uploading it. Exit 3 from `send` means the
+file may already be in the thread; read it before retrying, and leave the reaction at `loading`
+if you cannot tell.
 
 ### State file schemas
 

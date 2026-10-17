@@ -15,106 +15,355 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-gmail-reply.py — fetch a Gmail message, build a reply, and send it.
+"""Send an explicit sender-only or reply-all Gmail reply via native gws helpers."""
 
-Usage:
-  echo "<body text>" | ./gmail-reply.py <message_id_to_reply_to>
-  ./gmail-reply.py <message_id_to_reply_to> --body "<text>"
-
-Reads reply body from stdin (if no --body flag) or from --body argument.
-Fetches the original message to extract threadId, From, Subject, Message-ID,
-and References — builds a proper RFC 2822 threaded reply and sends it.
-
-Prints the sent Gmail message ID on success.
-Exit: 0 on success, 1 on failure.
-"""
-import sys
-import os
-import json
-import base64
-import subprocess
 import argparse
-from email.mime.text import MIMEText
+import json
+import os
+import subprocess
+import sys
+from email.utils import parseaddr
+
+import gmail_policy
 
 
 GWS = os.environ.get("GWS_BIN", "gws")
 
 
-def gws(*args, body=None):
-    cmd = [GWS] + list(args)
-    kwargs = dict(capture_output=True, text=True, timeout=20)
-    if body is not None:
-        kwargs["input"] = body
-    r = subprocess.run(cmd, **kwargs)
-    if r.returncode != 0:
-        raise RuntimeError(f"gws {' '.join(args)} failed: {r.stderr.strip()}")
-    return json.loads(r.stdout)
+class GwsFailure(Exception):
+    def __init__(self, returncode, message):
+        super().__init__(message)
+        self.returncode = returncode
 
 
-def header_value(payload, name):
-    for h in payload.get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
+def _run_gws(arguments, timeout, operation):
+    try:
+        result = subprocess.run(
+            [GWS, *arguments], capture_output=True, text=True, timeout=timeout
+        )
+    except FileNotFoundError as exc:
+        raise GwsFailure(1, f"ERROR: gws executable not found: {exc.filename}") from exc
+    except OSError as exc:
+        raise GwsFailure(1, f"ERROR: could not run gws: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        outcome = " Delivery outcome may be unknown; do not retry blindly." if operation == "reply" else ""
+        raise GwsFailure(
+            1, f"ERROR: gws {operation} timed out after {timeout} seconds.{outcome}"
+        ) from exc
+
+    if result.returncode != 0:
+        details = []
+        if result.stdout.strip():
+            details.append(result.stdout.strip())
+        if result.stderr.strip():
+            details.append(result.stderr.strip())
+        message = "\n".join(details) or f"gws {operation} failed with exit {result.returncode}"
+        raise GwsFailure(result.returncode, message)
+    return result.stdout
+
+
+def _json_object(output):
+    for index, character in enumerate(output):
+        if character != "{":
+            continue
+        try:
+            value = json.loads(output[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise GwsFailure(1, "ERROR: gws returned no JSON object")
+
+
+def _sent_id(stdout):
+    try:
+        response = _json_object(stdout)
+    except GwsFailure:
+        return stdout.strip()
+    message = response.get("message")
+    nested_id = message.get("id") if isinstance(message, dict) else None
+    return response.get("id") or nested_id or stdout.strip()
+
+
+def _gws_mailbox(raw):
+    """Match gws 0.22.5 Mailbox::parse for audience comparisons."""
+    raw = raw.strip()
+    start = raw.rfind("<")
+    if start >= 0:
+        end = raw.find(">", start)
+        if end >= 0:
+            raw = raw[start + 1:end].strip()
+    return "".join(character for character in raw if ord(character) >= 32 and ord(character) != 127)
+
+
+def _gws_mailbox_tokens(raw):
+    """Split like gws: commas outside quoted strings delimit addresses."""
+    start = 0
+    in_quotes = False
+    previous_backslash = False
+    for index, character in enumerate(raw):
+        if character == "\\" and in_quotes:
+            previous_backslash = not previous_backslash
+            continue
+        if character == '"' and not previous_backslash:
+            in_quotes = not in_quotes
+        elif character == "," and not in_quotes:
+            token = raw[start:index].strip()
+            if token:
+                yield token
+            start = index + 1
+        previous_backslash = False
+    token = raw[start:].strip()
+    if token:
+        yield token
+
+
+def _mailboxes(values):
+    addresses = []
+    seen = set()
+    for value in values:
+        for token in _gws_mailbox_tokens(value):
+            address = _gws_mailbox(token)
+            key = address.lower()
+            if address and key not in seen:
+                seen.add(key)
+                addresses.append(address)
+    return addresses
+
+
+def _ascii_lower(value):
+    return value.translate(str.maketrans(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+
+
+def _reply_all_cc_workaround(message_id):
+    # WORKAROUND(gws 0.22.5, googleworkspace/cli#911 and #642): +reply-all
+    # matches header names case-sensitively and silently drops original CC/cc
+    # headers. Inject only those noncanonical CC values through --cc. Remove
+    # this metadata read after the minimum supported GWS version contains the
+    # upstream case-insensitive header fix.
+    output = _run_gws(
+        [
+            "gmail", "users", "messages", "get", "--params",
+            json.dumps({"userId": "me", "id": message_id, "format": "metadata"}),
+        ],
+        timeout=60,
+        operation="reply-all metadata read",
+    )
+    message = _json_object(output)
+    headers = message.get("payload", {}).get("headers", [])
+    values = [
+        header.get("value", "")
+        for header in headers
+        if header.get("name", "").casefold() == "cc" and header.get("name") != "Cc"
+    ]
+    return _mailboxes(values)
+
+
+def _reviewed_recipients(message_id, reply_all, added_cc, removed):
+    """Resolve the audience for a review from the same Gmail message used at send time.
+
+    The approval is checked again immediately before a reviewed send, so an edited original
+    message or a changed sending identity cannot silently change its audience.
+    """
+    output = _run_gws(
+        ["gmail", "users", "messages", "get", "--params",
+         json.dumps({"userId": "me", "id": message_id, "format": "metadata"})],
+        timeout=60, operation="reply audience read",
+    )
+    headers = _json_object(output).get("payload", {}).get("headers", [])
+    if not isinstance(headers, list):
+        raise GwsFailure(1, "ERROR: Gmail message has no readable recipient headers")
+
+    def header_values(name):
+        return [value for header in headers if isinstance(header, dict)
+                and header.get("name") == name
+                and (value := header.get("value", ""))]
+
+    def addresses(name):
+        # gws joins repeated address headers before parsing. Parsing each one separately
+        # can hide recipients when quotes span two header values.
+        values = header_values(name)
+        return _mailboxes([", ".join(values)]) if values else []
+
+    from_headers = [header.get("value", "") for header in headers
+                    if isinstance(header, dict) and header.get("name") == "From"]
+    sender = [_gws_mailbox(from_headers[-1])] if from_headers else []
+    if not sender or not sender[0]:
+        raise GwsFailure(1, "ERROR: Gmail message has no From header")
+    reply_to = addresses("Reply-To") if header_values("Reply-To") else sender
+    if not reply_to:
+        raise GwsFailure(1, "ERROR: Gmail Reply-To has no usable recipient")
+    original_to = addresses("To")
+    if not reply_all:
+        return {"to": reply_to, "cc": []}, None
+
+    # gws 0.22.5 only recognizes canonical Cc; the existing workaround passes other
+    # spellings through --cc. Include those addresses in the reviewed audience too.
+    noncanonical_cc = _mailboxes([header.get("value", "") for header in headers
+                                  if isinstance(header, dict)
+                                  and str(header.get("name", "")).lower() == "cc"
+                                  and header.get("name") != "Cc"])
+    # These addresses are fed back to gws as one --cc= value. Quotes or separators
+    # would make that second parse differ from the review, so reject them for review.
+    reparsed = [*noncanonical_cc, *_mailboxes(added_cc), *_mailboxes(removed)]
+    if any(any(character in address for character in '\",<>\\')
+           or any(character.isspace() for character in address)
+           for address in reparsed):
+        raise GwsFailure(1, "ERROR: recipient address cannot be reviewed safely")
+    original_cc = [*addresses("Cc"), *noncanonical_cc]
+
+    profile = _json_object(_run_gws(
+        ["gmail", "users", "getProfile", "--params", '{"userId":"me"}'],
+        timeout=60, operation="sender profile read",
+    ))
+    primary = _mailboxes([profile.get("emailAddress", "")])
+    if not primary:
+        raise GwsFailure(1, "ERROR: Gmail profile has no emailAddress")
+    configured_sender = os.environ.get("SIDEQUESTOR_FROM_EMAIL") or os.environ.get("YAAS_FROM_EMAIL")
+    if configured_sender:
+        alias = _mailboxes([parseaddr(configured_sender)[1]])
+    else:
+        send_as = _json_object(_run_gws(
+            ["gmail", "users", "settings", "sendAs", "list", "--params", '{"userId":"me"}'],
+            timeout=60, operation="send-as identity read",
+        ))
+        identities = send_as.get("sendAs", [])
+        defaults = [identity.get("sendAsEmail", "") for identity in identities
+                    if isinstance(identity, dict) and identity.get("isDefault")]
+        if len(defaults) != 1:
+            raise GwsFailure(1, "ERROR: cannot determine the default Gmail send-as address")
+        alias = _mailboxes(defaults)
+    if len(alias) != 1:
+        raise GwsFailure(1, "ERROR: cannot determine the Gmail sending address")
+    own = {address.lower() for address in [*primary, *alias]}
+    excluded = own | {address.lower() for address in _mailboxes(removed)}
+    self_reply = any(_ascii_lower(sender[0]) == _ascii_lower(address)
+                     for address in [*primary, *alias])
+    to_candidates = original_to if self_reply else reply_to
+    cc_candidates = [*original_cc, *_mailboxes(added_cc)] if self_reply else [
+        *original_to, *original_cc, *_mailboxes(added_cc)]
+
+    def unique(candidates, seen):
+        audience = []
+        for address in candidates:
+            key = address.lower()
+            if key not in excluded and key not in seen:
+                seen.add(key)
+                audience.append(address)
+        return audience
+
+    seen = set()
+    to = unique(to_candidates, seen)
+    cc = unique(cc_candidates, seen)
+    if not to:
+        raise GwsFailure(1, "ERROR: no To recipient remains for this reply-all")
+    return {"to": to, "cc": cc}, alias[0]
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("message_id")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--reply-sender",
+        action="store_true",
+        help="reply only to the author or Reply-To of the selected message",
+    )
+    mode.add_argument(
+        "--reply-all",
+        action="store_true",
+        help="reply to the author and all original To/Cc recipients",
+    )
     parser.add_argument("--body", default=None)
+    parser.add_argument("--cc", action="append", default=[])
+    parser.add_argument("--remove", action="append", default=[])
+    parser.add_argument("--html", action="store_true")
+    parser.add_argument("--attach", action="append", default=[])
+    parser.add_argument("--quest-id", default="")
+    parser.add_argument("--approval-id", default="")
+    delivery = parser.add_mutually_exclusive_group(required=True)
+    delivery.add_argument("--send", action="store_true")
+    delivery.add_argument("--draft", action="store_true")
+    delivery.add_argument("--approval-spec", action="store_true",
+                          help="print the approval a reviewer must grant for this exact reply")
     args = parser.parse_args()
 
-    reply_body = args.body if args.body else sys.stdin.read().strip()
+    if args.cc and not args.reply_all:
+        parser.error("--cc requires --reply-all")
+    if args.remove and not args.reply_all:
+        parser.error("--remove requires --reply-all")
+
+    reply_body = args.body if args.body is not None else sys.stdin.read().strip()
     if not reply_body:
-        print("ERROR: no reply body provided", file=sys.stderr)
-        sys.exit(1)
+        parser.error("no reply body provided")
 
-    # Fetch original message metadata
-    msg = gws("gmail", "users", "messages", "get",
-              "--params", json.dumps({
-                  "userId": "me",
-                  "id": args.message_id,
-                  "format": "metadata",
-              }))
+    if args.send or args.approval_spec:
+        try:
+            attachments = [gmail_policy.attachment_record(path) for path in args.attach]
+        except OSError as exc:
+            parser.error(f"cannot read attachment: {exc}")
+        target = {
+            "surface": "gmail", "action": "reply_all" if args.reply_all else "reply",
+            "message_id": args.message_id, "cc": _mailboxes(args.cc),
+            "remove": _mailboxes(args.remove), "attachments": attachments, "html": args.html,
+        }
+        if args.approval_spec or args.approval_id:
+            target["recipients"], resolved_sender = _reviewed_recipients(
+                args.message_id, args.reply_all, args.cc, args.remove)
+            if resolved_sender:
+                target["sender"] = resolved_sender
+        if args.approval_spec:
+            print(json.dumps(gmail_policy.approval_spec(target, reply_body), ensure_ascii=False))
+            return
+        reason = gmail_policy.send_policy_reason(
+            args.quest_id, args.approval_id, target, reply_body)
+        if reason:
+            print(f"ERROR: send denied: {reason}", file=sys.stderr)
+            raise SystemExit(1)
 
-    thread_id = msg["threadId"]
-    payload = msg.get("payload", {})
-    from_addr = header_value(payload, "From")
-    orig_subject = header_value(payload, "Subject")
-    orig_msg_id = header_value(payload, "Message-ID")
-    orig_refs = header_value(payload, "References")
+    command = [
+        "gmail",
+        "+reply-all" if args.reply_all else "+reply",
+        "--message-id",
+        args.message_id,
+        # `--flag=value` throughout: gws rejects a separate value that starts with "-".
+        f"--body={reply_body}",
+    ]
 
-    subject = orig_subject if orig_subject.startswith("Re:") else f"Re: {orig_subject}"
-    references = f"{orig_refs} {orig_msg_id}".strip()
+    sender = os.environ.get("SIDEQUESTOR_FROM_EMAIL") or os.environ.get("YAAS_FROM_EMAIL")
+    if sender:
+        sender_address = parseaddr(sender)[1]
+        if not sender_address:
+            parser.error("SIDEQUESTOR_FROM_EMAIL must contain a valid email address")
+        command.append(f"--from={sender_address}")
+    elif args.approval_id and target.get("sender"):
+        # Pin the reviewed default alias even if gws's own send-as lookup later fails.
+        command.append(f"--from={target['sender']}")
 
-    # Strip CR/LF from any header value derived from the inbound message so a
-    # crafted From/Message-ID/References can't fold in extra headers.
-    def _hdr(v):
-        return v.replace("\r", " ").replace("\n", " ")
+    cc = []
+    if args.reply_all:
+        cc.extend(_reply_all_cc_workaround(args.message_id))
+        cc.extend(_mailboxes(args.cc))
+    cc = _mailboxes(cc)
+    if cc:
+        command.append(f"--cc={','.join(cc)}")
+    if args.remove:
+        command.append(f"--remove={','.join(_mailboxes(args.remove))}")
+    if args.html:
+        command.append("--html")
+    for attachment in args.attach:
+        command.append(f"--attach={attachment}")
+    if args.draft:
+        command.append("--draft")
 
-    # Build RFC 2822 reply
-    mime = MIMEText(reply_body, "plain", "utf-8")
-    mime["To"] = _hdr(from_addr)
-    mime["From"] = (os.environ.get("SIDEQUESTOR_FROM_EMAIL")
-                    or os.environ.get("YAAS_FROM_EMAIL", ""))
-    mime["Subject"] = _hdr(subject)
-    mime["In-Reply-To"] = _hdr(orig_msg_id)
-    mime["References"] = _hdr(references)
-
-    raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
-
-    # Send — userId goes in --params (URL path), message body in --json
-    sent = gws("gmail", "users", "messages", "send",
-               "--params", json.dumps({"userId": "me"}),
-               "--json", json.dumps({"raw": raw, "threadId": thread_id}))
-
-    print(sent.get("id", ""))
+    timeout = 300 if args.attach else 60
+    print(_sent_id(_run_gws(command, timeout=timeout, operation="reply")))
 
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
+    except GwsFailure as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(exc.returncode)

@@ -68,8 +68,9 @@ import os
 import json
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 JIRA_CALL = os.environ.get("JIRA_CALL", os.path.join(SCRIPT_DIR, "..", "surfaces", "jira-call.sh"))
@@ -83,6 +84,10 @@ class Transient(Exception):
     """Retryable upstream condition — skip the tick, don't dispatch."""
 
 
+class Misconfig(Exception):
+    """Definite authorization failure reported by the shared surface client."""
+
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import result
 
@@ -92,6 +97,8 @@ def jira_get(path, timeout=30):
     msg = detail[-1] if detail else f"jira-call.sh exit {r.returncode}"
     if r.returncode == EXIT_TRANSIENT:
         raise Transient(msg)
+    if r.returncode == 1:
+        raise Misconfig(msg)
     if r.returncode != 0 or not r.stdout.strip():
         raise RuntimeError(msg)
     return json.loads(r.stdout)
@@ -129,7 +136,11 @@ def main():
     caller_ordered = "order by" in jql.lower()
     bound = ""
     if since_ts > 0:
-        since_str = datetime.fromtimestamp(since_ts - 60, timezone.utc).strftime("%Y/%m/%d %H:%M")
+        # Jira parses JQL date literals in the caller's profile time zone, so a UTC literal
+        # lands hours late for anyone west of UTC and hides real changes. The extra hour
+        # covers a DST-ambiguous local time; the post-filter below restores exactness.
+        zone = ZoneInfo(jira_get("/rest/api/3/myself").get("timeZone") or "UTC")
+        since_str = datetime.fromtimestamp(since_ts - 3660, zone).strftime("%Y/%m/%d %H:%M")
         bound = f' AND updated >= "{since_str}"'
 
     if caller_ordered:
@@ -220,5 +231,7 @@ if __name__ == "__main__":
     except Transient as e:
         # Not dirty: skip the tick. Watermark is held, so the change is not lost.
         result.ratelimited(str(e))
+    except Misconfig as e:
+        result.misconfig(str(e))
     except Exception as e:
         result.error(f"{type(e).__name__}: {e}")
