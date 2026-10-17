@@ -29,7 +29,7 @@ write <json>
     source are normalized to quest-inbox; an unknown explicit quest is rejected.
     Prints the generated approval ID on success.
     Prints nothing (exit 0) if an identical pending entry already exists
-    (same quest_id + target.channel_id + target.thread_ts).
+    (same quest, destination, and request; Slack messages retain thread dedup).
     Also appends an `approval` watch to the quest's watch.json (additive,
     idempotent) so triage re-dispatches the worker when the reviewer approves
     or sends the item back. This is done as part of `write` on purpose: an
@@ -242,10 +242,10 @@ def _is_file_upload(target) -> bool:
 
 
 def _same_review_request(existing, new, existing_message, new_message) -> bool:
-    """Keep Slack message thread dedup, but compare the full content of pinned actions."""
+    """Keep Slack thread dedup; compare full requests without a channel ID."""
     if (_is_file_upload(existing) or _is_file_upload(new)
-            or (isinstance(existing, dict) and existing.get("surface") == "gmail")
-            or (isinstance(new, dict) and new.get("surface") == "gmail")):
+            or not (isinstance(existing, dict) and existing.get("channel_id"))
+            or not (isinstance(new, dict) and new.get("channel_id"))):
         return existing == new and existing_message == new_message
     return True
 

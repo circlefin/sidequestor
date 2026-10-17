@@ -604,7 +604,7 @@ class SendPolicyTest(TransportTestCase):
 
 
 class ApprovalDedupTest(unittest.TestCase):
-    """approval-helper.py dedups by thread, but a file upload only matches the same upload."""
+    """approval-helper.py preserves Slack thread dedup and distinct other requests."""
 
     HELPER = PACKAGE_ROOT / "src" / "sidequestor" / "runtime" / "yaas-triage" / "ledger" / "approval-helper.py"
 
@@ -649,6 +649,21 @@ class ApprovalDedupTest(unittest.TestCase):
         self.assertTrue(self._write("remote_request", second, "Second reply"))
         items = json.loads((self.root / "state" / "pending-approvals.json").read_text())["items"]
         self.assertEqual(len(items), 3)
+
+    def test_channel_less_approvals_keep_distinct_targets_and_messages(self) -> None:
+        cases = (
+            ("remote_request", {"surface": "google_docs", "doc_id": "docA"},
+             {"surface": "google_docs", "doc_id": "docB"}),
+            ("remote_request", {"surface": "github", "repo": "org/repo", "issue": 1},
+             {"surface": "github", "repo": "org/repo", "issue": 2}),
+            ("file_edit", {"path": "a.txt"}, {"path": "b.txt"}),
+        )
+        for action_type, first, second in cases:
+            with self.subTest(action_type=action_type, first=first):
+                self.assertTrue(self._write(action_type, first, "First request"))
+                self.assertEqual(self._write(action_type, first, "First request"), "")
+                self.assertTrue(self._write(action_type, first, "Different request"))
+                self.assertTrue(self._write(action_type, second, "First request"))
 
 
 class FetchCommandTest(TransportTestCase):
