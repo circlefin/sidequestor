@@ -4,6 +4,12 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.1.51 - 2026-10-17
+
+### Fixed
+- Review requests for Google Docs, GitHub, and file edits no longer disappear when a
+  different target or message is already pending in the same quest.
+
 ## 0.1.50 - 2026-10-16
 
 ### Changed
@@ -15,8 +21,6 @@ Versions are dated by the day the snapshot was published.
   attachment hashes, and body. `--approval-spec` prints the approval to request.
 - Gmail reply approvals retain distinct requests for distinct messages, show the complete
   resolved To/Cc audience, and verify that audience again before sending.
-- Review requests for Google Docs, GitHub, and file edits no longer disappear when a
-  different target or message is already pending in the same quest.
 - Recipient review matches `gws` parsing for repeated or malformed address headers and
   pins the reviewed default sending alias. Ambiguous recipients fail closed.
 - Jira watches write the JQL bound in the user's Jira time zone, avoiding skipped changes

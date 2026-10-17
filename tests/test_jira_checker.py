@@ -32,7 +32,8 @@ FAKE_JIRA = textwrap.dedent('''\
     if match:
         bound = datetime.strptime(match.group(1), "%Y/%m/%d %H:%M").replace(tzinfo=zone)
         issues = [i for i in issues
-                  if datetime.fromisoformat(i["fields"]["updated"]) >= bound]
+                  if datetime.strptime(i["fields"]["updated"],
+                                       "%Y-%m-%dT%H:%M:%S.%f%z") >= bound]
     print(json.dumps({"issues": issues, "isLast": True}))
 ''')
 
