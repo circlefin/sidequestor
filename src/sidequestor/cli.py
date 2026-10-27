@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import __version__
 from .build_info import build_info
-from .native import _environment, dry_tick, run_native, run_native_loop, run_native_tick
+from .native import _environment, _load_workspace_env, dry_tick, run_native, run_native_loop, run_native_tick
 from .dashboard import (
     read_dashboard_port,
     read_dashboard_url,
@@ -34,10 +34,12 @@ from .launchd import (
 )
 from .launchd import render, status as launchd_status, uninstall as uninstall_jobs
 from .migrations import migrate_workspace
-from . import quest_terminal
+from . import onboarding, quest_terminal
 from .resources import ENGINE_VERSION, current_engine_version, sync_resources
 from .setup import configured_agent, print_worker_instructions, run_setup
 from .upgrade import run_upgrade
+from .update_check import available_update, check_enabled as update_check_enabled
+from .update_check import read_status as read_update_status
 from .workspace import (
     Workspace,
     find_workspace,
@@ -55,8 +57,11 @@ COMMANDS = {
     "init": "create a workspace",
     "instances": "list and validate workspace instances",
     "setup": "run the interactive workspace onboarding wizard",
+    "onboard": "start or resume guided onboarding in Slack or this terminal",
     "start": "start all jobs for a workspace",
     "stop": "stop all jobs for an instance",
+    "pause": "pause a workspace now (alias for stop)",
+    "resume": "resume a workspace (alias for start)",
     "tick": "run one triage tick",
     "loop": "run the paced triage loop",
     "dashboard": "serve or inspect the dashboard",
@@ -71,6 +76,7 @@ COMMANDS = {
     "approval": "manage approval state",
     "log": "write a timeline event",
     "slack-send": "send through the Slack surface",
+    "slack-channel": "create private Slack channels, invite members, or set channel details",
     "slack-file": "upload a file to Slack, or fetch a message's attached files",
     "telegram-send": "save a Telegram draft or explicitly send a message",
     "react": "advance reaction lifecycle",
@@ -94,6 +100,7 @@ LEGACY_COMMANDS = {
     "approval": "yaas-triage/ledger/approval-helper.py",
     "log": "yaas-triage/surfaces/log-event.py",
     "slack-file": "yaas-triage/surfaces/slack-file.py",
+    "slack-channel": "yaas-triage/surfaces/slack-channel.py",
     "telegram-send": "yaas-triage/surfaces/telegram-send.py",
     "telegram-auth": "yaas-triage/surfaces/telegram_credentials.py",
     "x-auth": "yaas-triage/surfaces/x_credentials.py",
@@ -128,15 +135,20 @@ def _command_help(command: str) -> str:
         "init": "sidequestor init PATH [--name NAME]",
         "instances": "sidequestor instances list [--all]|doctor|register [PATH]|rekey [PATH]",
         "setup": "sidequestor [--workspace PATH] setup [--instructions|--manifest|--production] [--non-interactive|--render-only|install|status|uninstall]",
+        "onboard": "sidequestor [--workspace PATH] onboard [--slack|--slack-dm|--slack-channel CHANNEL_ID|--terminal] [--codex|--claude|--cursor]",
         "start": "sidequestor [--workspace PATH] start [--dashboard-port PORT]",
         "stop": "sidequestor [--workspace PATH] stop [INSTANCE_ID]",
+        "pause": "sidequestor [--workspace PATH] pause [INSTANCE_ID]",
+        "resume": "sidequestor [--workspace PATH] resume [--dashboard-port PORT]",
         "tick": "sidequestor [--workspace PATH] tick [--dry-run|--isolated [--fake-worker]]",
         "loop": "sidequestor [--workspace PATH] loop [--max-ticks N]",
         "dashboard": "sidequestor [--workspace PATH] dashboard serve|url",
         "migrate": "sidequestor [--workspace PATH] migrate [NAME|--name NAME]",
         "upgrade": "sidequestor [--workspace PATH] upgrade [--source GITHUB_URL --ref REF] [--pre] [--yes] [--no-restart]",
         "credentials": "sidequestor [--workspace PATH] credentials status|repair-keychain",
-        "watch": "sidequestor [--workspace PATH] watch QUEST_ID WATCH_JSON\n       sidequestor [--workspace PATH] watch retire QUEST_ID WATCH_ID REASON",
+        "watch": "sidequestor [--workspace PATH] watch [--allow-dormant] QUEST_ID WATCH_JSON\n       sidequestor [--workspace PATH] watch retire QUEST_ID WATCH_ID REASON",
+        "new-quest": "sidequestor [--workspace PATH] new-quest [--allow-dormant] SPEC_JSON",
+        "slack-channel": "sidequestor [--workspace PATH] slack-channel create|invite|topic|purpose|approval-spec '<json>'",
         "slack-file": "sidequestor [--workspace PATH] slack-file send|approval-spec|fetch '<json>'",
         "telegram-send": "sidequestor [--workspace PATH] telegram-send --peer @name --message \"hello\" [--send] [--quest-id QUEST_ID] [--reply-to-message-id N] [--credential-id ID] [--idempotency-key KEY]",
         "telegram-auth": "sidequestor [--workspace PATH] telegram-auth authorize [API_ID] [CREDENTIAL_ID]\n       API_ID defaults to TELEGRAM_API_ID from the workspace .env\n       sidequestor [--workspace PATH] telegram-auth status [CREDENTIAL_ID]",
@@ -300,6 +312,11 @@ def _cmd_doctor(workspace: Workspace) -> int:
         print(f"agent: ok ({binary})" if binary else
               f"agent: warning ({name} CLI is not on the PATH recorded for background jobs)")
     print(f"sidequestor {info['version']}{suffix}")
+    # Advisory, from the heartbeat's cached check; doctor itself never touches the network.
+    update = (available_update(read_update_status(workspace.root), info["version"])
+              if update_check_enabled(_load_workspace_env(dict(os.environ), workspace)) else None)
+    if update:
+        print(f"update: {update['latest']} available (run 'sq upgrade')")
     for error in errors:
         print(f"error: {error}", file=sys.stderr)
     return 1 if errors else 0
@@ -366,6 +383,27 @@ def _cmd_setup(workspace: Workspace, args: list[str]) -> int:
         print("uninstalled shadow jobs" if removed else "shadow jobs: not installed")
         return 0
     raise SystemExit(f"unknown setup action: {action}")
+
+
+def _cmd_onboard(workspace: Workspace, args: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="sidequestor onboard")
+    channel = parser.add_mutually_exclusive_group()
+    channel.add_argument("--slack", dest="channel", action="store_const", const="slack")
+    channel.add_argument("--terminal", dest="channel", action="store_const", const="terminal")
+    channel.add_argument("--slack-channel", metavar="CHANNEL_ID")
+    channel.add_argument("--slack-dm", action="store_true")
+    agent = parser.add_mutually_exclusive_group()
+    for name in quest_terminal.AGENT_ORDER:
+        agent.add_argument(f"--{name}", dest="agent", action="store_const", const=name)
+    parsed = parser.parse_args(args)
+    try:
+        options = {"slack_channel_id": parsed.slack_channel}
+        if parsed.slack_dm:
+            options["slack_dm"] = True
+        return onboarding.run_onboard(workspace, parsed.channel, parsed.agent, **options)
+    except quest_terminal.QuestTerminalError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 def _slack_credentials_enabled(workspace: Workspace) -> bool:
@@ -614,6 +652,9 @@ def _cmd_migrate(path: str | None, args: list[str]) -> int:
 
 
 def _dispatch(command: str, args: list[str], workspace_path: str | None, instance: str | None) -> int:
+    # Vacation-friendly names for the existing lifecycle, not a second scheduler
+    # or a new state machine. Preserve all targeting, safety checks and failures.
+    command = {"pause": "stop", "resume": "start"}.get(command, command)
     if command == "init":
         return _cmd_init(args)
     if command == "instances":
@@ -650,6 +691,8 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
         return _cmd_credentials(workspace, args)
     if command == "setup":
         return _cmd_setup(workspace, args)
+    if command == "onboard":
+        return _cmd_onboard(workspace, args)
     if command in {"start", "tick", "loop"}:
         _sync_resources_if_version_drifted(workspace, command)
     if command == "start":

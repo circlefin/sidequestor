@@ -74,6 +74,7 @@ prune [days]
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import sys
@@ -197,6 +198,8 @@ def cmd_open(run_id: str, target: str, kind: str, items_json: str):
         }
         if isinstance(it.get("complete"), bool):
             item["complete"] = it["complete"]
+        if kind == 'reactions' and isinstance(it.get('channel_id'), str):
+            item['channel_id'] = it['channel_id']
         norm.append(item)
 
     MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
@@ -240,8 +243,30 @@ def cmd_ack(run_id: str, item_id: str, status: str, note: str = ""):
             sys.exit(3)
         item["status"]    = status
         item["note"]      = note
-        item["acked_utc"] = _now()
+        item["acked_utc"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         _write_atomic(path, data)
+    if data.get("kind") == "reactions":
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from inbox import try_log_inbox
+        try:
+            from reaction_lifecycle import Lifecycle, kick
+            Lifecycle(REPO_ROOT).acknowledge(item)
+            kick(REPO_ROOT, dict(os.environ, SIDEQUESTOR_WORKSPACE=str(REPO_ROOT)))
+        except Exception as exc:
+            # Ack already committed. Never tell the worker to repeat a business
+            # action because a cosmetic status delivery failed. Tick recovers it.
+            print(f'warning: reaction status enqueue failed: {type(exc).__name__}', file=sys.stderr)
+        try:
+            sources = json.loads((REPO_ROOT / "state" / "reaction-sources.json").read_text())
+        except (OSError, ValueError):
+            sources = {}
+        source = sources.get(item_id, {}) if isinstance(sources, dict) else {}
+        note_key = hashlib.sha256(note.encode()).hexdigest()[:16]
+        try_log_inbox(REPO_ROOT, f"reaction:{item_id}:{status}:{note_key}", {
+            **(source if isinstance(source, dict) else {}),
+            "event": "reaction_blocked" if status == "blocked" else "reaction_processed",
+            "reaction_item": item_id, "note": note or status, "status": status,
+        })
     print("ok")
 
 
@@ -276,6 +301,30 @@ def cmd_acked(run_id: str):
     for i in _load(run_id, strict=True).get("items", []):
         if i.get("status") in COMMIT_STATUSES:
             print(i.get("item_id", ""))
+
+
+def cmd_locate(run_id: str, item_id: str, channel: str):
+    """Register coordinates learned by a worker without changing its outcome."""
+    import re
+    if not re.fullmatch(r'[CDG][A-Z0-9]+', channel):
+        raise SystemExit('error:bad_channel')
+    with _locked(run_id, exclusive=True):
+        manifest = json.loads(_path(run_id).read_text())
+        if manifest.get('kind') != 'reactions':
+            raise SystemExit('error:not_reactions')
+        item = next((i for i in manifest['items'] if i['item_id'] == item_id), None)
+        if item is None or (item.get('channel_id') and item['channel_id'] != channel):
+            raise SystemExit('error:unknown_or_changed_source')
+        item['channel_id'] = channel
+        _write_atomic(_path(run_id), manifest)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from reaction_lifecycle import Lifecycle, kick
+    lifecycle = Lifecycle(REPO_ROOT)
+    if item.get('acked_utc'):
+        lifecycle.acknowledge(item)
+    else:
+        lifecycle.request(item, 'loading')
+    kick(REPO_ROOT, dict(os.environ, SIDEQUESTOR_WORKSPACE=str(REPO_ROOT)))
 
 
 def cmd_summary(run_id: str):
@@ -327,6 +376,8 @@ def main():
                     sys.argv[5] if len(sys.argv) > 5 else "")
         elif cmd == "acked":
             cmd_acked(sys.argv[2])
+        elif cmd == "locate":
+            cmd_locate(sys.argv[2], sys.argv[3], sys.argv[4])
         elif cmd == "summary":
             cmd_summary(sys.argv[2])
         elif cmd == "prune":

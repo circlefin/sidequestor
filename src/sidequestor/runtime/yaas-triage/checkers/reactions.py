@@ -125,6 +125,19 @@ def main():
     existing_pending = load_pending(pending_path)
     pending = dict(existing_pending)
     truncated = []
+    sources_path = os.path.join(state_dir, "reaction-sources.json")
+    receipt_path = Path(state_dir) / 'triage/reaction-lifecycle.json'
+    receipt_data = json.loads(receipt_path.read_text()) if receipt_path.exists() else {'items': {}}
+    terminal = receipt_data.get('items') if isinstance(receipt_data, dict) else None
+    if not isinstance(terminal, dict) or any(not isinstance(r, dict) for r in terminal.values()):
+        raise ValueError('invalid reaction lifecycle receipts; dispatch must remain held')
+    try:
+        with open(sources_path) as handle:
+            sources = json.load(handle)
+    except (OSError, ValueError):
+        sources = {}
+    if not isinstance(sources, dict):
+        sources = {}
 
     for emoji, fname, key in emoji_specs:
         state_file = os.path.join(state_dir, fname)
@@ -137,6 +150,8 @@ def main():
             except Exception:
                 pass
         known = processed | skipped
+        known.update(iid.partition(':')[2] for iid, record in terminal.items()
+                     if iid.partition(':')[0] == emoji and (record.get('final') or record.get('review_pending')))
 
         cursor = ""
         new_ts = []
@@ -172,7 +187,16 @@ def main():
             for b in blocks[1:]:
                 m = re.search(r"Message_ts: ?([0-9]+\.[0-9]+)", b)
                 if m:
-                    page_ts.append(m.group(1))
+                    ts = m.group(1)
+                    page_ts.append(ts)
+                    url = re.search(r"https://[A-Za-z0-9.-]+\.slack\.com/archives/([A-Z0-9]+)/p\d+[^\s<>`\"')]*", b)
+                    channel = re.search(r"Channel(?:_id)?:\s*([CDG][A-Z0-9]+)\b", b)
+                    source = {"message_ts": ts}
+                    if url:
+                        source.update(permalink=url.group(0), channel_id=url.group(1))
+                    elif channel:
+                        source["channel_id"] = channel.group(1)
+                    sources[f"{emoji}:{ts}"] = source
             for ts in page_ts:
                 # Slack search is date-granular. Filter again by exact timestamp so a
                 # same-day reaction from before `yaas init` cannot enter the first run.
@@ -204,6 +228,14 @@ def main():
     if truncated:
         print(f"REACTIONS_TRUNCATED={','.join(sorted(set(truncated)))}", file=sys.stderr)
         print(f"{sgtnow()}  REACTIONS_TRUNCATED=1")
+
+    # Preserve source coordinates so save/skip acknowledgments have useful receipts.
+    os.makedirs(state_dir, exist_ok=True)
+    source_tmp = sources_path + ".tmp"
+    with open(source_tmp, "w") as handle:
+        json.dump({f"{emoji}:{ts}": sources.get(f"{emoji}:{ts}", {"message_ts": ts})
+                   for emoji, timestamps in pending.items() for ts in timestamps}, handle)
+    os.replace(source_tmp, sources_path)
 
     if pending:
         pending_parent = os.path.dirname(pending_path)

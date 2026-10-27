@@ -140,9 +140,13 @@ def _read_text(path: Path) -> str:
 
 def _status_line(quest: Quest) -> str:
     meta = quest.meta
+    channels = meta.get("allow_send_channels")
+    scoped = [str(c) for c in channels if isinstance(c, str)] if isinstance(channels, list) else []
+    permission = "send enabled" if meta.get("allow_send") is True else (
+        "Slack text allowed: " + ", ".join(clean(c, single_line=True) for c in scoped)
+        if scoped else "draft only")
     parts = [clean(meta.get("status") or "active", single_line=True),
-             clean(meta.get("priority") or "normal", single_line=True) + " priority",
-             "send enabled" if meta.get("allow_send") is True else "draft only"]
+             clean(meta.get("priority") or "normal", single_line=True) + " priority", permission]
     return " · ".join(parts)
 
 

@@ -1,42 +1,41 @@
 ---
 name: yaas-reactions
-description: The Sidequestor Reactions Fast Path — handle emoji-triggered actions (process/draft/save/adopt) applied to Slack messages. Load on an autonomous Mode A dispatch whose target is `reactions`. Self-contained; touches no quest folder except the adopt case.
+description: The Sidequestor Reactions Fast Path — handle emoji-triggered actions (process/draft/save/adopt) applied to Slack messages. Load on an autonomous Mode A dispatch whose target is `reactions`. Self-contained; logs to Inbox and touches other quest folders only for adoption or explicitly creating ongoing work.
 ---
 
 # yaas-reactions
 
-Load this when dispatched with `dirty target: reactions`. It is self-contained — do NOT read any quest folder except where the configured `adopt` reaction explicitly requires it. Drive the reaction lifecycle through `surfaces/react-lifecycle.py advance` only (never hand-composed add/remove). All shared-state and draft-first rules in `.yaas/engine/current/OPERATING.md` still apply.
+Load this when dispatched with `dirty target: reactions`. It is self-contained — do NOT read any quest folder except where the configured `adopt` reaction explicitly requires it. The runtime owns lifecycle emojis; workers report outcomes through the ack ledger, never direct emoji changes. All shared-state and draft-first rules in `.yaas/engine/current/OPERATING.md` still apply.
 
-Before interpreting any pending emoji, run `python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/reaction_config.py"` and use its JSON roles (`process`, `draft`, `save`, `adopt`, `loading`, `done`). `.env` may customize every one. Never infer the action from a hardcoded default when the resolved mapping differs.
+Before interpreting any pending emoji, run `python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/reaction_config.py"` and use its JSON roles (`process`, `draft`, `save`, `adopt`, `loading`, `done`, `blocked`). `.env` may customize every one. Never infer the action from a hardcoded default when the resolved mapping differs.
 
 ## Reactions Fast Path
 
-Reactions are their own dispatch target, **handled independently from quests**. When the dispatch target list contains `reactions`, run this path — do NOT read any quest folder files.
+Reactions are their own dispatch target, **handled independently from quests**. When the dispatch target list contains `reactions`, run this path — do NOT read any quest folder files. Runtime send/lifecycle/ack helpers record reaction history in Inbox without changing send authorization. For saves, adoptions, and new quests, also use `log-event.py` with `quest_id: quest-inbox`, the source channel/message timestamp or permalink, outcome, and `linked_quest_id` when applicable. Include source/result links and any created/adopted quest ID in the ack note so blocked and skipped outcomes remain understandable in Inbox.
 
 ### Behavior table
 
 | Reaction | Behavior | State file |
 |---|---|---|
-| `process` | The user's "process this" trigger. Research the thread, then reply through `surfaces/slack-send.py` without a `quest_id` (send-only mode) and with the parent `thread_ts`. If the send fails with `mcp_externally_shared_channel_restricted`, retry through the same helper with `"draft": true` in the actual target thread, then DM the user only the draft permalink. Mark the item handled only after the reply or draft succeeds; if both fail, leave the reaction at `:loading:` and ack it `blocked`. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/claude_intensifies_replied.json` |
-| `draft` | Research, then create a draft through `surfaces/slack-send.py` with `"draft": true` and no `quest_id`. Drive the reaction lifecycle as you go (see § Reaction lifecycle). If the draft fails with `mcp_externally_shared_channel_restricted`, save it to the actual target thread through the same helper, then DM the user only the permalink to that thread — not the draft text. They'll open the thread, find the draft in the compose box, and send it themselves. | `state/writing_hand_replied.json` |
+| `process` | Research the thread, then reply through `surfaces/slack-send.py` without a `quest_id` (send-only mode), with the parent `thread_ts`. On `mcp_externally_shared_channel_restricted`, retry through the same helper with `"draft": true` in the actual target thread, then DM the user only the draft permalink. Ack `handled` only after success; if both fail, ack `blocked`. | `state/claude_intensifies_replied.json` |
+| `draft` | Research, then create a draft through `surfaces/slack-send.py` with `"draft": true` and no `quest_id`. If it fails with `mcp_externally_shared_channel_restricted`, save it to the actual target thread through the same helper, then DM the user only the permalink to that thread — not the draft text. They'll open the thread and send the draft themselves. Ack the outcome; the runtime updates the lifecycle. | `state/writing_hand_replied.json` |
 | `save` | Save context silently to `state/context-memory/` (see § Context memory). Do not reply. No lifecycle (one-shot, no emoji swaps). | `state/floppy_disk_saved.json` |
-| `adopt` | Adopt the message into its owning quest: find the active quest watching this channel/thread, add a `slack_thread` watch on it with `"refresh_activity": true`, and log to that quest's timeline with `log-event.py` (never hand-write the line: it stamps the real UTC time, which you cannot know). The helper re-arms an existing duplicate watch without creating a second entry. Do not reply. Drive the reaction lifecycle as you go (see § Reaction lifecycle). | `state/incoming_envelope_adopted.json` |
+| `adopt` | Find the active quest watching this channel/thread, add a `slack_thread` watch with `"refresh_activity": true`, and log to that quest with `log-event.py`. The helper re-arms an existing duplicate watch. Do not reply. Ack `blocked` if no owning quest can be found; otherwise ack the verified adoption. | `state/incoming_envelope_adopted.json` |
 
 ### Reaction lifecycle (action reactions)
 
-Every reaction where you **take action** carries a visible three-state lifecycle on the message. The action triggers are the resolved `process`, `draft`, and `adopt` role names. **Each transition unchecks the previous reaction and adds the next one** — never leave two lifecycle emojis on the message at once. The resolved `save` role is the sole exception: it saves silently and has no lifecycle.
+The runtime queues `loading` before launching the harness. `handled` and a conscious
+`nothing_to_do` acknowledgement queue `done`; `blocked` queues the configured blocked
+marker (default `warning`). Exhausted retries create a real Inbox review. A durable
+outbox retries emoji delivery independently of business actions, including after a
+restart. Never rerun a completed send just because an emoji update failed.
 
-1. **Marked for processing** — the user applies the trigger reaction. This is what the checker detects; it is the only lifecycle reaction the user adds.
-2. **Processing** — the moment you pick the message up (before doing the work), advance it to the configured `loading` emoji with the ONE lifecycle verb:
-   ```bash
-   python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/react-lifecycle.py" advance <channel_id> <msg_ts> loading
-   ```
-3. **Done actioning** — once the action is complete (reply sent / draft posted / message adopted) and every in-tick commitment is done, advance to the configured `done` emoji:
-   ```bash
-   python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/react-lifecycle.py" advance <channel_id> <msg_ts> done
-   ```
-
-**Always use `react-lifecycle.py advance`, never hand-composed `slack-react.sh remove`/`add` pairs.** `advance` removes every OTHER lifecycle emoji and adds the target in one step, so the message can never show two lifecycle emojis at once, a half-applied previous run self-heals, and every transition is logged. It exits non-zero if the add fails, in which case the emoji did NOT advance and the step is not done. If the action genuinely can't complete this tick (blocked, needs a quest; or `adopt` found no owning quest and got skipped), leave it at the configured `loading` emoji — do NOT advance to `done`, since that signals completion. `slack-react.sh` still exists for one-off manual reactions, but the lifecycle goes through `advance`.
+If the manifest lacks a channel ID, immediately after locating the message register it:
+`python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/ledger/ack-watch.py" locate <run_id> <emoji:msg_ts> <channel_id>`.
+The runtime then delivers pickup. Do this before attachments, research, or other work.
+Do not call `react-lifecycle.py` or hand-compose lifecycle add/remove pairs. Slack
+cannot swap atomically; the runtime adds the new status first and retries cleanup.
+The `save` role remains silent with no lifecycle swap.
 
 ### Minimum run loop
 
@@ -48,13 +47,13 @@ For the `reactions` target, execute exactly these steps:
       context you rely on) lists `Files:` with an image or PDF, fetch and open it before acting:
       `slack-file.py fetch '{"channel_id":"C...","ts":"<msg_ts>"}'` (read-only). `save` records what the
       attachment shows, not just its filename.
-   b. **For action reactions, mark processing first:** swap the trigger reaction to the configured `loading` emoji (§ Reaction lifecycle) before doing the work. The configured `save` emoji has no lifecycle swap.
+   b. **Register missing coordinates** with `ack-watch.py locate` immediately after locating the message, before fetching attachments or doing other work (§ Reaction lifecycle).
    c. Act per the table above. Before composing a `process` reply or `draft`, load
       `.yaas/engine/current/skills/yaas-answering-quality/SKILL.md` and
       `.yaas/engine/current/skills/yaas-draft-readiness/SKILL.md`.
    d. **Commitment check (§ 3b applies here).** Before sending, scan your draft reply for commitment phrases ("I'll", "will rerun", "will confirm", "let me"). If the thread asks you to DO something, do the work first and reply once with the result — never reply with a promise and exit. Verify capability (available tools, credentials in `.env`) before deciding you can't. If the action genuinely cannot complete in-tick, spawn a quest (§ New quests from reactions) before exiting so the promise has a trigger — a commitment tracked nowhere never resurfaces.
-   e. **For action reactions, mark done:** once the action is complete and every in-tick commitment is done, swap configured `loading` → configured `done` (§ Reaction lifecycle). If blocked / spun into a quest / skipped, leave it at the configured `loading` emoji.
-   f. **Append `msg_ts`** to the emoji's state file. This is how we avoid re-processing.
+   e. Choose an honest outcome: completed action or verified tracked handoff → `handled`; consciously no action needed → `nothing_to_do`; unresolved capability/scope or uncertain external outcome → `blocked`. An unresolved task is not a conscious no-op.
+   f. **Append `msg_ts`** to the emoji's state file only for completed or consciously declined work. Never mark unresolved work processed. The ack receipt also prevents re-processing even if status delivery fails.
 3. **Ack each `(emoji, msg_ts)` pair** in the ledger (§ 4a) using item_id `<emoji>:<msg_ts>` — `handled` when you replied / drafted / saved, `nothing_to_do` for a conscious skip, `blocked` if you couldn't. Triage keeps every unacked pair in `pending_reactions.json` for the next tick and deletes the file only once all of them are closed, so a reaction you silently skip is no longer lost.
 4. **Exit 0** when all entries are processed and acked.
 
@@ -79,8 +78,8 @@ python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack-file.py" send '{"c
 
 Slack has no file drafts, so a `draft` reaction cannot attach a file: draft the text, and name the
 file and its local path to the user in the DM instead of uploading it. Exit 3 from `send` means the
-file may already be in the thread; read it before retrying, and leave the reaction at `loading`
-if you cannot tell.
+file may already be in the thread; read it before retrying, and ack `blocked`
+if you cannot tell. Do not repeat the upload blindly.
 
 ### State file schemas
 

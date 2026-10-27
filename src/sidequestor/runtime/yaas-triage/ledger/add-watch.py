@@ -46,6 +46,8 @@ that existing watch's `last_activity_ts` instead of appending another entry. Exi
 non-zero on a validation failure, so a malformed watch is loud rather than silently
 appended and never checked.
 
+Disabled connector watches are rejected unless --allow-dormant is passed explicitly.
+
 Retire an existing watch by persistent ID:
   add-watch.py retire <quest_id> <watch_id> '<reason>'
 
@@ -58,6 +60,7 @@ import hashlib
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -144,6 +147,22 @@ def normalize_identity_value(value):
     return value
 
 
+def identity_value(watch, field):
+    value = watch.get(field)
+    if str(watch.get("type", "")).startswith("notion_"):
+        defaults = {"subpage_depth": 0, "include_subpage_content": False,
+                    "include_subpage_comments": False, "include_archived": True}
+        if value is None and field in defaults:
+            value = defaults[field]
+        if value and field in ("page_id", "block_id", "database_id", "data_source_id"):
+            try:
+                from uuid import UUID
+                value = str(UUID(str(value)))
+            except ValueError:
+                pass  # checker reports malformed IDs as misconfiguration
+    return normalize_identity_value(value)
+
+
 def find_watch(quest_id):
     if not quest_id or "/" in quest_id or ".." in quest_id:
         die(f"bad_quest_id:{quest_id}")
@@ -169,7 +188,7 @@ def validate(entry):
     if wtype not in required:
         die(f"unknown_type:{wtype}:known are {', '.join(sorted(required))}")
     for field in identity[wtype]:
-        value = normalize_identity_value(entry.get(field))
+        value = identity_value(entry, field)
         if value is None:
             entry.pop(field, None)
         else:
@@ -320,6 +339,11 @@ def _retire_without_tick(quest_id, watch_id, reason):
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
+    cleared = subprocess.run([sys.executable, str(Path(__file__).with_name('checker-health.py')),
+                              'ok', watch_id], capture_output=True, text=True)
+    if cleared.returncode:
+        print('warning:checker_health_cleanup_failed; next tick will retry', file=sys.stderr)
+
     _, identities = _watch_shapes()
     identity = {
         field: retired.get(field)
@@ -362,18 +386,27 @@ def main():
             print("usage: add-watch.py retire <quest_id> <watch_id> '<reason>'", file=sys.stderr)
             return 1
         return retire(sys.argv[2], sys.argv[3], sys.argv[4])
-    if len(sys.argv) < 3:
+    args = sys.argv[1:]
+    allow_dormant = '--allow-dormant' in args
+    args = [arg for arg in args if arg != '--allow-dormant']
+    if len(args) != 2:
         print(__doc__)
         return 1
-    quest_id = sys.argv[1]
+    quest_id = args[0]
     try:
-        entry = json.loads(sys.argv[2])
+        entry = json.loads(args[1])
     except Exception as exc:
         die(f"bad_entry_json:{exc}")
     if not isinstance(entry, dict):
         die("entry_must_be_object")
 
     validate(entry)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from tick_state import Config, BadEnvKnob, initial_watch_watermark
+    try:
+        config = Config(Path(__file__).resolve().parent.parent, repo_root=REPO_ROOT)
+    except (BadEnvKnob, ValueError) as exc:
+        die(str(exc))
     refresh_activity = entry.pop("refresh_activity", False)
     requested_at = f"{time.time():.6f}"
     path = find_watch(quest_id)
@@ -386,7 +419,7 @@ def main():
         if entry["type"] == "slack_thread" and entry.get("thread_ts"):
             entry["last_checked_ts"] = str(entry["thread_ts"])
         else:
-            entry["last_checked_ts"] = f"{time.time():.6f}"
+            entry["last_checked_ts"] = initial_watch_watermark(entry["type"], f"{time.time():.6f}")
     # Normalize to Slack's own 6-decimal precision, including a caller-supplied value.
     # A raw `time.time()` handed in here used to be stored verbatim (17 significant
     # digits), and Slack's `oldest` returns ZERO messages for anything more precise
@@ -437,7 +470,7 @@ def main():
             for w in watches:
                 if not isinstance(w, dict) or w.get("type") != entry["type"]:
                     continue
-                if all(normalize_identity_value(w.get(k)) == entry.get(k) for k in ident):
+                if all(identity_value(w, k) == identity_value(entry, k) for k in ident):
                     if refresh_activity:
                         try:
                             current = float(w.get("last_activity_ts") or 0)
@@ -450,6 +483,10 @@ def main():
                     print(f"skip:duplicate:{w.get('watch_id', '?')}")
                     return 0
 
+            try:
+                config.require_checker_enabled(entry['type'], allow_dormant=allow_dormant)
+            except BadEnvKnob as exc:
+                die(str(exc))
             entry["watch_id"] = make_watch_id(quest_id, len(watches), entry)
             existing_ids = {w.get("watch_id") for w in watches if isinstance(w, dict)}
             suffix = 0

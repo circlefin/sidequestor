@@ -49,9 +49,9 @@ class Stage2CommandSurfaceTest(unittest.TestCase):
 
     def test_every_public_command_has_help(self) -> None:
         commands = (
-            "init", "instances", "setup", "start", "stop", "tick", "loop", "dashboard", "doctor",
+            "init", "instances", "setup", "start", "stop", "pause", "resume", "tick", "loop", "dashboard", "doctor",
             "migrate", "sync-resources", "upgrade", "watch", "ack", "approval", "log", "slack-send",
-            "slack-file", "telegram-send", "telegram-auth", "x-auth", "x-send", "react", "mcp-call", "jira-call",
+            "slack-file", "slack-channel", "telegram-send", "telegram-auth", "x-auth", "x-send", "react", "mcp-call", "jira-call",
         )
         for command in commands:
             result = run(command, "--help")

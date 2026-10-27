@@ -156,7 +156,9 @@ def serve(workspace: Workspace, port: int = 8877) -> int:
     actual_port = port or _ephemeral_port()
     url = f"http://127.0.0.1:{actual_port}"
     url_file = workspace.state / "dashboard-url.txt"
-    environment = _environment(workspace)
+    # The server reloads .env per request; do not freeze workspace settings into
+    # its inherited environment and accidentally turn them into overrides.
+    environment = _environment(workspace, load_dotenv=False)
     process = subprocess.Popen(
         [sys.executable, str(server), str(actual_port)],
         cwd=workspace.root,

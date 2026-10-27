@@ -127,6 +127,7 @@ sys.path.insert(0, str(RUNTIME_ROOT))
 import approval_state
 import approval_store
 import tick_state
+from inbox import ensure_inbox
 
 approval_state.configure(tick_state.load_environment(REPO_ROOT))
 
@@ -195,46 +196,8 @@ REACTIONS_TARGET = "reactions"
 INBOX_QUEST = "quest-inbox"
 LEGACY_HOST_QUEST = "quest-reactions-approvals"
 
-_INBOX_CONTEXT = """# Inbox
-
-This permanent quest owns one-off work that did not originate in another quest. Each approval
-is independent and must be processed from the exact `approval` watch named in the dispatch.
-
-Rules for the worker dispatched here:
-- Execute the reviewed approval item(s) per §3c (`approval-helper.py start` -> send -> `done`).
-  Process every fired approval watch separately; one failure must not block its siblings.
-- Reactions still use their fast path unless they require review. Only reviewed reaction work
-  lands here.
-- If an item becomes ongoing work, create or adopt a dedicated quest rather than growing Inbox
-  into a project.
-- Never mark Inbox completed or archived. It is permanent and usually empty.
-"""
-
-
 def _ensure_inbox():
-    """Create the permanent Inbox quest. Setup and explicit migrations call this."""
-    qdir = QUESTS_DIR / "active" / INBOX_QUEST
-    watch = qdir / "watch.json"
-    qdir.mkdir(parents=True, exist_ok=True)
-    with open(QUESTS_DIR / ".quest-inbox.lock", "a+") as lockf:
-        fcntl.flock(lockf, fcntl.LOCK_EX)
-        meta_path = qdir / "meta.json"
-        if watch.exists():
-            return watch
-        meta_path.write_text(json.dumps({
-            "id": INBOX_QUEST,
-            "title": "Inbox",
-            "status": "active",
-            "priority": "normal",
-            "allow_send": False,
-            "system_role": "inbox",
-            "retire_slack_threads_after_days": "never",
-        }, indent=2) + "\n")
-        (qdir / "context.md").write_text(_INBOX_CONTEXT)
-        (qdir / "timeline.ndjson").touch()
-        # Publish watch.json last so tick.py cannot dispatch a half-built quest.
-        watch.write_text('{"watches": []}\n')
-    return watch
+    return ensure_inbox(REPO_ROOT) / "watch.json"
 
 
 def _is_file_upload(target) -> bool:
@@ -265,6 +228,30 @@ def cmd_write(payload_json: str):
         print(f"error:approval quest is not active:{quest_id}", file=sys.stderr)
         raise SystemExit(2)
     target     = payload.get("target", {})
+    system_key = str(target.get("system_key") or "")
+    if system_key.startswith("health:"):
+        try:
+            state = json.loads((REPO_ROOT / "state/triage/health-issues.json").read_text())
+            issue = next(i for i in state.get("issues", {}).values()
+                         if i.get("active") and i.get("system_key") == system_key)
+        except (OSError, ValueError, StopIteration):
+            raise SystemExit("error:unknown or inactive health issue")
+        repair = target.get("action") == "health_repair" and target.get("repair_mode") in ("headless", "interactive", "uncertain")
+        from system_health import BUG_REPORT_EMAIL
+        from sidequestor import __version__
+        report = (target.get("report_kind") == "package_bug" and target.get("surface") == "gmail"
+                  and target.get("action") == "send" and target.get("to") == BUG_REPORT_EMAIL
+                  and target.get("installed_version") == __version__ and bool(target.get("subject"))
+                  and set(target) == {"system_key", "surface", "action", "to", "subject", "report_kind", "installed_version"})
+        if (issue.get("owner") != quest_id or payload.get("action_type") != "remote_request"
+                or not (repair or report)
+                or os.environ.get("SIDEQUESTOR_DISPATCH_TARGET", quest_id) != quest_id):
+            raise SystemExit("error:health proposal does not match its dispatch owner or repair protocol")
+    elif system_key.startswith("upgrade:"):
+        if (os.environ.get("SIDEQUESTOR_DISPATCH_TARGET") or quest_id != INBOX_QUEST
+                or target.get("action") != "sidequestor_upgrade"
+                or system_key != f"upgrade:{target.get('version')}"):
+            raise SystemExit("error:upgrade notices are tick-only")
     channel_id = target.get("channel_id")
     thread_ts  = target.get("thread_ts")
 
@@ -283,6 +270,15 @@ def cmd_write(payload_json: str):
             and _same_review_request(i.get("target"), target,
                                      i.get("message_text") or "", payload.get("message_text") or "")
         )
+        # System producers use a stable identity, including terminal/dismissed items.
+        # Rewording a diagnosis or checking PyPI again must not resurrect a dismissal.
+        system_key = target.get("system_key")
+        if system_key:
+            duplicate = duplicate or any(
+                i.get("quest_id") == quest_id
+                and i.get("target", {}).get("system_key") == system_key
+                for i in data["items"]
+            )
         if duplicate:
             return approval_store.NO_WRITE
 
@@ -325,6 +321,10 @@ def cmd_arm(approval_id: str, emit: bool = True) -> int:
     if item is None:
         print(f"error:not_found:{approval_id}", file=sys.stderr)
         return 1
+    if item.get("target", {}).get("action") == "sidequestor_upgrade":
+        if emit:
+            print("not-needed")
+        return 0
     if item.get("status") in ("executed", "cancelled"):
         if emit:
             print("not-needed")
@@ -348,8 +348,67 @@ def cmd_arm(approval_id: str, emit: bool = True) -> int:
 
 
 def cmd_ensure_inbox() -> int:
-    print(_ensure_inbox())
-    return 0
+    watch_path = _ensure_inbox()
+    existing = json.loads(watch_path.read_text()).get("watches", [])
+    armed = {w.get("approval_id") for w in existing if w.get("type") == "approval"}
+    failed = False
+    for item in approval_store.read_queue().get("items", []):
+        if (item.get("quest_id") == INBOX_QUEST
+                and item.get("status") not in ("executed", "cancelled")
+                and item.get("id") not in armed):
+            failed = cmd_arm(item["id"], emit=False) != 0 or failed
+    print(watch_path)
+    return 3 if failed else 0
+
+
+def cmd_resolve_system_items(payload_json):
+    """Close obsolete notices from verified state, never from a worker's assertion."""
+    if os.environ.get("SIDEQUESTOR_DISPATCH_TARGET"):
+        raise SystemExit("error:system notice reconciliation is tick-only")
+    payload = json.loads(payload_json)
+    active = payload.get("active_health_keys")
+    installed = payload.get("installed")
+    latest = payload.get("latest")
+    failed_health = payload.get("failed_health", {})
+    reopened = []
+
+    def mutate(data):
+        changed = False
+        for item in data.get("items", []):
+            target = item.get("target", {})
+            key = target.get("system_key", "")
+            if item.get("status") == "executed" and key in failed_health and target.get("action") == "health_repair":
+                try:
+                    completed = datetime.fromisoformat(item["sent_at"].replace("Z", "+00:00")).timestamp()
+                except (KeyError, ValueError, TypeError):
+                    completed = float("inf")
+                if failed_health[key] > completed:
+                    item.update(status="pending_review", processing_error="The proposed repair ran, but a subsequent check still reports this failure. Review the remaining steps.",
+                                processing_error_at=datetime.now(timezone.utc).isoformat())
+                    reopened.append(item["id"])
+                    changed = True
+            if item.get("status") not in ("pending_review", "reviewed", "needs_reply"):
+                continue
+            recovered = active is not None and key.startswith("health:") and key not in active
+            upgraded = False
+            superseded = False
+            if installed and key.startswith("upgrade:"):
+                from sidequestor.update_check import parse_version
+                want, have = parse_version(target.get("version")), parse_version(installed)
+                upgraded = want is not None and have is not None and have >= want
+                newest = parse_version(latest)
+                superseded = (item.get("status") != "reviewed" and want is not None
+                              and newest is not None and newest > want)
+            if recovered or upgraded or superseded:
+                item.update(status="cancelled", resolution_note="Verified recovery" if recovered else
+                            "Superseded by a newer release notice" if superseded and not upgraded else "Installed version satisfies this upgrade",
+                            resolved_at=datetime.now(timezone.utc).isoformat())
+                changed = True
+        return True if changed else approval_store.NO_WRITE
+
+    approval_store.mutate_queue(mutate)
+    for approval_id in reopened:
+        cmd_arm(approval_id, emit=False)
 
 
 def cmd_migrate_inbox() -> int:
@@ -514,6 +573,9 @@ def cmd_arm_pending_instructions() -> int:
 
 
 def cmd_start(approval_id: str):
+    current = next((i for i in approval_store.read_queue().get("items", []) if i.get("id") == approval_id), {})
+    if current.get("target", {}).get("action") == "sidequestor_upgrade":
+        raise SystemExit("error:upgrades are claimed only by the independent upgrade job")
     item = approval_store.mutate_item(
         approval_id,
         lambda current: approval_state.apply_transition(current, "start", {}, datetime.now(timezone.utc)),
@@ -627,6 +689,8 @@ def main():
         sys.exit(cmd_arm(sys.argv[2]))
     elif cmd == "ensure-inbox":
         sys.exit(cmd_ensure_inbox())
+    elif cmd == "resolve-system-items":
+        cmd_resolve_system_items(sys.argv[2])
     elif cmd == "migrate-inbox":
         sys.exit(cmd_migrate_inbox())
     elif cmd == "enqueue-instruction":

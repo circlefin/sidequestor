@@ -12,6 +12,9 @@ from .dashboard import wait_for_dashboard_url
 from .job_path import find_agent, resolve_job_path
 from .launchd import install_production
 from .native import RUNTIME_ROOT
+from .onboarding import find_quest as find_onboarding_quest
+from .onboarding import run_onboard
+from .quest_terminal import QuestTerminalError
 from .resources import sync_resources
 from .workspace import Workspace
 
@@ -20,8 +23,8 @@ _PLACEHOLDERS = {None, "", "<set>", "CHANGE_ME", "TODO"}
 _BACKENDS = {"claude", "codex", "cursor"}
 _CLI_PACKAGES = {"codex": "@openai/codex", "claude": "@anthropic-ai/claude-code"}
 _MODEL_DEFAULTS = {
-    "claude": "claude-opus-4-6",
-    "codex": "gpt-5.6-luna",
+    "claude": "claude-opus-5-5",
+    "codex": "gpt-6.1-sol",
     "cursor": "",
 }
 _ENV_LINE = re.compile(r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$")
@@ -242,7 +245,39 @@ def check_worker_clis(workspace: Workspace, executable: Path, *, agent: str, inp
     return selected_available
 
 
-def run_setup(workspace: Workspace, executable: Path, *, input_fn=input, interactive: bool = True) -> int:
+def offer_onboarding(workspace: Workspace, *, slack_ready: bool, input_fn=input,
+                     start=run_onboard) -> int:
+    """Offer guided onboarding once setup is live; never start it without an answer."""
+    existing = find_onboarding_quest(workspace, include_closed=True)
+    if existing is not None:
+        print(f"Onboarding already exists ({existing.name}). Use `sq onboard` to check or resume it.")
+        return 0
+    default = "slack" if slack_ready else "terminal"
+    print()
+    print("Guided onboarding reviews your setup, drafts your AGENTS.md and skills, and proposes "
+          "quests, asking before each change. It can set up a private Slack channel so you "
+          "can talk to Sidequestor without using the terminal.")
+    while True:
+        answer = _prompt("Start guided onboarding in [slack], [terminal], or [later]",
+                         default, input_fn=input_fn).lower()
+        if answer == "slack" and not slack_ready:
+            print("Slack checkers are disabled. Choose terminal or later; enable Slack with sq setup first.")
+            continue
+        if answer in {"slack", "terminal", "later"}:
+            break
+        print("Please answer slack, terminal, or later.")
+    if answer == "later":
+        print("Start it any time with `sq onboard --slack` or `sq onboard --terminal`.")
+        return 0
+    try:
+        return start(workspace, answer)
+    except QuestTerminalError as exc:
+        print(f"Onboarding could not start: {exc}")
+        return 1
+
+
+def run_setup(workspace: Workspace, executable: Path, *, input_fn=input, interactive: bool = True,
+              start_onboarding=run_onboard) -> int:
     sync_resources(workspace)
     provision_env(workspace, input_fn=input_fn, interactive=interactive)
     env_lines = workspace.env_file.read_text().splitlines()
@@ -276,4 +311,7 @@ def run_setup(workspace: Workspace, executable: Path, *, input_fn=input, interac
     print(f"dashboard: {url}" if url else "dashboard: still starting (run `sq dashboard url` to check)")
     if interactive:
         print_worker_instructions(agent)
+        # Last, because the terminal choice replaces this process with the agent.
+        return offer_onboarding(workspace, slack_ready=enabled, input_fn=input_fn,
+                                start=start_onboarding)
     return 0

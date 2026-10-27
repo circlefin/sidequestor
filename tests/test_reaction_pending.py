@@ -15,6 +15,28 @@ CHECKER = (PACKAGE_ROOT / "src" / "sidequestor" / "runtime" / "yaas-triage"
 
 
 class ReactionPendingQueueTest(unittest.TestCase):
+    def test_terminal_receipt_prunes_pending_even_without_worker_state_write(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw)
+            pending = workspace / 'state/triage/pending_reactions.json'
+            pending.parent.mkdir(parents=True)
+            pending.write_text(json.dumps({'robot_face': ['1000.000001']}))
+            (pending.parent / 'reaction-lifecycle.json').write_text(json.dumps({'items': {
+                'robot_face:1000.000001': {'final': True, 'confirmed': False}}}))
+            self._run_checker(workspace, pending, '### Result 1 of 1\nMessage_ts: 1000.000001\n')
+            remaining = json.loads(pending.read_text()) if pending.exists() else {}
+            self.assertNotIn('robot_face', remaining)
+
+    def test_pending_reaction_retains_source_link_for_inbox_receipt(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sidequestor-reaction-source-") as raw:
+            root = Path(raw)
+            pending = root / "state/triage/pending_reactions.json"
+            results = "### Result 1 of 1\nMessage_ts: 1000.000001\nPermalink: https://team.slack.com/archives/C123/p1000000001\n"
+            self._run_checker(root, pending, results)
+            source = json.loads((root / "state/reaction-sources.json").read_text())["robot_face:1000.000001"]
+            self.assertEqual(source["channel_id"], "C123")
+            self.assertEqual(source["permalink"], "https://team.slack.com/archives/C123/p1000000001")
+
     def _run_checker(self, workspace: Path, pending: Path, results: str) -> None:
         adapter = workspace / "fake-reaction-search.py"
         adapter.write_text(

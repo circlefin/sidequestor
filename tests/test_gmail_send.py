@@ -123,6 +123,33 @@ class GmailSendTest(unittest.TestCase):
         sent = self.send("Hello", "--quest-id", QUEST, "--approval-id", "approval-1")
         self.assertEqual(sent.returncode, 0, sent.stderr)
 
+    def test_bug_report_metadata_preserves_exact_email_approval_gate(self) -> None:
+        spec = json.loads(self.send('Sanitized report', '--approval-spec').stdout)
+        spec['target'].update(system_key='health:example:1', report_kind='package_bug', installed_version='0.1.54')
+        item = {'id': 'report-1', 'quest_id': QUEST, 'status': 'pending_review',
+                'lease_expires_at': '2999-01-01T00:00:00Z', **spec}
+        path = self.root / 'state/pending-approvals.json'
+        path.write_text(json.dumps({'items': [item]}))
+        # Even an ordinarily send-enabled quest must claim the report first.
+        denied = self.send('Sanitized report', '--quest-id', QUEST, '--approval-id', 'report-1')
+        self.assertEqual(denied.returncode, 1)
+        self.assertFalse(self.args_file.exists())
+        item['status'] = 'executing'; path.write_text(json.dumps({'items': [item]}))
+        changed = self.send('Changed report', '--quest-id', QUEST, '--approval-id', 'report-1')
+        self.assertEqual(changed.returncode, 1)
+        self.assertFalse(self.args_file.exists())
+        sent = self.send('Sanitized report', '--quest-id', QUEST, '--approval-id', 'report-1')
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+
+    def test_maintainer_destination_requires_review_even_for_send_enabled_quest(self):
+        body = self.root / 'report.txt'; body.write_text('Sanitized bug report')
+        for address in ('guangmian.kung@circle.com', 'Guangmian <guangmian.kung+bug@circle.com>', 'guangmiankung@circle.com'):
+            result = subprocess.run([sys.executable, str(SEND), '--to', address,
+                                     '--subject', 'Package bug', '--body-file', str(body), '--quest-id', QUEST],
+                                    text=True, capture_output=True, env=self.env)
+            self.assertEqual(result.returncode, 1)
+        self.assertFalse(self.args_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

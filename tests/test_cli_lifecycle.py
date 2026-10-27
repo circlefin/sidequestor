@@ -8,7 +8,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from sidequestor.cli import _cmd_credentials, _cmd_start, _cmd_stop, _dispatch
+from sidequestor.cli import _cmd_credentials, _cmd_start, _cmd_stop, _dispatch, main
 from sidequestor.workspace import init_workspace
 
 
@@ -121,6 +121,39 @@ class CliLifecycleTests(unittest.TestCase):
                     redirect_stdout(output):
                 self.assertEqual(_cmd_stop(workspace), 0)
             self.assertIn(f"stopped Sidequestor instance {workspace.instance_id}", output.getvalue())
+
+    def test_pause_reuses_stop_for_the_selected_workspace_and_preserves_failure(self):
+        with tempfile.TemporaryDirectory(prefix='sidequestor-pause-') as raw:
+            workspace = init_workspace(Path(raw))
+            with patch('sidequestor.cli._cmd_stop', return_value=7) as stop:
+                self.assertEqual(_dispatch('pause', [], str(workspace.root), None), 7)
+            stop.assert_called_once_with(workspace)
+
+    def test_pause_accepts_registered_instance_and_rejects_ambiguous_selection(self):
+        with tempfile.TemporaryDirectory(prefix='sidequestor-pause-') as raw:
+            workspace = init_workspace(Path(raw))
+            with patch('sidequestor.cli._cmd_stop', return_value=0) as stop:
+                self.assertEqual(_dispatch('pause', [workspace.instance_id], None, None), 0)
+            stop.assert_called_once_with(workspace)
+            with self.assertRaises(SystemExit):
+                _dispatch('pause', [workspace.instance_id], str(workspace.root), None)
+
+    def test_resume_reuses_start_with_same_workspace_and_dashboard_arguments(self):
+        with tempfile.TemporaryDirectory(prefix='sidequestor-resume-') as raw:
+            workspace = init_workspace(Path(raw))
+            with patch('sidequestor.cli._sync_resources_if_version_drifted') as sync, \
+                    patch('sidequestor.cli._cmd_start', return_value=5) as start:
+                self.assertEqual(_dispatch('resume', ['--dashboard-port', '9123'], str(workspace.root), None), 5)
+            sync.assert_called_once_with(workspace, 'start')
+            start.assert_called_once_with(workspace, ['--dashboard-port', '9123'])
+
+    def test_pause_resume_help_never_loads_a_workspace_or_changes_jobs(self):
+        for command in ('pause', 'resume'):
+            output = StringIO()
+            with redirect_stdout(output), patch('sidequestor.cli._workspace') as workspace:
+                self.assertEqual(main([command, '--help']), 0)
+            workspace.assert_not_called()
+            self.assertIn(command, output.getvalue())
 
     def test_tick_syncs_resources_when_engine_version_drifted(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sidequestor-cli-") as raw:

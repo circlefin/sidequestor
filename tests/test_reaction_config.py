@@ -25,7 +25,7 @@ class ReactionConfigTest(unittest.TestCase):
         self.assertEqual(values, {
             "process": "robot_face", "draft": "writing_hand", "save": "floppy_disk",
             "adopt": "incoming_envelope", "loading": "hourglass_flowing_sand",
-            "done": "white_check_mark",
+            "done": "white_check_mark", "blocked": "warning",
         })
         self.assertEqual(len(values), len(set(values.values())))
         for value in values.values():
@@ -43,6 +43,11 @@ class ReactionConfigTest(unittest.TestCase):
         module = load_module()
         with self.assertRaises(ValueError):
             module.load_reaction_emojis({"SIDEQUESTOR_REACTION_PROCESS_EMOJI": "not valid"})
+
+    def test_new_blocked_default_preserves_existing_warning_mapping(self) -> None:
+        values = load_module().load_reaction_emojis({'SIDEQUESTOR_REACTION_LOADING_EMOJI': 'warning'})
+        self.assertEqual(values['loading'], 'warning')
+        self.assertEqual(values['blocked'], 'no_entry_sign')
 
 
 if __name__ == "__main__":

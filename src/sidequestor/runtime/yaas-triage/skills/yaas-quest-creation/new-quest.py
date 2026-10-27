@@ -19,7 +19,7 @@
 new-quest.py — create a new quest folder with correctly-shaped files.
 
 Usage (model calls this via Bash):
-  sq new-quest '<spec_json>'
+  sq new-quest [--allow-dormant] '<spec_json>'
 
   Or pipe spec from stdin:
   echo '<spec_json>' | sq new-quest -
@@ -30,6 +30,9 @@ Spec JSON fields:
                            (this script sets it to now)
   priority    (optional) — "high" | "normal" | "low" — default: "normal"
   allow_send  (optional) — true | false — default: false
+  allow_send_channels (optional) — list of Slack conversation IDs (C…/D…/G…) this quest
+                           may post to through slack-send even when allow_send is false.
+                           No other send surface honours it. Default: omitted
   sidequestor_bootstrap (internal) — true creates an empty quest for the dedicated
                            dashboard bootstrap dispatch; ordinary callers omit it
   context     (optional) — body text for context.md
@@ -125,7 +128,9 @@ RUNTIME_ROOT = Path(os.environ.get("SIDEQUESTOR_RUNTIME_ROOT")
                     or os.environ.get("YAAS_RUNTIME_ROOT")
                     or Path(__file__).resolve().parents[3])
 sys.path.insert(0, str(RUNTIME_ROOT / "yaas-triage"))
-from tick_state import load_watch_manifests, slack_id_problem
+from tick_state import load_watch_manifests, slack_id_problem, Config, BadEnvKnob, initial_watch_watermark
+
+SLACK_CONVERSATION = re.compile(r"[CDG][A-Z0-9]{2,}")
 
 QUESTS_ACTIVE    = REPO_ROOT / "state" / "quests" / "active"
 QUESTS_COMPLETED = REPO_ROOT / "state" / "quests" / "completed"
@@ -182,7 +187,7 @@ def ordered_entry(raw_entry, now_ts):
     entry = {}
     for field in FIELD_ORDER:
         if field == "last_checked_ts":
-            entry["last_checked_ts"] = now_ts
+            entry["last_checked_ts"] = initial_watch_watermark(raw_entry.get("type"), now_ts)
         elif field in raw_entry:
             entry[field] = raw_entry[field]
     # Append any extra fields not in FIELD_ORDER
@@ -231,10 +236,15 @@ def validate_watches(watches, *, allow_empty=False):
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] == "-":
+    args = sys.argv[1:]
+    allow_dormant = '--allow-dormant' in args
+    args = [arg for arg in args if arg != '--allow-dormant']
+    if len(args) > 1:
+        die('usage: sq new-quest [--allow-dormant] <spec_json|->')
+    if not args or args[0] == "-":
         raw = sys.stdin.read()
     else:
-        raw = sys.argv[1]
+        raw = args[0]
 
     try:
         spec = json.loads(raw)
@@ -244,6 +254,7 @@ def main():
     title      = spec.get("title", "").strip()
     priority   = spec.get("priority", "normal")
     allow_send = spec.get("allow_send", False)
+    send_channels = spec.get("allow_send_channels")
     sidequestor_bootstrap = spec.get("sidequestor_bootstrap", False)
     context    = spec.get("context", "")
     watches_in = spec.get("watches", [])
@@ -258,6 +269,11 @@ def main():
         die(f"sidequestor_bootstrap must be a boolean, got: {sidequestor_bootstrap!r}")
     if "requires_initial_run" in spec:
         die("requires_initial_run is obsolete; use sidequestor_bootstrap with no watches")
+    if send_channels is not None and (
+            not isinstance(send_channels, list)
+            or not all(isinstance(c, str) and SLACK_CONVERSATION.fullmatch(c) for c in send_channels)):
+        die(f"allow_send_channels must be a list of Slack conversation IDs (C…/D…/G…), "
+            f"got: {send_channels!r}")
     if retire_days is not None and retire_days is not False:
         if not isinstance(retire_days, int) or retire_days < 0:
             die(f"retire_slack_threads_after_days must be a non-negative int or false, got: {retire_days!r}")
@@ -265,6 +281,13 @@ def main():
     if sidequestor_bootstrap and watches_in:
         die("sidequestor_bootstrap quests must start with an empty watches list")
     validate_watches(watches_in, allow_empty=sidequestor_bootstrap)
+    if watches_in:
+        try:
+            config = Config(RUNTIME_ROOT / 'yaas-triage', repo_root=REPO_ROOT)
+            for watch in watches_in:
+                config.require_checker_enabled(watch['type'], allow_dormant=allow_dormant)
+        except (BadEnvKnob, ValueError) as exc:
+            die(str(exc))
 
     quest_id = unique_quest_id(title)
     now_ts   = f"{time.time():.6f}"
@@ -289,6 +312,8 @@ def main():
         "priority":   priority,
         "allow_send": allow_send,
     }
+    if send_channels is not None:
+        meta["allow_send_channels"] = send_channels
     if retire_days is not None:
         meta["retire_slack_threads_after_days"] = retire_days
     if sidequestor_bootstrap:
