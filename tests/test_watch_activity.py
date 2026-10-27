@@ -154,6 +154,113 @@ class AdoptionRefreshTest(unittest.TestCase):
         watches = json.loads(self.watch_path.read_text())["watches"]
         self.assertEqual(watches[0]["last_activity_ts"], "250.000000")
 
+    def test_github_pr_searches_are_distinct_watches(self) -> None:
+        base = {
+            "type": "github_pr",
+            "repo": "owner/repo",
+            "reason": "track PR activity",
+        }
+        authored = self._add(dict(base, search="author:me"))
+        involved = self._add(dict(base, search="involves:me"))
+
+        self.assertEqual(authored.returncode, 0, authored.stderr)
+        self.assertEqual(involved.returncode, 0, involved.stderr)
+        watches = json.loads(self.watch_path.read_text())["watches"]
+        self.assertEqual([watch["search"] for watch in watches], ["author:me", "involves:me"])
+
+    def test_github_pr_accounts_are_distinct_watches(self) -> None:
+        base = {
+            "type": "github_pr",
+            "repo": "owner/repo",
+            "search": "involves:me",
+            "reason": "track PR activity",
+        }
+        personal = self._add(dict(base, gh_account="personal"))
+        work = self._add(dict(base, gh_account="work"))
+
+        self.assertEqual(personal.returncode, 0, personal.stderr)
+        self.assertEqual(work.returncode, 0, work.stderr)
+        watches = json.loads(self.watch_path.read_text())["watches"]
+        self.assertEqual([watch["gh_account"] for watch in watches], ["personal", "work"])
+
+    def test_github_pr_exact_identity_is_duplicate(self) -> None:
+        watch = {
+            "type": "github_pr",
+            "repo": "owner/repo",
+            "search": "involves:me",
+            "gh_account": "work",
+            "reason": "track PR activity",
+        }
+        self.assertEqual(self._add(watch).returncode, 0)
+        duplicate = self._add(dict(watch, reason="same result set"))
+
+        self.assertEqual(duplicate.returncode, 0, duplicate.stderr)
+        self.assertIn("skip:duplicate:", duplicate.stdout)
+        watches = json.loads(self.watch_path.read_text())["watches"]
+        self.assertEqual(len(watches), 1)
+
+    def test_github_pr_empty_identity_fields_match_absent_fields(self) -> None:
+        base = {
+            "type": "github_pr",
+            "repo": "owner/repo",
+            "reason": "track PR activity",
+        }
+        self.assertEqual(self._add(base).returncode, 0)
+        duplicate = self._add(dict(base, search="  ", gh_account=""))
+
+        self.assertEqual(duplicate.returncode, 0, duplicate.stderr)
+        self.assertIn("skip:duplicate:", duplicate.stdout)
+        watches = json.loads(self.watch_path.read_text())["watches"]
+        self.assertEqual(len(watches), 1)
+
+    def test_github_pr_legacy_empty_identity_fields_match_new_absent_fields(self) -> None:
+        legacy = {
+            "type": "github_pr",
+            "repo": "owner/repo",
+            "search": " ",
+            "gh_account": "",
+            "reason": "legacy empty fields",
+        }
+        self.watch_path.write_text(json.dumps({"watches": [legacy]}))
+        duplicate = self._add({
+            "type": "github_pr",
+            "repo": "owner/repo",
+            "reason": "new absent fields",
+        })
+
+        self.assertEqual(duplicate.returncode, 0, duplicate.stderr)
+        self.assertIn("skip:duplicate:", duplicate.stdout)
+        watches = json.loads(self.watch_path.read_text())["watches"]
+        self.assertEqual(len(watches), 1)
+
+    def test_github_pr_legacy_repo_watch_can_coexist_with_scoped_watch(self) -> None:
+        legacy = {
+            "type": "github_pr",
+            "repo": "owner/repo",
+            "reason": "legacy repo watch",
+        }
+        scoped = dict(legacy, search="author:me", gh_account="work")
+
+        self.assertEqual(self._add(legacy).returncode, 0)
+        self.assertEqual(self._add(scoped).returncode, 0)
+        watches = json.loads(self.watch_path.read_text())["watches"]
+        self.assertEqual(len(watches), 2)
+
+    def test_github_issue_accounts_are_distinct_watches(self) -> None:
+        base = {
+            "type": "github_issue",
+            "repo": "owner/repo",
+            "search": "label:docs",
+            "reason": "track issue activity",
+        }
+        personal = self._add(dict(base, gh_account="personal"))
+        work = self._add(dict(base, gh_account="work"))
+
+        self.assertEqual(personal.returncode, 0, personal.stderr)
+        self.assertEqual(work.returncode, 0, work.stderr)
+        watches = json.loads(self.watch_path.read_text())["watches"]
+        self.assertEqual([watch["gh_account"] for watch in watches], ["personal", "work"])
+
     def test_slack_watch_rejects_user_id_as_channel_id(self) -> None:
         result = self._add({
             "type": "slack_thread",

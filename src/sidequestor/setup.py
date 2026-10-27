@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
 from .dashboard import wait_for_dashboard_url
+from .job_path import find_agent, resolve_job_path
 from .launchd import install_production
 from .native import RUNTIME_ROOT
 from .resources import sync_resources
@@ -16,6 +18,7 @@ from .workspace import Workspace
 
 _PLACEHOLDERS = {None, "", "<set>", "CHANGE_ME", "TODO"}
 _BACKENDS = {"claude", "codex", "cursor"}
+_CLI_PACKAGES = {"codex": "@openai/codex", "claude": "@anthropic-ai/claude-code"}
 _MODEL_DEFAULTS = {
     "claude": "claude-opus-4-6",
     "codex": "gpt-5.6-luna",
@@ -157,7 +160,12 @@ def provision_env(workspace: Workspace, *, input_fn=input, interactive: bool = T
             values[effort_key] = effort
         permission = existing.get(permission_key)
         if permission in _PLACEHOLDERS:
-            permission = _prompt("Worker permission mode", "workspace-write", input_fn=input_fn) if interactive else "workspace-write"
+            # Kept as the default because restricted modes block the helper scripts headless
+            # workers must run (Claude's acceptEdits denies `python3 ...` in -p mode).
+            print("Worker permission default is bypassPermissions: workers run shell, file and "
+                  "network actions without approval while reading untrusted Slack, email and "
+                  "GitHub text. Use it only in a workspace where that is acceptable.")
+            permission = _prompt("Worker permission mode", "bypassPermissions", input_fn=input_fn) if interactive else "bypassPermissions"
             values[permission_key] = permission
 
     if enabled:
@@ -176,6 +184,62 @@ def provision_env(workspace: Workspace, *, input_fn=input, interactive: bool = T
         env_file.write_text("".join(updated))
         env_file.chmod(0o600)
     return values, changed
+
+
+def check_worker_clis(workspace: Workspace, executable: Path, *, agent: str, input_fn=input,
+                      interactive: bool = True) -> bool:
+    """Report Codex and Claude CLIs, plus Cursor when selected."""
+    selected_available = True
+    job_path = resolve_job_path(workspace, executable)
+    names = (*_CLI_PACKAGES, *(("cursor",) if agent == "cursor" else ()))
+    for name in names:
+        package = _CLI_PACKAGES.get(name)
+        label = "Cursor" if name == "cursor" else name
+        binary = find_agent(name, job_path.value)
+        if binary:
+            print(f"{label} CLI: installed ({binary})")
+            continue
+        print(f"{label} CLI: missing from the background-job PATH")
+        install_succeeded = False
+        if package and agent != "cursor" and interactive and _yes_no(
+            f"Install {name} CLI with npm ({package})", False, input_fn=input_fn
+        ):
+            npm = shutil.which("npm", path=job_path.value) or shutil.which("npm")
+            if not npm:
+                print(f"npm is unavailable. Install Node.js and run: npm install -g {package}")
+            else:
+                try:
+                    result = subprocess.run([npm, "install", "-g", package], cwd=workspace.root,
+                                            check=False)
+                except OSError as exc:
+                    print(f"{name} CLI installation failed: {exc}")
+                else:
+                    if result.returncode:
+                        print(f"{name} CLI installation failed (exit {result.returncode}).")
+                    else:
+                        install_succeeded = True
+                        job_path = resolve_job_path(workspace, executable)
+                        binary = find_agent(name, job_path.value)
+                        if binary:
+                            print(f"{name} CLI: installed ({binary})")
+                        else:
+                            try:
+                                prefix = subprocess.run([npm, "prefix", "-g"], cwd=workspace.root,
+                                                        capture_output=True, text=True, check=False)
+                            except OSError:
+                                pass
+                            else:
+                                if prefix.returncode == 0 and prefix.stdout.strip():
+                                    print(f"npm installed {name}, but {prefix.stdout.strip()}/bin is not on"
+                                          " the background-job PATH.")
+        if not binary:
+            if package and not install_succeeded:
+                print(f"To install {name} later: npm install -g {package}")
+            if name == agent:
+                selected_available = False
+                print(f"Selected worker CLI ({name}) is required before setup can start jobs."
+                      " Set SIDEQUESTOR_PATH in .env if it is installed outside the job PATH.")
+    return selected_available
 
 
 def run_setup(workspace: Workspace, executable: Path, *, input_fn=input, interactive: bool = True) -> int:
@@ -201,6 +265,9 @@ def run_setup(workspace: Workspace, executable: Path, *, input_fn=input, interac
         result = subprocess.run(["bash", str(script), "--workspace", str(workspace.root), "--oauth-only"], cwd=workspace.root)
         if result.returncode:
             return result.returncode
+    if not check_worker_clis(workspace, executable, agent=agent, input_fn=input_fn,
+                             interactive=interactive):
+        return 1
     manifest = install_production(workspace, executable)
     print(f"You are live. Sidequestor instance {workspace.instance_id} is running these jobs:")
     for name, job in manifest["jobs"].items():

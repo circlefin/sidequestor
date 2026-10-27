@@ -211,7 +211,8 @@ class Stage2BehaviorTest(unittest.TestCase):
         self.assertIn("A `manual_instruction`", operating_text)
         self.assertIn("$SIDEQUESTOR_RUNTIME_ROOT", operating_text)
         self.assertNotIn("Never send unless the quest allows it", operating_text)
-        self.assertIn("SIDEQUESTOR_CLAUDE_PERMISSION_MODE=acceptEdits", (self.workspace / ".env.example").read_text())
+        self.assertIn("SIDEQUESTOR_CLAUDE_PERMISSION_MODE=bypassPermissions", (self.workspace / ".env.example").read_text())
+        self.assertIn("SIDEQUESTOR_CODEX_PERMISSION_MODE=bypassPermissions", (self.workspace / ".env.example").read_text())
         self.assertIn("yaas_v2_auto_pull", (self.workspace / "settings.json.example").read_text())
         watermark = self.workspace / "state" / "triage" / "reaction-watermark.json"
         self.assertEqual(

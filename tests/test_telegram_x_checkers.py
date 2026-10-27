@@ -282,6 +282,18 @@ class CredentialStoreTest(unittest.TestCase):
         authorized.assert_awaited_once_with("12345", "+6591234567", "work", "hash")
         self.assertNotIn("+6591234567", output.getvalue())
 
+    def test_telegram_authorize_reads_api_id_from_environment(self):
+        module = load("telegram_credentials_dotenv_test", SURFACES / "telegram_credentials.py")
+        authorized = mock.AsyncMock(return_value={
+            "credential_id": "default", "user_id": "42", "username": "tester",
+        })
+        with mock.patch.dict(os.environ, {"TELEGRAM_API_ID": "12345"}, clear=False), \
+                mock.patch.object(module.getpass, "getpass", side_effect=["+6591234567", "hash"]), \
+                mock.patch.object(module, "_authorize", authorized):
+            code = module.main(["authorize"])
+        self.assertEqual(0, code)
+        authorized.assert_awaited_once_with("12345", "+6591234567", "default", "hash")
+
 
 class SurfaceCredentialClassificationTest(unittest.TestCase):
     """A locked Keychain is transient machine state, not a bad credential.

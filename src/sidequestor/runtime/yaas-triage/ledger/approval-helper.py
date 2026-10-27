@@ -29,7 +29,7 @@ write <json>
     source are normalized to quest-inbox; an unknown explicit quest is rejected.
     Prints the generated approval ID on success.
     Prints nothing (exit 0) if an identical pending entry already exists
-    (same quest_id + target.channel_id + target.thread_ts).
+    (same quest, destination, and request; Slack messages retain thread dedup).
     Also appends an `approval` watch to the quest's watch.json (additive,
     idempotent) so triage re-dispatches the worker when the reviewer approves
     or sends the item back. This is done as part of `write` on purpose: an
@@ -237,6 +237,19 @@ def _ensure_inbox():
     return watch
 
 
+def _is_file_upload(target) -> bool:
+    return isinstance(target, dict) and target.get("action") == "file_upload"
+
+
+def _same_review_request(existing, new, existing_message, new_message) -> bool:
+    """Keep Slack thread dedup; compare full requests without a channel ID."""
+    if (_is_file_upload(existing) or _is_file_upload(new)
+            or not (isinstance(existing, dict) and existing.get("channel_id"))
+            or not (isinstance(new, dict) and new.get("channel_id"))):
+        return existing == new and existing_message == new_message
+    return True
+
+
 def cmd_write(payload_json: str):
     payload = json.loads(payload_json)
 
@@ -267,6 +280,8 @@ def cmd_write(payload_json: str):
             and i.get("status") == "pending_review"
             and i.get("target", {}).get("channel_id") == channel_id
             and i.get("target", {}).get("thread_ts") == thread_ts
+            and _same_review_request(i.get("target"), target,
+                                     i.get("message_text") or "", payload.get("message_text") or "")
         )
         if duplicate:
             return approval_store.NO_WRITE
@@ -398,6 +413,13 @@ def cmd_enqueue_instruction(payload_json: str) -> int:
     next tick, while that tick owns the global triage lock. Writing watch.json
     here would race the tick whose lock this queue exists to wait behind.
     """
+    # The item is born reviewed and read as the operator's words, so a dispatched worker must
+    # not mint one. Like slack-file.py's interactive refusal, this stops mistakes and casual
+    # injection; a worker with a shell can unset the variable.
+    if os.environ.get("SIDEQUESTOR_DISPATCH_TARGET", "").strip():
+        print("error:operator instructions cannot be queued from inside a dispatch",
+              file=sys.stderr)
+        return 2
     payload = json.loads(payload_json)
     quest_id = str(payload.get("quest_id") or "").strip()
     instruction = str(payload.get("instruction") or "").strip()
