@@ -146,10 +146,15 @@ def main():
                     "sort": "timestamp", "sort_dir": "desc"}
             if cursor:
                 args["cursor"] = cursor
-            r = subprocess.run(
-                [mcp_call, "slack_search_public_and_private", json.dumps(args)],
-                capture_output=True, text=True, timeout=30,
-            )
+            try:
+                r = subprocess.run(
+                    [mcp_call, "slack_search_public_and_private", json.dumps(args)],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                print("REACTIONS_TRANSIENT_ERROR: Slack search timed out", file=sys.stderr)
+                print(f"{sgtnow()}  REACTIONS_TRANSIENT_ERROR=1")
+                return 4
             if r.returncode != 0:
                 detail = (r.stderr or r.stdout or "Slack adapter failed").strip().splitlines()[0]
                 kind = {1: "AUTH", 3: "BAD_ARGS", 4: "TRANSIENT"}.get(r.returncode, "ERROR")
