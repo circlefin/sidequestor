@@ -95,7 +95,10 @@ sys.path.insert(0, str(RUNTIME_ROOT / "yaas-triage"))
 import approval_state
 import approval_store
 import tick_check
+import threading
+from types import SimpleNamespace
 from tick_state import (
+    BadEnvKnob,
     Config,
     DEFAULT_CHECKER_CONNECTORS,
     NUMERIC_KNOBS,
@@ -385,6 +388,11 @@ def _ext_link(e: dict) -> tuple[str | None, str | None]:
 def _watch_link(w: dict, wtype: str, ch, tts) -> tuple[str | None, str | None]:
     """A watch entry points at a surface, not a single reply: a Slack thread, a
     Jira JQL set, a repo's PRs, or a Gmail query (no stable URL)."""
+    if wtype.startswith("notion_"):
+        target = _first_str(w, ("page_id", "database_id", "data_source_id", "block_id"))
+        if re.fullmatch(r"[0-9a-fA-F-]{32,36}", target or ""):
+            return "https://www.notion.so/" + target.replace("-", ""), "notion"
+        return None, None
     if wtype == "jira":
         u = _jira_url(w)
         if u:
@@ -897,8 +905,18 @@ def _recent_runlog_events(event_name: str, window_sec: int) -> list:
 # anywhere (so the UI can show "default" vs a live override). Grouped for a readable Config tab.
 # Deterministic between state changes (it only moves when .env / env changes), so it does not
 # defeat the ETag/304 path.
+def _dashboard_config():
+    try:
+        return Config(str(RUNTIME_ROOT / "yaas-triage"))
+    except (BadEnvKnob, ValueError) as exc:
+        # Invalid dispatch settings must not hide the queue that explains them.
+        # Showing all stored watch warnings is conservative; this never runs a checker.
+        return SimpleNamespace(env=load_environment(REPO_ROOT), checker_enabled=lambda _: True,
+                               validation_error=str(exc))
+
+
 def build_config() -> dict:
-    resolved = Config(str(RUNTIME_ROOT / "yaas-triage"))
+    resolved = _dashboard_config()
 
     def knob(key, default, desc):
         raw = resolved.env.get(key)
@@ -941,7 +959,8 @@ def build_config() -> dict:
             knob("YAAS_AGENT", "codex", "Which agent backend runs the worker dispatch (claude / codex / cursor)."),
         ]},
     ]
-    return {"orchestrator": "tick.py", "worker_timeout_sec": 1800, "groups": groups}
+    return {"orchestrator": "tick.py", "worker_timeout_sec": 1800, "groups": groups,
+            "error": getattr(resolved, "validation_error", None)}
 
 
 # ── Dashboard payload builder ─────────────────────────────────────────────────
@@ -1085,9 +1104,10 @@ def build_dashboard(include_briefs: bool = False) -> dict:
     /api/dashboard, whose payload contract still carries them, opts in.
     """
     active_dir = STATE_DIR / "quests" / "active"
-    checker_config = Config(str(RUNTIME_ROOT / "yaas-triage"))
+    checker_config = _dashboard_config()
     quests         = []
     recent_activity = []
+    live_watch_ids: dict[str, set | None] = {}
 
     for quest_dir in sorted(active_dir.iterdir()) if active_dir.exists() else []:
         if not quest_dir.is_dir():
@@ -1108,6 +1128,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
                            if isinstance(watch, dict)]
         except Exception:
             pass
+        live_watch_ids[quest_dir.name] = _live_watch_ids(quest_dir)
         timeline_path = quest_dir / "timeline.ndjson"
         if timeline_path.exists():
             lines = [l for l in timeline_path.read_text().splitlines() if l.strip()]
@@ -1187,6 +1208,8 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             for key, entry in uc.items():
                 qid, _, wid = key.partition("|")
                 if not isinstance(entry, dict) or entry.get("count", 0) < promote:
+                    continue
+                if not _unacked_item_is_live(wid, live_watch_ids.get(qid)):
                     continue
                 if not checker_config.checker_enabled(entry.get("type", "")):
                     continue
@@ -1539,6 +1562,8 @@ def _watch_issue(kind: str, watch: dict, now: float | None = None) -> dict:
             action = "Check GitHub access with gh auth status, then review this watch."
         elif watch_type.startswith("slack_"):
             action = "Run sq doctor to check Slack access, then reconnect if needed."
+        elif watch_type.startswith("notion_"):
+            action = "Check the Notion API token, connection capabilities, and page access grants."
         elif watch_type == "jira":
             action = "Run sq doctor and check the Jira API token and permissions."
         else:
@@ -1600,10 +1625,55 @@ def _quest_health_detail(quest: dict, now: float | None = None) -> str:
     return " ".join(parts)
 
 
+def _live_watch_ids(quest_dir: Path) -> set | None:
+    """Counter items that can still belong to this quest: its current watch IDs, the
+    unreadable-manifest sentinel, and the bootstrap item while bootstrap is pending. None
+    when watch.json or meta.json cannot be read or a watch has no usable ID. Mirrors
+    tick.py's _live_unacked_items, which decides what the tick prunes."""
+    try:
+        watches = json.loads((quest_dir / "watch.json").read_text())["watches"]
+        meta = json.loads((quest_dir / "meta.json").read_text())
+    except Exception:
+        return None
+    if not isinstance(watches, list) or not isinstance(meta, dict):
+        return None
+    live = {"<unreadable-manifest>"}
+    for watch in watches:
+        wid = watch.get("watch_id") if isinstance(watch, dict) else None
+        if not isinstance(wid, str) or not wid:
+            return None
+        live.add(wid)
+    if meta.get("sidequestor_bootstrap") is True:
+        live.add("sidequestor-bootstrap")
+    return live
+
+
+def _unacked_item_is_live(item: str, live_ids: set | None) -> bool:
+    """Whether a no-progress counter still belongs to a watch that exists.
+
+    Counters outlive their watch (retired, replaced, quest closed) until the tick prunes them;
+    showing one would claim a retry that will never happen. An unreadable watch.json shows
+    everything rather than hide a real problem behind a transient read error.
+    """
+    return live_ids is None or item in live_ids
+
+
 def build_control() -> dict:
     dashboard = build_dashboard()
     messages = build_messages()
     attention = []
+    try:
+        from sidequestor.worker_readiness import current_state
+        from sidequestor.workspace import load_workspace
+        readiness = current_state(load_workspace(REPO_ROOT))
+        for scope in ("blocked", "slack"):
+            reason = readiness.get(scope)
+            if reason:
+                attention.append({"id": f"worker-readiness:{scope}", "kind": "configuration",
+                                  "priority": "high", "label": "Worker connection needs attention",
+                                  "detail": reason, "action": "Run sq setup in your terminal."})
+    except (ImportError, SystemExit, OSError, ValueError, AttributeError):
+        pass
 
     for card in messages["needs_you"]:
         attention.append({
@@ -1686,14 +1756,27 @@ def build_build_info() -> dict:
     except Exception:
         info = {}
     commit_full = os.environ.get("SIDEQUESTOR_COMMIT") or info.get("commit_full", "")
+    version = os.environ.get("SIDEQUESTOR_VERSION") or info.get("version", "unknown")
     return {
-        "version": os.environ.get("SIDEQUESTOR_VERSION") or info.get("version", "unknown"),
+        "version": version,
         "commit": commit_full[:7],
         "commit_full": commit_full,
         "ref": os.environ.get("SIDEQUESTOR_REF") or info.get("ref", ""),
         "source": info.get("source", "unknown"),
         "engine": info.get("engine", "unknown"),
+        "update": _available_update(version),
     }
+
+
+def _available_update(version: str) -> dict | None:
+    """A newer release recorded by the heartbeat's daily check, or None. Never fetches."""
+    try:
+        from sidequestor.update_check import available_update, check_enabled, read_status
+        if not check_enabled(load_environment(REPO_ROOT)):
+            return None
+        return available_update(read_status(REPO_ROOT), version)
+    except Exception:
+        return None
 
 
 # ── Quest detail builder (lazy-fetched by the drawer) ────────────────────────
@@ -1701,8 +1784,26 @@ def build_build_info() -> dict:
 _TIMELINE_KEYS = ("ts", "event", "note", "reason", "permalink", "by", "channel",
                   "channel_id", "thread_ts", "response_ts", "msg_ts", "message_ts",
                   "approval_id", "draft_id", "action_type", "to", "subject",
-                  "message_text")
+                  "message_text", "linked_quest_id", "reaction_item", "status")
 _TIMELINE_CAP  = 500
+
+def _notion_coverage(entry):
+    """Read existing coverage only; rendering must never start a scan or create state."""
+    if not str(entry.get("type", "")).startswith("notion_"):
+        return None
+    try:
+        import importlib.util
+        module = globals().get("_NOTION_INSPECTOR")
+        if module is None:
+            helper = Path(__file__).resolve().parents[1] / "surfaces" / "notion-state.py"
+            spec = importlib.util.spec_from_file_location("sidequestor_notion_inspector", helper)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            globals()["_NOTION_INSPECTOR"] = module
+        return module.inspect(entry, Path(os.environ.get("NOTION_STATE_DIR", REPO_ROOT / "state" / "notion")), strict=False)["coverage"]
+    except Exception:
+        return {"status": "unavailable", "reason": "Notion scan state unavailable; coverage is unknown"}
+
 
 def build_quest_detail(quest_id: str) -> dict | None:
     open_watch_types, registry_error = _open_watch_types()
@@ -1733,6 +1834,8 @@ def build_quest_detail(quest_id: str) -> dict | None:
         w = json.loads((quest_dir / "watch.json").read_text())
         if isinstance(w, dict) and isinstance(w.get("watches"), list):
             watches = [e for e in w["watches"] if isinstance(e, dict)]
+            watches = [{**e, "notion_coverage": _notion_coverage(e)}
+                       if str(e.get("type", "")).startswith("notion_") else e for e in watches]
     except Exception:
         pass
 
@@ -1877,9 +1980,11 @@ def build_quest_detail(quest_id: str) -> dict | None:
         try:
             uc = json.loads(unacked_path.read_text())
             promote = int(_dotenv("YAAS_UNACKED_PROMOTE", "3"))
+            live_ids = _live_watch_ids(quest_dir)
             for key, entry in uc.items():
                 qid, _, wid = key.partition("|")
-                if qid == quest_id and entry.get("count", 0) >= promote:
+                if (qid == quest_id and entry.get("count", 0) >= promote
+                        and _unacked_item_is_live(wid, live_ids)):
                     if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
                             and str(entry.get("type", "")).startswith("slack_")):
                         continue
@@ -1951,7 +2056,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
 
     misconfigured_watches = []
     try:
-        checker_config = Config(str(RUNTIME_ROOT / "yaas-triage"))
+        checker_config = _dashboard_config()
         triage_state = json.loads((STATE_DIR / "triage" / "last-run.json").read_text())
         if isinstance(triage_state.get("watch_issues"), list):
             current = [issue for issue in triage_state["watch_issues"]
@@ -2235,6 +2340,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json_etag(build_control)
             return
 
+        if path == "/api/updates/status":
+            from sidequestor.update_check import check_status
+            self._send_json(check_status(REPO_ROOT))
+            return
+
         if path == "/api/briefs":
             self._send_json_etag(lambda: {"briefs": build_briefs()})
             return
@@ -2308,6 +2418,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._handle_open_workspace()
             return
 
+        if path == "/api/updates/check":
+            from sidequestor.update_check import check_enabled, check_status
+            env = dict(os.environ, **load_environment(REPO_ROOT))
+            if not check_enabled(env):
+                self._send_json({"error": "Update checking is disabled in workspace configuration"}, 409)
+                return
+            status = check_status(REPO_ROOT)
+            try:
+                elapsed = time.time() - float(status.get("last_attempt_ts") or 0)
+            except (TypeError, ValueError):
+                elapsed = 60
+            if elapsed < 60:
+                self._send_json({**status, "status": "rate_limited", "retry_after": max(1, int(60 - elapsed))})
+                return
+            try:
+                process = subprocess.Popen([sys.executable, "-m", "sidequestor.update_check", "--workspace", str(REPO_ROOT), "--force"],
+                                           env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            except OSError as exc:
+                self._send_json({"error": f"Could not start update check: {exc}"}, 503)
+                return
+            threading.Thread(target=process.wait, daemon=True).start()
+            self._send_json({"status": "checking", "last_attempt_ts": status["last_attempt_ts"]}, 202)
+            return
+
         if path == "/api/quests/terminal":
             self._run_terminal_command(["--new-quest"])
             return
@@ -2344,7 +2478,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle_open_workspace(self):
         """Open the server's own workspace, never a browser-supplied path."""
-        preferred = os.environ.get("SIDEQUESTOR_IDE_APP", "Cursor").strip()
+        preferred = _dotenv('SIDEQUESTOR_IDE_APP', 'Cursor')
         attempts = []
         if preferred:
             attempts.append((preferred, ["open", "-a", preferred, str(REPO_ROOT)]))
@@ -2566,5 +2700,8 @@ if __name__ == "__main__":
     # Loopback only. Off-host callers never reach the socket, regardless of any
     # host firewall state.
     with socketserver.TCPServer(("127.0.0.1", PORT), Handler) as httpd:
+        ready_file = os.environ.get("SIDEQUESTOR_DASHBOARD_READY_FILE")
+        if ready_file:
+            Path(ready_file).write_text("ready\n")
         print(f"Sidequestor dashboard -> http://localhost:{PORT} (loopback only)", flush=True)
         httpd.serve_forever()

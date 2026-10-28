@@ -73,7 +73,7 @@ _RUNTIME_ROOT = Path(
     or os.environ.get("YAAS_RUNTIME_ROOT", Path(__file__).resolve().parents[2])
 )
 sys.path.insert(0, str(_RUNTIME_ROOT / "yaas-triage"))
-from tick_state import load_environment
+from tick_state import load_environment, Config, BadEnvKnob
 
 # Thresholds. Defaults are deliberately loose enough not to cry wolf; every one is
 # overridable so a slower install can tune it. ``configure`` refreshes them from the
@@ -298,18 +298,13 @@ class Health:
     # ── work that has silently stopped moving ────────────────────────────────
     def check_checker_health(self):
         d = _read_json(self.state / "triage" / "checker-health.json", {}) or {}
-        if _setting(self.repo, "YAAS_SLACK_CHECKERS_ENABLED", "1") == "0":
-            disabled_ids = set()
-            active = self.state / "quests" / "active"
-            if active.is_dir():
-                for watch_file in active.glob("*/watch.json"):
-                    watch_data = _read_json(watch_file, {}) or {}
-                    for watch in watch_data.get("watches", []):
-                        if (isinstance(watch, dict)
-                                and str(watch.get("type", "")).startswith("slack_")
-                                and watch.get("watch_id")):
-                            disabled_ids.add(watch["watch_id"])
-            d = {wid: rec for wid, rec in d.items() if wid not in disabled_ids}
+        try:
+            live = Config(_RUNTIME_ROOT / 'yaas-triage', repo_root=self.repo).active_checker_ids()
+        except (BadEnvKnob, OSError, ValueError):
+            live = None  # Keep failure evidence and keep the monitor running.
+            self.notes.append('Cannot filter checker health: configuration is unreadable or invalid')
+        if live is not None:
+            d = {wid: rec for wid, rec in d.items() if wid in live}
         stuck = {k: v for k, v in d.items()
                  if isinstance(v, dict) and int(v.get("consecutive_errors", 0)) >= CHECKER_PROMOTE}
         if stuck:

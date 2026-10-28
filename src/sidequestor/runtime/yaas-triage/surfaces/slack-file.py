@@ -413,6 +413,15 @@ def cmd_send(p):
 
 
 def _log_sent(job, result):
+    if not job["quest_id"] and os.environ.get("SIDEQUESTOR_DISPATCH_TARGET") == "reactions":
+        from inbox import try_log_inbox
+        return try_log_inbox(REPO_ROOT, f"reaction-file:{result['file_id']}:{job['channel_id']}", {
+            "event": "message_sent", "channel_id": job["channel_id"],
+            "thread_ts": job["thread_ts"], "response_ts": result["response_ts"],
+            "permalink": result["permalink"], "message_text": job["comment"],
+            "note": job["note"] or f"Reaction file upload: {job['filename']}",
+            "files": [_file_record(job, result["file_id"])],
+        })
     if job["quest_id"]:
         qdir = quest_dir(REPO_ROOT, job["quest_id"])
         if qdir is None:

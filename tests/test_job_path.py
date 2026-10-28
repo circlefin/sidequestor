@@ -128,6 +128,7 @@ class JobPathTests(unittest.TestCase):
         with patch.dict(os.environ, {"PATH": str(agents)}), \
                 patch("sidequestor.job_path.login_shell_path", return_value=[]), \
                 patch("sidequestor.launchd._production_root", return_value=launch_agents), \
+                patch("sidequestor.dashboard.wait_for_dashboard_port", return_value=True), \
                 patch("sidequestor.launchd.subprocess.run", side_effect=launchctl):
             manifest = install_production(self.workspace, self.python)
             status = production_agent_status(self.workspace)

@@ -226,14 +226,20 @@ def keychain(service, account="yaas"):
 
 def request(url, method="GET", headers=None, body=None, timeout=TIMEOUT):
     """Returns (status, text). Raises only for transport failures."""
+    status, text, _ = request_with_headers(url, method, headers, body, timeout)
+    return status, text
+
+
+def request_with_headers(url, method="GET", headers=None, body=None, timeout=TIMEOUT):
+    """Return response headers for capability checks without exposing bearer tokens."""
     data = body.encode() if isinstance(body, str) else body
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode("utf-8", "replace")
+            return resp.status, resp.read().decode("utf-8", "replace"), dict(resp.headers)
     except urllib.error.HTTPError as e:
         # An HTTP error is a real response; its body usually says what went wrong.
-        return e.code, e.read().decode("utf-8", "replace")
+        return e.code, e.read().decode("utf-8", "replace"), dict(e.headers)
 
 
 def slack_auth_rejected(status, body):
@@ -277,6 +283,20 @@ def slack_request(url, method="GET", headers=None, body=None, timeout=TIMEOUT):
     replacement = get_slack_access_token(rejected_token=token)
     request_headers["Authorization"] = f"Bearer {replacement}"
     return request(url, method, request_headers, body, timeout)
+
+
+def slack_request_with_headers(url, method="GET", headers=None, body=None, timeout=TIMEOUT):
+    """Like slack_request, retaining only the response headers needed by callers."""
+    token = get_slack_access_token()
+    request_headers = dict(headers or {})
+    request_headers["Authorization"] = f"Bearer {token}"
+    status, text, response_headers = request_with_headers(url, method, request_headers, body, timeout)
+    if not slack_auth_rejected(status, text):
+        return status, text, response_headers
+
+    replacement = get_slack_access_token(rejected_token=token)
+    request_headers["Authorization"] = f"Bearer {replacement}"
+    return request_with_headers(url, method, request_headers, body, timeout)
 
 
 def classify_credential_exception(exc):
@@ -497,8 +517,33 @@ def cmd_slack_profile(argv):
     return OK
 
 
+def cmd_slack_identity(argv):
+    """Return non-secret account identity and current user-token grants."""
+    if argv:
+        return BAD_ARGS
+    try:
+        status, text, headers = slack_request_with_headers(f"{SLACK_WEB_URL}/auth.test")
+        verdict = classify_status(status)
+        if verdict == OK:
+            verdict = classify_body(text)
+        if verdict != OK:
+            return fail("Slack identity verification failed", verdict)
+        result = json.loads(text)
+        raw_scopes = next((value for key, value in headers.items()
+                           if key.lower() == "x-oauth-scopes"), None)
+        scopes = (sorted({scope.strip() for scope in raw_scopes.split(",") if scope.strip()})
+                  if isinstance(raw_scopes, str) else None)
+        print(json.dumps({"user_id": result.get("user_id"), "team_id": result.get("team_id"),
+                          "scopes": scopes}))
+        return OK
+    except SlackCredentialError as exc:
+        return fail(str(exc), classify_credential_exception(exc))
+    except Exception as exc:
+        return fail(type(exc).__name__, classify_exception(exc))
+
+
 SURFACES = {"mcp": cmd_mcp, "jira": cmd_jira, "slack-react": cmd_slack_react,
-            "slack-profile": cmd_slack_profile}
+            "slack-profile": cmd_slack_profile, "slack-identity": cmd_slack_identity}
 
 
 def main():

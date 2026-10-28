@@ -33,6 +33,8 @@ class ProductionLaunchdLifecycleTest(unittest.TestCase):
         self.root_patch = patch("sidequestor.launchd._production_root", return_value=self.launch_agents)
         self.run_patch = patch("sidequestor.launchd.subprocess.run")
         self.probe_patch = patch("sidequestor.job_path.login_shell_path", return_value=[])
+        self.port_patch = patch("sidequestor.dashboard.wait_for_dashboard_port", return_value=True)
+        self.port_patch.start()
         self.probe_patch.start()
         self.root_patch.start()
         self.run = self.run_patch.start()
@@ -45,6 +47,7 @@ class ProductionLaunchdLifecycleTest(unittest.TestCase):
         return subprocess.CompletedProcess(command, 0, "", "")
 
     def tearDown(self) -> None:
+        self.port_patch.stop()
         self.probe_patch.stop()
         self.run_patch.stop()
         self.root_patch.stop()
@@ -60,7 +63,7 @@ class ProductionLaunchdLifecycleTest(unittest.TestCase):
         self.assertEqual(manifest["instance_id"], self.workspace.instance_id)
         self.assertTrue(manifest["running"])
         self.assertEqual(set(manifest["jobs"]), {"triage", "heartbeat", "dashboard"})
-        self.assertEqual(manifest["jobs"]["dashboard"]["arguments"][-1], "0")
+        self.assertEqual(manifest["jobs"]["dashboard"]["arguments"][-1], "8877")
         self.assertEqual(manifest["jobs"]["triage"]["arguments"][0], str(python))
         for job in jobs.values():
             environment = job["values"]["EnvironmentVariables"]
@@ -85,6 +88,59 @@ class ProductionLaunchdLifecycleTest(unittest.TestCase):
         calls = [call.args[0] for call in self.run.call_args_list]
         self.assertTrue(any(command[:2] == ["launchctl", "bootstrap"] for command in calls))
         self.assertTrue(any(command[:2] == ["launchctl", "bootout"] for command in calls))
+
+    def test_duplicate_start_reuses_jobs_without_restarting(self):
+        python = self.root / "venv/bin/python"
+        previous = install_production(self.workspace, python)
+        self.run.reset_mock()
+        with patch("sidequestor.launchd.production_is_running", return_value=True):
+            again = install_production(self.workspace, python)
+        self.assertEqual(again, previous)
+        self.run.assert_not_called()
+
+    def test_conflict_never_changes_saved_port_or_stops_jobs(self):
+        from sidequestor.dashboard import saved_dashboard_port
+        with patch("sidequestor.dashboard.wait_for_dashboard_port", return_value=False):
+            with self.assertRaisesRegex(LaunchdLifecycleError, "8877 is occupied"):
+                install_production(self.workspace, self.root / "venv/bin/python")
+        self.assertFalse(any(call.args[0][0] == "launchctl" for call in self.run.call_args_list))
+        self.assertEqual(saved_dashboard_port(self.workspace), 8877)
+
+    def test_running_port_change_requires_explicit_stop(self):
+        from sidequestor.dashboard import saved_dashboard_port
+        install_production(self.workspace, self.root / "venv/bin/python")
+        self.run.reset_mock()
+        with patch("sidequestor.launchd.production_is_running", return_value=True):
+            with self.assertRaisesRegex(LaunchdLifecycleError, "Stop Sidequestor"):
+                install_production(self.workspace, self.root / "venv/bin/python", 8878)
+        self.assertEqual(saved_dashboard_port(self.workspace), 8877)
+        self.run.assert_not_called()
+
+    def test_start_from_another_install_preserves_existing_venv(self):
+        old = self.root / '.venv/bin/python'
+        old.parent.mkdir(parents=True)
+        old.write_text('#!/bin/sh\nexit 0\n')
+        old.chmod(0o755)
+        install_production(self.workspace, old)
+        stop_production(self.workspace)
+        manifest = install_production(self.workspace, self.root / 'uv-tool/bin/python')
+        self.assertEqual(manifest['python'], str(old))
+        self.assertEqual(manifest['jobs']['triage']['arguments'][0], str(old))
+        self.assertEqual(manifest['jobs']['dashboard']['arguments'][-1], '8877')
+
+    def test_missing_registered_venv_does_not_silently_switch_installs(self):
+        old = self.root / '.venv/bin/python'
+        install_production(self.workspace, old)
+        self.run.reset_mock()
+        with self.assertRaisesRegex(LaunchdLifecycleError, 'registered Sidequestor runtime is unavailable'):
+            install_production(self.workspace, self.root / 'uv-tool/bin/python')
+        self.assertFalse(any(call.args[0][0] == 'launchctl' for call in self.run.call_args_list))
+        self.assertEqual(production_status(self.workspace)['python'], str(old))
+
+    def test_explicit_setup_or_upgrade_can_replace_runtime(self):
+        install_production(self.workspace, self.root / 'old/bin/python')
+        manifest = install_production(self.workspace, self.root / 'new/bin/python', replace_runtime=True)
+        self.assertEqual(manifest['python'], str(self.root / 'new/bin/python'))
 
     def test_restart_can_render_the_previous_dashboard_port(self) -> None:
         jobs = _production_jobs(

@@ -4,6 +4,156 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## Unreleased
+
+## 0.2.2 - 2026-10-29
+
+- Make `sq start`, `sq stop`, `sq dashboard`, and `sq status` use a saved default
+  workspace from any terminal directory. Adopt a sole registered workspace on first
+  use; require an explicit choice when several exist. Keep existing dashboard ports,
+  default new workspaces to 8877, and report port conflicts without silently moving
+  to 8878 or 8879. `sq dashboard` opens the running dashboard in a browser.
+- Extend `sq setup` to check the selected Claude Code or Codex login and model, guide
+  CLI updates, and verify Slack access. Claude users can reconnect its separate
+  worker Slack MCP in the setup flow. Confirmed credential failures pause affected
+  dispatches without adding no-progress backoff; startup only advises about newer
+  worker CLI releases.
+- Let onboarding skip optional private-channel creation when the current Sidequestor
+  Slack grant lacks `groups:write`, continuing in the existing DM or terminal.
+- Add a `magic_wand` reaction that expands the owner's Slack message in place
+  and runs its requested work with the existing reaction lifecycle. Make the reaction
+  triggers configurable while keeping their roles and completion markers separate.
+- Make runtime failure reviews name the affected worker or checker and give a direct
+  recovery step. Retire generic failure reviews when a known setup block is detected.
+- Add a macOS source bootstrap script and a separate Circle installer template that
+  inserts non-secret Slack app identifiers without requiring a pasted `.env` heredoc.
+  Existing workspace settings are preserved.
+
+## 0.2.1 - 2026-10-27
+
+- Add `sq credentials set-token jira|notion` to store a Jira or Notion token at a
+  hidden terminal prompt. It updates the Keychain item the checkers already read
+  (Jira `jira-api-token`/`yaas`; Notion honours `NOTION_KEYCHAIN_*` and the
+  `sidequestor-notion-test` fallback), never takes tokens as arguments and leaves the
+  existing token unchanged on cancel or Keychain failure (#16).
+- Report a reaction sweep whose Slack adapter hits the 30-second deadline as
+  `REACTIONS_TRANSIENT_ERROR` (exit 4) instead of crashing with a traceback; pending
+  reactions are retried on the next sweep (#18).
+- No `.env` setting names, Keychain records or workspace migrations change; existing
+  setups need no action.
+
+## 0.2.0 - 2026-10-26
+
+- Include `channels:write` and `channels:write.invites` in the shared Slack manifest
+  and OAuth scope list. Clarify their purpose and existing-app reauthorization steps;
+  onboarding channel creation remains private-only.
+
+- Offer an owner-approved private Slack interface during onboarding, with a separate
+  ongoing interface quest that remains available after onboarding ends. Support a
+  protected Slack channel hand-off, explicit DM recovery (`--slack-dm`), and
+  plain-language harness control.
+- Add resumable Slack/terminal guided onboarding with one quest per workspace,
+  protected channel preferences, daily check-ins and setup integration.
+- Support explicit per-conversation Slack text permissions while retaining draft-only
+  defaults for other sends; show scoped permissions in quest views.
+- Default new setups to Claude Opus 5.5 or Codex GPT-6.1 Sol at high effort,
+  preserving existing configured models.
+- Add opt-in Notion page, data-source and recursive comment watches with a read-only
+  API bridge, scoped Keychain/environment credentials, automatic block/database-item
+  enrollment, archive queries and dashboard coverage.
+- Bound Notion polling with resumable traversal, configurable subpage depth, private
+  workspace state/shared cache and acknowledgement-safe local delivery cursors.
+  Idle scanning uses no LLM tokens and requires no webhooks.
+
+## 0.1.56 - 2026-10-26
+
+### Added
+- `sq slack-channel` creates private Slack channels, invites members, and sets topics
+  and descriptions using the rotating Slack user token. Quest actions require send
+  permission or an exact claimed approval and write their result to the timeline.
+- OAuth setup and the generated manifest request private-channel creation, invitation,
+  and topic scopes. Existing installations must reinstall the app and rerun `sq setup`.
+- Packaged Slack channel instructions explain authorization, separate operations, and
+  how to reconcile uncertain write outcomes before retrying.
+
+## 0.1.55 - 2026-10-23
+
+### Added
+- `sq pause` and `sq resume` are immediate aliases for the existing stop/start lifecycle,
+  preserving workspace selection and error handling without adding scheduled resumption.
+- The empty Briefings archive explains how to create briefs and offers editable morning
+  and one-off briefing quest examples through the existing creation dialog.
+
+### Fixed
+- Independent upgrade jobs return startup failures to review, stop installer
+  descendants on interruption, and prevent reclaim while an upgrade can still run.
+- Maintainer email approval guards cover resolved reply audiences and plus aliases;
+  unsent drafts remain ungated.
+- Markdown link labels and URL query strings escape exactly once, including
+  apostrophes, ampersands, and quotes in Briefings; URL validation remains enforced.
+- Long-running services let each tick/request reload workspace `.env` rather than
+  freezing its values into inherited environment variables. Explicit exports still win.
+- Watch creation rejects disabled connectors unless `--allow-dormant` is requested;
+  dispatches include active connector settings and respect local feed routing.
+- Retired and disabled watches no longer produce stale checker-health warnings;
+  retirement and housekeeping clear their checker backoff records.
+- Reaction pickup queues its processing emoji before harness launch. Durable status
+  delivery retries Slack failures independently of completed actions; blocked work
+  receives a blocked marker and exhausted retries create an Inbox review.
+- Review context, concerns, and action previews render bare URLs as safe clickable links.
+  Issue-number references also link when the review supplies an explicit repository;
+  inline code and unscoped issue references remain plain text.
+
+## 0.1.54 - 2026-10-22
+
+### Added
+- Inbox upgrade reviews can be approved for execution by an independent macOS launchd job,
+  which waits for triage, runs the upgrade lifecycle, and records a verified result or returns
+  failures to review. Separate terminal instructions remain a fallback.
+- Suspected package defects produce review-gated, sanitized bug-report emails to the
+  maintainer rather than instructions to modify installed package files or watch state.
+  Diagnosis prompts and report validation use the actual running package version.
+- Gmail sends to the maintainer, including reply/CC audiences and aliases, require an
+  exact claimed approval even in send-enabled quests; replies resolve their audience first.
+
+### Fixed
+- Slack thread watches can skip workflow-generated parents with a blank author while
+  preserving timestamp coverage and strict author validation for replies and included parents.
+- The dashboard update check now reports completion, available/current releases, rate limiting,
+  and network failure instead of only acknowledging that a background check was launched.
+
+## 0.1.53 - 2026-10-22
+
+### Added
+- Runtime health failures trigger scoped, read-only agent diagnosis and a repair proposal
+  for manual review. Shared failures use Inbox; quest-specific failures use their quest.
+  Missing harnesses and invalid startup configuration create reviews without an agent.
+  Proposals distinguish headless repairs, interactive steps, and further investigation.
+- New stable releases create dismissible Inbox upgrade notices, using the existing daily
+  PyPI cache. The dashboard build control can request an immediate update check.
+
+### Fixed
+- Inbox is restored after deletion, retirement, or archiving, preserving surviving history
+  and rearming outstanding review watches. Reaction actions and outcomes now appear there.
+- Resolved health notices close only after observed recovery. Persistent issue identities
+  prevent repeated proposals and preserve dismissal after review-ledger cleanup.
+- Invalid runtime settings no longer prevent the dashboard from displaying repair reviews.
+
+## 0.1.52 - 2026-10-22
+
+### Added
+- The heartbeat job checks PyPI once a day for a newer release. The dashboard header and
+  `sq doctor` show it, with one desktop notification per version. Nothing upgrades on its
+  own; `SIDEQUESTOR_UPDATE_CHECK=0` turns the check off.
+
+### Fixed
+- A watch that was retired or replaced, or whose quest was closed, no longer stays on the
+  dashboard as "backing off" forever. Each tick removes no-progress counters for watches
+  that no longer exist, including ones left by earlier versions, and the dashboard ignores
+  them in the meantime.
+- A quest's "unreadable manifest" retry record clears once a later dispatch writes a
+  readable manifest.
+
 ## 0.1.51 - 2026-10-17
 
 ### Fixed

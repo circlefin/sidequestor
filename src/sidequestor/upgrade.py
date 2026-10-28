@@ -424,7 +424,7 @@ def run_upgrade(workspace: Workspace | None, args: list[str]) -> int:
     if not os.path.exists(sys.executable):
         print(
             f"Upgrade installed, but the interpreter {sys.executable} no longer exists; "
-            "run `sq start` from the upgraded installation to repair any affected workspace.",
+            "run `sq setup` from the upgraded installation to repair any affected workspace.",
             file=sys.stderr,
         )
         return 1

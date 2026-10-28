@@ -16,7 +16,7 @@
 # limitations under the License.
 
 """
-react-lifecycle.py — move a reaction through its visible lifecycle, atomically and logged.
+react-lifecycle.py — reconcile a message's visible lifecycle, with retryable failures.
 
 A reaction the agent acts on carries a configurable three-state lifecycle on the Slack message:
     trigger (process | draft | adopt)
@@ -31,22 +31,18 @@ reaction replied while the emoji stayed stuck at the trigger, and no one could s
 That is the same failure class the stale-reply guard fixed: a rule the model can forget is not
 a guard.
 
-This makes the transition ONE verb. `advance <channel> <ts> loading|done` removes every OTHER
-lifecycle emoji and adds the target, so the message can never show two at once, and it prints
-a lifecycle log line so drift is finally visible. It is idempotent: re-advancing to the same
-state removes nothing it should keep and re-adds harmlessly (Slack's reactions.add on an
-existing reaction is a no-op the client treats as success).
-
-A remove that fails because the emoji was not there is NOT an error — that is the common case
-(the trigger may already be gone, or a previous partial run left the target on). Only a
-transport/auth failure on the ADD is fatal, because that is the emoji that must end up present.
+Slack cannot swap reactions atomically. Add the target first, then remove the others.
+Both adding and cleanup must succeed before reporting success. The runtime outbox
+retries failed transitions without repeating business actions. An absent reaction
+is normalized to success by the Slack client.
 
 Usage:
-    react-lifecycle.py advance <channel_id> <message_ts> <loading|done> [--react BIN] [--log FILE]
-Exit: 0 the target emoji is present; 1 the add failed (caller should not mark done).
+    react-lifecycle.py advance <channel_id> <message_ts> <loading|done|blocked> [--react BIN] [--log FILE]
+Exit: 0 reconciliation succeeded; 1 add or cleanup failed.
 """
 
 import subprocess
+import os
 import sys
 import time
 from pathlib import Path
@@ -67,32 +63,31 @@ def _react(react_bin, verb, channel, ts, emoji):
 
 
 def advance(channel, ts, state, react_bin, log=None, env=None):
-    """Move the message to `state` (LOADING or DONE): remove every other lifecycle emoji, add
-    the target. Returns True iff the target emoji is present afterwards.
-
-    Removals are best-effort: a missing emoji is the normal case, not a failure. The add is
-    what matters — if it fails (auth/transport), the caller must NOT treat the transition as
-    complete, so this returns False and the reaction stays at whatever it was.
-    """
+    """Add the target, then remove other lifecycle emojis; report complete cleanup."""
     emojis = load_reaction_emojis(env)
     target = emojis[state]
-    lifecycle = (emojis["process"], emojis["draft"], emojis["adopt"],
+    lifecycle = (emojis["process"], emojis["draft"], emojis["adopt"], emojis["expand"],
                  emojis["loading"], emojis["done"])
 
-    # Remove every lifecycle emoji that is not the target. Order does not matter; a failed
-    # remove (already absent) is fine.
-    removed = []
-    for e in lifecycle:
-        if e == target:
-            continue
-        if _react(react_bin, "remove", channel, ts, e):
-            removed.append(e)
-
+    # Slack has no atomic swap. Add first so a failed add cannot erase the only
+    # visible status. A missing reaction returns success in client.py; any other
+    # removal failure needs reconciliation, not a false success.
     added = _react(react_bin, "add", channel, ts, target)
+    removed = []
+    failed = []
+    if added:
+        for e in (*lifecycle, emojis["blocked"]):
+            if e == target:
+                continue
+            if _react(react_bin, "remove", channel, ts, e):
+                removed.append(e)
+            else:
+                failed.append(e)
+    complete = added and not failed
 
     line = (f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}  "
             f"REACTION LIFECYCLE {channel}/{ts} -> :{target}: "
-            f"({'added' if added else 'ADD FAILED'}; removed {removed or 'none'})")
+            f"({'added' if added else 'ADD FAILED'}; removed {removed or 'none'}; failed {failed or 'none'})")
     if log:
         try:
             with open(log, "a") as f:
@@ -100,13 +95,21 @@ def advance(channel, ts, state, react_bin, log=None, env=None):
         except OSError:
             pass
     print(line)
-    return added
+    root = os.environ.get("SIDEQUESTOR_WORKSPACE") or os.environ.get("YAAS_WORKSPACE")
+    if root and os.environ.get("SIDEQUESTOR_DISPATCH_TARGET") == "reactions":
+        from inbox import try_log_inbox
+        try_log_inbox(root, f"reaction-lifecycle:{channel}:{ts}:{state}:{added}", {
+            "event": "reaction_started" if state == "loading" else "reaction_finished",
+            "channel_id": channel, "thread_ts": ts, "message_ts": ts,
+            "note": f"Reaction {state}: {'confirmed' if complete else 'failed'}", "succeeded": complete,
+        })
+    return complete
 
 
 def main():
     args = sys.argv[1:]
-    if len(args) < 4 or args[0] != "advance" or args[3] not in ("loading", "done"):
-        print("usage: react-lifecycle.py advance <channel_id> <message_ts> <loading|done>",
+    if len(args) < 4 or args[0] != "advance" or args[3] not in ("loading", "done", "blocked"):
+        print("usage: react-lifecycle.py advance <channel_id> <message_ts> <loading|done|blocked>",
               file=sys.stderr)
         return 2
     channel, ts, state = args[1], args[2], args[3]

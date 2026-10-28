@@ -110,7 +110,7 @@ class RuntimeDocsTest(unittest.TestCase):
         )
         self.assertIn("mcp_externally_shared_channel_restricted", process_row)
         self.assertIn('"draft": true', process_row)
-        self.assertIn("ack it `blocked`", process_row)
+        self.assertIn("ack `blocked`", process_row)
 
     def test_shipped_config_and_operating_docs_use_resolvable_commands(self) -> None:
         # `<workspace>/yaas-triage/` does not exist in a pip install, so any command

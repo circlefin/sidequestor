@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import os
 import signal
 import subprocess
@@ -163,8 +164,14 @@ class Stage3FullWorkspaceTest(unittest.TestCase):
         self.assertEqual(bounded.stderr.count("Triage starting."), 2, bounded.stderr)
         self.assertTrue((self.workspace / "state" / "triage" / "last-run.json").exists())
 
+        try:
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+        except PermissionError:
+            self.skipTest("sandbox does not permit localhost socket binding")
         process = subprocess.Popen(
-            [str(YAAS), "--workspace", str(self.workspace), "dashboard", "serve", "0"],
+            [str(YAAS), "--workspace", str(self.workspace), "dashboard", "serve", str(port)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
         )
         try:

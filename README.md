@@ -19,8 +19,9 @@ A short checklist, so nothing surprises you halfway through:
   (`brew install uv` or `brew install pipx`). uv also downloads Python ≥ 3.11 when the Mac does
   not have it.
 - The command-line tools `jq`, `curl`, `openssl`, `security` and `open`.
-- An authenticated `claude`, `codex`, **or** `cursor-agent` CLI before workers start. Setup can
-  offer to install a missing Claude Code or Codex CLI if npm is available; Sidequestor never logs in for you.
+- A `claude`, `codex`, **or** `cursor-agent` CLI before workers start. Setup can
+  offer to install a missing Claude Code or Codex CLI if npm is available, and guides
+  you through the selected CLI's login when needed.
 
 Telegram user-session watches require the optional `sidequestor[telegram]` extra. The Slack setup
 script checks the command-line tools it needs before it runs, and
@@ -48,6 +49,13 @@ sq setup
 sq start
 ```
 
+The repository also includes `install.sh` for a fresh macOS install. It installs the
+PyPI package with uv when needed, creates `~/sidequestor` only when no workspace is
+registered, runs `sq setup`, and opens the dashboard. A separate `install-circle.sh.in`
+template is rendered for the personal Circle mirror; it supplies non-secret Slack app
+identifiers so colleagues do not have to paste an `.env` block. The template itself
+contains placeholders and is not the Circle installer.
+
 Nothing of yours is moved or overwritten: `sidequestor init .` only adds `.yaas` metadata alongside your existing files. `sq`, `sidequestor`, and `yaas` are all available aliases. The dashboard workspace label opens the current workspace in Cursor when available, or in macOS’s default IDE/file opener. Set `SIDEQUESTOR_IDE_APP` to prefer another application.
 
 One installation serves every workspace, and `sq` works in any new terminal without activating
@@ -59,27 +67,85 @@ A workspace-local virtualenv still works if you prefer one: `python3 -m venv .ve
 `source .venv/bin/activate`, then `python -m pip install sidequestor`. Its commands are available
 only while that environment is active, or by full path such as `.venv/bin/sq`.
 
+`sq start`, `sq stop`, and `sq dashboard` use your saved default workspace from any terminal directory. The first sole valid workspace is adopted automatically in the existing `~/.config/yaas/instances.json` registry (or the configured config home); no files are moved. With multiple workspaces, run `sq setup --select-workspace` once. Explicit `--workspace PATH` or `--instance ID` overrides the default. The selected workspace path is printed on lifecycle commands. `sq status` shows its path, saved dashboard address, and connection issues. `sq dashboard` opens the running dashboard; `sq dashboard url` prints its URL for scripts.
+
+The dashboard defaults to **http://localhost:8877**. Its port is saved in `.yaas/instance.json`; existing published addresses are retained on upgrade. Starting again reuses running jobs. A port conflict is reported without silently choosing 8878 or 8879. Stop Sidequestor before explicitly changing its port with `sq start --dashboard-port PORT`. Missing AI login or confirmed Claude MCP authentication failures pause affected dispatches without adding quest no-progress backoff; rerun `sq setup` to verify and resume.
+
 Background jobs record the PATH of the terminal that runs `sq start`, with the installation's own
 `bin` first, and `sq start` prints the agent CLI they will use. If it reports the CLI as missing,
 install it or set `SIDEQUESTOR_PATH` in the workspace `.env` to a PATH that contains it, then run
 `sq start` again.
 
-Commands use the current directory when it is an initialized workspace. From elsewhere, pass `--workspace PATH` or set `SIDEQUESTOR_WORKSPACE`; the legacy `YAAS_WORKSPACE` name remains accepted.
+Commands use your saved default workspace. Explicit `--workspace PATH`, `--instance ID`, or `SIDEQUESTOR_WORKSPACE` selects another workspace; the legacy `YAAS_WORKSPACE` name remains accepted. Ordinary starts preserve the workspace’s registered Python runtime. Setup and upgrades can refresh that binding explicitly.
 
 ## How do I set up the Slack app?
 
 1. Run `sq setup --manifest > slack-app-manifest.yaml`, then paste that YAML at api.slack.com → Create New App → From an app manifest.
 2. Choose the workspace and Install to Workspace; an administrator may need to approve it.
 3. Confirm that **Agents → Slack Model Context Protocol (MCP) Server** is enabled. The manifest requests this automatically; enable it there manually only if Slack or workspace policy leaves it off.
-4. In **OAuth and Permissions → User Token Scopes**, verify the 31 requested user scopes. There are no bot scopes. `reactions:read` may need workspace-admin approval; without it reaction monitoring silently finds nothing. `reactions:write` is required or lifecycle transitions fail with `missing_scope`.
+4. In **OAuth and Permissions → User Token Scopes**, verify the user scopes listed in the generated manifest. There are no bot scopes. `reactions:read` may need workspace-admin approval; without it reaction monitoring silently finds nothing. `reactions:write` is required or lifecycle transitions fail with `missing_scope`.
 5. If you grant a scope later, reinstall the app and run `sq setup` again.
 6. In Basic Information, copy the App ID and Client ID into `.env`, then complete OAuth.
 
 For an existing app, generate the updated manifest with `sq setup --manifest`, add the newly
 requested user scopes in the app's OAuth settings, reinstall the app, and run `sq setup` again to
-re-authorize the token. File uploads need `files:write`; attachment downloads need `files:read`.
+re-authorize the token. The manifest and OAuth flow use the same scope list in
+`setup/yaas-app-config.json`. It includes `channels:write` and `channels:write.invites`
+for public-channel management/invitations; these are not needed to create the private
+onboarding interface. Sidequestor's channel-creation helper still creates private channels
+only. File uploads need `files:write`; attachment downloads need `files:read`.
 
-The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-5.6-luna` at `high` effort. Setup checks both the Codex and Claude Code CLIs and offers an npm installation for either missing CLI when Codex or Claude is selected. It checks `cursor-agent` when Cursor is selected. npm installation requires Node.js; the Claude Code npm package requires Node.js 22 or later. Installation is optional, but the selected worker CLI must be available before setup starts jobs. CLI login remains a separate step. You can select `cursor` to use the authenticated `cursor-agent` CLI; leave `SIDEQUESTOR_CURSOR_MODEL` unset to use Cursor's default model, or set it to pin a model.
+The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-6.1-sol` at `high` effort. Setup checks both the Codex and Claude Code CLIs and offers an npm installation for either missing CLI when Codex or Claude is selected. It checks `cursor-agent` when Cursor is selected. npm installation requires Node.js; the Claude Code npm package requires Node.js 22 or later. Installation is optional, but the selected worker CLI must be available before setup starts jobs. Setup guides CLI login, verifies the selected model, and checks the Slack connection used by workers. Claude’s native Slack MCP authorization is separate from Sidequestor Slack OAuth; setup verifies both. Rerun `sq setup` to reconnect after credentials expire. Setup offers a CLI update; startup checks only advise and never install updates. You can select `cursor` to use the authenticated `cursor-agent` CLI; leave `SIDEQUESTOR_CURSOR_MODEL` unset to use Cursor's default model, or set it to pin a model.
+
+## How do I get guided onboarding?
+
+At the end of `sq setup`, choose `slack`, `terminal`, or `later`. Choosing Slack or terminal creates
+one onboarding quest for the workspace; `later` postpones it. The quest reviews what you already have, checks your connections, drafts
+your AGENTS.md and skills, proposes quests, and checks in until day 30. It asks before each change.
+
+```bash
+# Start or resume onboarding in your Slack DM.
+sq onboard --slack
+# Start or resume onboarding with your coding agent in this terminal.
+sq onboard --terminal [--codex|--claude|--cursor]
+```
+
+Running either command again resumes the same quest and switches its channel. The onboarding quest
+starts in your Slack DM and checks whether your current Slack connection can create a private
+channel. If it can, onboarding offers a channel such as `#alex-sidequestor-interface`.
+If that permission is absent, onboarding continues in your DM or terminal without asking you to
+reauthorize Slack. If you accept the available channel offer, it continues there and sets up a separate
+ongoing interface quest, so you can manage Sidequestor in plain language after onboarding
+ends. You approve the channel name and any required review in the dashboard; the agent
+performs the technical steps. No terminal is needed for routine use.
+
+Text-send permissions stay limited to your verified DM and approved interface channel
+(`allow_send_channels`); other actions retain their normal approvals. Slack must be
+configured before choosing it. Without Slack, background check-ins are recorded for your next
+terminal session. Channel preferences live separately from progress so a worker cannot undo a switch.
+The agent selects a verified, granted and watched channel with `sq onboard --slack-channel CHANNEL_ID`;
+this selection does not create channels or grant new permissions. `sq onboard --slack-dm`
+returns onboarding to the verified owner DM if the channel becomes unavailable.
+
+## How do I create a private Slack channel?
+
+After upgrading, add `groups:write`, `groups:write.invites`, and `groups:write.topic` to
+**User Token Scopes**, reinstall the Slack app, and run `sq setup` again to authorize them.
+The generated manifest includes these scopes.
+
+```bash
+sq slack-channel create '{"interactive":true,"name":"project-planning"}'
+sq slack-channel invite '{"interactive":true,"channel_id":"C...","users":["U...","U..."]}'
+sq slack-channel topic '{"interactive":true,"channel_id":"C...","topic":"Project planning"}'
+sq slack-channel purpose '{"interactive":true,"channel_id":"C...","purpose":"Coordinate the project"}'
+```
+
+Creation always sets `is_private: true`. For automated quest work, replace `interactive`
+with `quest_id`; the quest needs `allow_send: true` or an exact claimed approval from
+`sq slack-channel approval-spec '{"action":"create","name":"project-planning"}'`.
+Each operation is separate, so a failed invitation never causes the channel to be recreated.
+Exit 3 means the remote outcome is uncertain or the action succeeded but logging failed:
+inspect Slack before retrying. No channel is created by upgrading or running setup.
 
 ## What permissions does the worker need?
 
@@ -112,6 +178,102 @@ it as a guard against mistakes rather than a security boundary. The packaged `ya
 `skills/`, `.agents/skills/`, and `.claude/skills/` when workspace resources sync.
 For a reply, include `"thread_ts":"<parent ts>"`. If sending exits 3, the file may already be
 posted; inspect the Slack conversation before trying again.
+
+## How do I configure Notion watches?
+
+Notion polling is opt-in: append `notion` to `SIDEQUESTOR_CHECKER_CONNECTORS` in
+your workspace `.env` (for example `slack,email,github,jira,notion`). Create an API-token
+connection in Notion, enable **Read content** and **Read comments**, and connect it to the
+parent page containing the content to watch. Child pages inherit access. Store its token
+in macOS Keychain as service `sidequestor-notion`, account `sidequestor`, or set
+`NOTION_TOKEN` in the checker environment. Never put tokens in watch entries or commands.
+Optional `NOTION_KEYCHAIN_SERVICE`, `NOTION_KEYCHAIN_ACCOUNT`, and `NOTION_KEYCHAIN_PATH`
+select another Keychain item. If no service is configured and the default is missing,
+the original `sidequestor-notion-test` item is accepted as a compatibility fallback. No Notion connector or Python dependency is required.
+
+To store or replace the token without it appearing in shell history, run
+`sq credentials set-token notion` in a terminal and paste it at the hidden prompt. It
+updates the item the checkers already read (honouring the optional selectors above) and
+creates `sidequestor-notion` only when none exists. `sq credentials set-token jira` does
+the same for the Jira token (service `jira-api-token`, account `yaas`). Neither command
+changes any setting names, so existing setups need no changes.
+
+| Watch type | Required target | Coverage |
+|---|---|---|
+| `notion_page` | `page_id` UUID | Root page properties/content, nested blocks, and comments/replies on the page and blocks. New blocks enroll automatically. |
+| `notion_data_source` | `data_source_id` UUID, or single-source `database_id` | Every current and newly discovered item gets the same page/block/comment coverage. |
+| `notion_comments` | `block_id` UUID (page IDs are valid) | Comments/replies throughout the selected page/block tree; body edits alone do not trigger it. |
+
+```bash
+sq watch QUEST_ID '{"type":"notion_page","page_id":"YOUR-PAGE-UUID","reason":"Spec and discussion changes"}'
+sq watch QUEST_ID '{"type":"notion_data_source","database_id":"YOUR-DATABASE-UUID","reason":"Tasks and their discussions"}'
+sq watch QUEST_ID '{"type":"notion_comments","block_id":"YOUR-PAGE-UUID","reason":"Discussion only"}'
+```
+
+A page with 100 blocks remains **one watch**. Discovery and scanning run in Python,
+without LLM tokens; only pending changes dispatch the worker. Comment checks never rely
+on page edit timestamps. Comment IDs and content fingerprints detect new comments,
+replies and same-minute edits. Repeated changes are coalesced until acknowledged.
+
+**Subpages are opt-in.** `subpage_depth` defaults to `0` (integer 0–100). Set
+`include_subpage_content: true` and/or `include_subpage_comments: true` independently
+and give a positive depth. `1` includes direct children; `2` also includes grandchildren.
+Existing and newly discovered subpages follow the same boundary. A database item's
+page starts at depth zero. Ordinary nested blocks do not consume subpage depth.
+Child databases, hyperlinks, mentions and relations do not expand the scope; add an
+explicit data-source watch for database items.
+
+```json
+{"type":"notion_page","page_id":"YOUR-PAGE-UUID","subpage_depth":1,"include_subpage_comments":true,"include_subpage_content":false,"reason":"Root plus direct-child discussions"}
+```
+
+**Bounded, resumable scans.** `max_requests` defaults to 8 per invocation (1–50),
+`scan_seconds` to 8 (3–30), and `max_entities` to 10000 (1–100000, counting pages,
+blocks and comments). Legacy `max_pages` is accepted as a per-invocation request-budget
+alias when `max_requests` is absent. Pagination is resumed across invocations, including
+comment lists, rather than restarting at a fixed page cap. Breadth-first traversal and
+visited-ID tracking prevent loops. The pending inbox has a 10000-resource change limit;
+reaching a limit holds further scanning visibly until acknowledged or scope is adjusted.
+
+Scans share a 20-second private API response cache and a connection-level request queue
+within the workspace. Rate limits honor `Retry-After`. Requests and CPU still cost time:
+a full comment sweep of 100 blocks can require about 100 requests. Larger scopes take
+multiple ticks. The dashboard shows scanning/limited/error state, pending tasks, limits
+and the last complete scan; incomplete coverage is never presented as a clean full scan. Normal incremental progress returns
+a clean result with the delivery cursor unchanged, avoiding stalled-watch backoff;
+that result does not mean the tree scan has completed.
+
+**Durable delivery.** Workspace-local `state/notion/collector.sqlite3` stores scan progress,
+fingerprints, pending changes and the short-lived cache, with private permissions. Keep
+this state when upgrading or backing up; deleting it discards scan/delivery history.
+A watch's `last_checked_ts` becomes a local delivery cursor, **not a Notion timestamp**.
+Worker acknowledgement advances that cursor; failed/blocked workers retain pending changes.
+The worker reads pending targets with the read-only `notion-state.py` helper described in
+the dispatch skill. No per-block quest watches are created. Changing depth/comment/content
+scope creates a distinct identity; retire and recreate a watch through supported commands
+rather than editing watch JSON. Budgets do not change membership identity.
+
+Initial scans baseline older content and conservatively replay the cursor's minute to
+avoid losing rounded timestamps. Newly discovered resources after baseline are monitored
+automatically, including their available comments. A partial tree scan can deliver a proven
+pending-change prefix while traversal continues; the dashboard reports that distinction.
+
+Polling is not an event log. Comments resolved/deleted before their scan, inaccessible
+resources, intermediate edits, and ambiguous disappearances cannot be reconstructed.
+A missing child is a structure change, not proof of deletion. A 404 means missing content
+or missing access. Missing/unsupported descendants become visible coverage gaps while
+other branches continue; the collector retries them on later cycles without guessing
+that they were deleted. An unavailable selected root still requires configuration repair. Source queries exclude trashed items; a direct
+page watch can observe an API-visible trash edit. `include_archived` defaults to `true` for
+source archive partitions; set it to `false` to exclude those rows. Server-incomplete source
+queries hold visibly and require narrower scope. Wiki data sources need explicit page watches.
+No webhooks or OAuth onboarding are required. Production checkers/read bridges never write
+Notion content.
+
+For an opt-in live test from a source checkout, run
+`python tests/manual/notion_checkers.py --allow-test-writes --page-id PAGE_UUID --database-id DATABASE_UUID`.
+This additionally needs Insert/Update content and Insert comments. It creates its own
+fixtures in the disposable test parent/database and trashes only those fixtures afterward.
 
 ## How do I authorize Telegram or X watchers?
 
@@ -162,6 +324,10 @@ SIDEQUESTOR_CHECKER_CONNECTORS=slack,email,github,jira,telegram,x
 
 Disabling a connector does not delete its watches or advance their watermarks. The older
 `SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0` setting remains an additional Slack-only kill switch.
+Connector edits take effect on the next tick; explicitly exported environment variables
+still override `.env`. Creating a disabled watch is rejected unless you deliberately pass
+`--allow-dormant` to `sq watch` or `sq new-quest` to stage inactive setup. Retired and disabled
+watches are excluded from checker-health warnings, and housekeeping clears their old backoff.
 
 Available X polling types are `x_search`, `x_mentions`, `x_user_posts`, `x_home`, and `x_dm`.
 They cover recent search, the authorized account's mentions and home timeline, posts from a
@@ -247,6 +413,10 @@ sq setup --production install
 sq start
 # Stop every job for the current workspace; the instance ID is optional here.
 sq stop
+# Pause now for time away; equivalent to sq stop.
+sq pause
+# Resume when you return; equivalent to sq start.
+sq resume
 # List currently running Sidequestor instances and their exact workspaces.
 sq instances list
 # Include stopped or historical registered workspaces as well.
@@ -260,6 +430,30 @@ sq stop INSTANCE_ID
 # Print the installed package build identity.
 sq --version
 ```
+
+`sq pause` stops triage, heartbeat, and the dashboard using the same verified lifecycle
+as `sq stop`. It can interrupt an active worker; it does not wait for that worker to
+finish. Quests, watermarks, history, and approval state are preserved. The managed jobs
+remain stopped across reboots until you explicitly start/resume them. The dashboard is
+unavailable while stopped. Resume uses the installation running your command, just like
+`sq start`; use the workspace's virtualenv command when it has its own installation.
+Existing watches and previously approved work continue normally after resuming.
+
+Use `sq --workspace /path/to/workspace pause` or `resume` to select a workspace, or
+`sq pause INSTANCE_ID` to pause a registered instance. `resume --dashboard-port PORT`
+can select a specific dashboard port. This first version has no scheduled dates or
+automatic resumption and is not a policy lock: an explicit `sq start` or `sq tick`
+can still run work.
+
+## How do I get briefings?
+
+Open **Briefings**. If the archive is empty, use **Create a morning briefing quest**
+or **Create a one-off briefing quest** to open an editable example in the usual quest
+creation dialog. Choose the topic, sources, and timing before submitting; opening an
+example does not create or schedule anything. You can also ask an existing quest's
+agent to save a Markdown briefing with a `# Title` in `state/briefs/`. Files there
+appear automatically in the Briefings archive. Saving a local brief does not authorize
+posting or emailing it.
 
 ## How do I work on one quest in a terminal?
 
@@ -351,6 +545,41 @@ want the full lifecycle. Versions before 0.1.44 require a workspace even for a p
 upgrade; from a fresh folder, upgrade once with the installing tool directly, then use `sq upgrade`
 normally.
 
+You do not need to check for releases yourself. While a workspace's jobs are running, its
+heartbeat job asks PyPI once a day whether a newer version exists. When one does, the dashboard
+header shows it, `sq doctor` prints it, and you get one desktop notification per new version.
+Each detected stable release also creates one Inbox review item. Approve it to run an
+independent background upgrade job after the current tick finishes. It stops the workspace,
+upgrades, syncs resources, runs `sq doctor`, restarts previously running jobs, and logs the
+outcome in Inbox. On failure, the item returns to review with terminal recovery directions.
+If validation leaves the service stopped, a desktop notification also points to recovery;
+Sidequestor does not restart a package that failed validation.
+This handoff currently requires macOS launchd. Do not run `sq upgrade` inside a dispatched
+worker: stopping the service can kill that worker. A separate terminal remains a fallback.
+Dismissal is remembered, and installed or superseded versions close their old notices.
+Click the dashboard's build/version control to check for updates now (limited to once a minute).
+It reports checking, an available release, already current, rate limiting, or failure.
+Nothing upgrades on its own. Set `SIDEQUESTOR_UPDATE_CHECK=0` in the workspace `.env` to turn the
+check off.
+
+Sidequestor also watches for explicit authentication/configuration failures, repeated checker
+errors, and failed worker dispatches. It asks the configured harness for a read-only diagnosis
+and a repair proposal for review; it does not apply the repair during diagnosis. Proposals
+state whether the fix can run headlessly, needs an interactive terminal/browser session, or
+needs further investigation. Shared problems go to Inbox; quest-specific problems stay with
+their quest. If the harness cannot launch, Sidequestor writes recovery directions directly.
+Suspected packaged-code defects instead produce a sanitized email bug report addressed to
+`guangmian.kung@circle.com` for manual review. No report is sent without approval. Reports
+include the verified running version and a minimal reproduction, not private Slack content
+or credentials. Installed package files and watch watermarks are not edited as a workaround;
+an upgrade is a remedy only when a released fix has been verified. Reporting a defect is not
+proof of recovery: the health issue remains until a real check succeeds.
+The Gmail helpers require exact claimed approval for maintainer-directed mail, including
+replies, CCs and plus aliases, even in a send-enabled quest. Real replies resolve their
+audience before applying this check; drafts remain unsent and ungated.
+Inbox is permanent and is restored automatically, including outstanding review watches.
+Reaction actions, source/result links where available, and outcomes are recorded in Inbox.
+
 One uv or pipx installation is shared by every workspace, so `sq upgrade` restarts only the
 workspace it runs in and lists any other running workspaces that need `sq --workspace PATH start`
 to pick up the new version.
@@ -368,7 +597,9 @@ If the installed command itself is broken, upgrade with the installing tool dire
 
 `.env`, `settings.json`, `state/`, `logs/`, and your personal `skills/` survive. `.yaas/engine/current/` is wiped and rebuilt every sync; hand-edits there are intentionally lost. An existing `.env` never gains newly added knobs because `provision_env` fills only placeholders, so diff it against `.env.example` after upgrading. Plists embed the installation’s absolute interpreter path: upgrading in place is fine, but recreating the environment (for example `uv tool install --force` with a different Python, or a new venv) means running `sq start` again.
 
-Reaction defaults are now standard Unicode names: `robot_face`, `hourglass_flowing_sand`, and `white_check_mark`. Items already queued under an old emoji in `state/triage/pending_reactions.json` are not picked up again, and a message already wearing the old loading emoji keeps it. To keep the old set, pin it with `SIDEQUESTOR_REACTION_PROCESS_EMOJI`, `SIDEQUESTOR_REACTION_LOADING_EMOJI`, and `SIDEQUESTOR_REACTION_DONE_EMOJI`.
+Reaction defaults use standard names: `robot_face`, `hourglass_flowing_sand`, and `white_check_mark`. Pickup is queued before harness launch; durable status delivery retries Slack failures without repeating completed actions. Blocked work shows `warning` (configurable with `SIDEQUESTOR_REACTION_BLOCKED_EMOJI`); exhausted retries create an Inbox review. Conscious no-action outcomes show done. Save reactions remain silent. Existing historical loading-only orphans are not automatically replayed. To retain a custom set, pin `SIDEQUESTOR_REACTION_PROCESS_EMOJI`, `SIDEQUESTOR_REACTION_LOADING_EMOJI`, and `SIDEQUESTOR_REACTION_DONE_EMOJI`.
+
+The configurable `expand` reaction defaults to 🪄 (`magic_wand`). Its first scan leaves pre-existing wand reactions alone, so upgrading does not turn old reactions into edit requests. It expands your own Slack message in place, then carries out its explicit requests or creates a quest for ongoing work. It uses the same processing/done/blocked lifecycle as other action reactions. The edit helper verifies ownership, checks for intervening edits, and retains a separate edit receipt so retries do not expand a completed edit again. Set `SIDEQUESTOR_REACTION_EXPAND_EMOJI` to choose another trigger.
 
 ## Something looks wrong. Now what?
 

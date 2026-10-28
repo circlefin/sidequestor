@@ -36,6 +36,33 @@ class WatcherStatusDashboardTest(unittest.TestCase):
         with patch.object(sys, "argv", ["dashboard-server.py"]):
             spec.loader.exec_module(self.server)
 
+    def test_notion_targets_link_and_access_remediation(self) -> None:
+        page_id = "00000000-0000-0000-0000-000000000001"
+        for kind, key in (("notion_page", "page_id"),
+                          ("notion_data_source", "database_id"),
+                          ("notion_comments", "block_id")):
+            link, surface = self.server._watch_link({key: page_id}, kind, None, None)
+            self.assertEqual(surface, "notion")
+            self.assertTrue(link.endswith(page_id.replace("-", "")))
+            issue = self.server._watch_issue("misconfig", {"type": kind})
+            self.assertIn("page access grants", issue["next"])
+        self.assertEqual(self.server._watch_link({"page_id": "https://evil"},
+                                                "notion_page", None, None), (None, None))
+
+    def test_notion_coverage_read_is_visible_without_creating_state(self) -> None:
+        page_id = "00000000-0000-0000-0000-000000000001"
+        entry = {"watch_id": "watch-abcd", "type": "notion_page", "page_id": page_id}
+        self.assertEqual(self.server._notion_coverage(entry)["status"], "not_started")
+        self.assertFalse((self.workspace / "state" / "notion").exists())
+        with patch.dict(os.environ, {"NOTION_STATE_DIR": str(self.workspace / "notion-test")}):
+            module = self.server._NOTION_INSPECTOR
+            with patch.object(module, "inspect", return_value={"coverage": {
+                    "status": "scanning", "pending_tasks": 99, "last_complete_scan": None}}):
+                coverage = self.server._notion_coverage(entry)
+            self.assertEqual(coverage["pending_tasks"], 99)
+            self.assertIsNone(coverage["last_complete_scan"])
+        self.assertIsNone(self.server._notion_coverage({"type": "slack_thread"}))
+
     def _quest(self) -> Path:
         quest = self.workspace / "state" / "quests" / "active" / "quest-one"
         quest.mkdir(parents=True)

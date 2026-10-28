@@ -23,6 +23,7 @@ yaas-triage/
 │   └── tick_dispatch.py      ←   the dispatch gates: slack-need, budget/fanout/slice
 ├── triage-loop.sh            ← the launchd wrapper that sleeps between ticks (runs tick.py)
 ├── checkers/                 ← one script per watch type (plugin directory)
+│   ├── notion_page.py · notion_data_source.py · notion_comments.py ← known Notion resources
 │   ├── slack_thread.py · slack_channel.py · slack_dm.py · slack_mention.py
 │   ├── schedule.py · email.py
 │   ├── jira.py               ← Jira issues via ../surfaces/jira-call.sh (no MCP needed)
@@ -110,7 +111,7 @@ Environment variables available to all checkers (exported by the orchestrator af
 
 ### The reactions sweep
 
-`checkers/reactions.py` is special — it doesn't follow the per-entry interface. It runs once per triage tick (called directly by the orchestrator with 4 positional args) and sweeps Slack globally for the configured process, draft, save, and adopt reactions across a 60-day window. `.env.example` lists their defaults and override variables. The configured names still map to fixed semantic state files under `state/`. New reactions → writes `state/triage/pending_reactions.json`.
+`checkers/reactions.py` is special — it doesn't follow the per-entry interface. It runs once per triage tick (called directly by the orchestrator with 4 positional args) and sweeps Slack globally for the configured process, draft, save, adopt, and expand reactions across a 60-day window. `.env.example` lists their defaults and override variables. The configured names still map to fixed semantic state files under `state/`. New reactions → writes `state/triage/pending_reactions.json`.
 
 ### Watermark lag
 
@@ -262,6 +263,16 @@ GWS release contains the upstream fix.
 
 Deterministic quest scaffolding. Takes a JSON spec on argv or stdin, creates the four-file folder under `state/quests/active/`, validates fields, injects `last_checked_ts` so the worker can never forget it. See `.yaas/engine/current/skills/yaas-quest-creation/SKILL.md`.
 
+### `sq slack-channel`
+
+Create private channels, invite users, and set topics/descriptions through the rotating
+Slack user token. Read `yaas-slack-channel/SKILL.md` for payloads, exact approvals, and
+uncertain-outcome handling. Creation always sets `is_private: true`. Existing installs
+need the three `groups:write*` scopes, app reinstallation, and `sq setup` reauthorization.
+Use `interactive: true` only for explicit manual work outside dispatch; otherwise pass
+an active `quest_id` with send permission or an exact claimed approval. Force-draft
+mode blocks all channel mutations. Successful quest operations log automatically.
+
 ### `sq slack-file`
 
 `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack-file.py`. The Slack MCP can neither upload a
@@ -320,7 +331,12 @@ in macOS Keychain at `(service=slack-oauth-token-bundle, account=yaas)`, runs a 
 and offers the triage, independent heartbeat, and dashboard launchd jobs. It can also initialize
 opt-in daily template tracking and run verification. Each user creates their own Slack app at
 https://api.slack.com/apps from the manifest printed by `setup.sh --manifest`; the manifest and
-OAuth flow share `setup/yaas-app-config.json`, so their scopes cannot drift.
+OAuth flow share `setup/yaas-app-config.json`, so their scopes cannot drift. The list
+includes `channels:write` and `channels:write.invites` alongside the private-channel
+`groups:write`, `groups:write.invites` and `groups:write.topic` scopes. The public-channel
+scopes are not needed for the private onboarding interface; channel creation through
+`sq slack-channel` remains private-only. Existing apps must add new scopes, reinstall
+and rerun `sq setup` to re-authorize; upgrading the package alone does not grant access.
 
 The deterministic Slack adapter refreshes within five minutes of access-token expiry. It also
 refreshes and retries once after a definitive token rejection. `python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack_credentials.py" status`
@@ -377,6 +393,7 @@ come up while debugging:
 | `SIDEQUESTOR_CHECKER_ERROR_PROMOTE` | 6 | Consecutive checker errors before backoff becomes `misconfig`. |
 | `SIDEQUESTOR_TRIAGE_MAX_PARALLEL` | 1 | Peak concurrent Slack calls. Raising this makes rate-limit trips much more likely. |
 | `SIDEQUESTOR_LOG_RETAIN_DAYS` | 14 | Per-dispatch worker logs older than N days are deleted each tick. `0` disables. |
+| `SIDEQUESTOR_UPDATE_CHECK` | 1 | Daily PyPI release check by the heartbeat job, cached in `state/update-status.json` and shown in the dashboard header and `sq doctor`. `0` disables. Never upgrades; mention a pending update only when the user asks about Sidequestor itself. |
 | `SIDEQUESTOR_RETIRE_DEFAULT_DAYS` | 14 | Default age threshold for retiring stale `slack_thread` watches. Per-quest override via `retire_slack_threads_after_days` in meta.json (`false` or `0` = never). |
 
 Current spend against the ceilings:
@@ -395,3 +412,47 @@ Current spend against the ceilings:
 | Triage lock stuck | Check `logs/triage.lock.holder`. If PID is dead, the OS releases the lock automatically on next tick |
 | `LastExitStatus = 512` on launchd | Exit code 2 — a bad `.env` knob (a spend/limit value that isn't numeric) makes the orchestrator refuse to run (`gate_bad_env_knob`). Fix the value in `.env`; run `sq tick` manually to see it. (The old bash orchestrator exited 2 the same way on `.env` syntax errors under `set -eu`.) |
 | `LastExitStatus = 36608` on launchd | Exit 143 (SIGTERM). Expected if the worker watchdog killed a runaway dispatch; or if macOS slept mid-run. |
+
+### Notion polling
+
+Opt in with `notion` in `SIDEQUESTOR_CHECKER_CONNECTORS`. `notion_page` takes `page_id`,
+`notion_data_source` takes `data_source_id` or single-source `database_id`, and
+`notion_comments` takes `block_id` (page/block). The first two include nested block content
+and comments; comments-only watches ignore body changes. Database items enroll automatically.
+A 100-block page is one watch. `subpage_depth=0` stops at child-page boundaries; positive
+values (maximum 100) combine with independent `include_subpage_content` and
+`include_subpage_comments` booleans. Child databases/links are not traversed.
+
+The transport `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/notion-call.py` uses `NOTION_TOKEN`
+or Keychain (`NOTION_KEYCHAIN_SERVICE=sidequestor-notion`, `NOTION_KEYCHAIN_ACCOUNT=sidequestor`,
+optional `NOTION_KEYCHAIN_PATH`). Legacy `sidequestor-notion-test` remains a fallback if the
+default is absent and no service is explicitly configured. Both content/comment capabilities
+and explicit parent-page grants apply. Tokens never belong in watch entries or logs.
+
+`state/notion/collector.sqlite3` is a private durable store (directory 0700, database 0600).
+It contains fingerprint baselines, resumable BFS work, a pending inbox and a shared 20-second
+API cache. Preserve it across restarts/upgrades. `max_requests` (default 8, 1–50),
+`scan_seconds` (default 8, 3–30) and `max_entities` (default 10000, 1–100000) bound work.
+`max_pages` is retained as a request-budget alias. Visited IDs prevent cycles. Pending changes
+are coalesced by resource and bounded at 10000; acknowledge outstanding work before exceeding
+that limit. Limits/incomplete server responses hold visibly rather than pretending complete
+coverage. Rate limits share a cooldown and honor Retry-After within the workspace.
+
+The dashboard shows scan status, pending tasks, scope limits and last complete scan. Inspect
+pending changes without network requests using
+`python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/notion-state.py" '<exact watch JSON>'`.
+The cursor is a local delivery token; never use it as a Notion timestamp. Initial baselines
+may replay the cursor's minute because Notion rounds timestamps. Snapshot fingerprints catch
+same-minute edits. A durable pending prefix may dispatch while other branches remain scanning;
+acknowledged cursors clear only that prefix, and a later edit survives an earlier worker ack.
+
+No `.lag` files are needed and no webhooks are used. Idle scans use no LLM tokens, but API
+requests and CPU still consume time. Source trash enumeration, resolved/deleted comments,
+inaccessible content and intermediate edits remain limitations. Normal production bridges
+never write Notion content. Changing scope requires supported watch retirement/recreation.
+
+Notion multi-tick progress returns clean with the same delivery cursor, so ordinary
+scanning never increments stalled-watch backoff. Descendant 400/404 reads produce
+`coverage_gap` events and partial coverage while other branches continue. Root
+failures still require repair. The worker inspector fails when state/scope is missing;
+only dashboard reads may explicitly request not_started status.

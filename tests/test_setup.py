@@ -39,7 +39,7 @@ class SetupTests(unittest.TestCase):
 
             self.assertIn("SIDEQUESTOR_AGENT=claude", content)
             self.assertIn("CUSTOM_VALUE=keep-me", content)
-            self.assertIn("SIDEQUESTOR_CLAUDE_MODEL=claude-opus-4-6", content)
+            self.assertIn("SIDEQUESTOR_CLAUDE_MODEL=claude-opus-5-5", content)
             self.assertIn("SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0", content)
 
     def test_init_does_not_create_backend_instruction_files(self):
@@ -60,7 +60,7 @@ class SetupTests(unittest.TestCase):
             provision_env(workspace, interactive=False)
 
             content = workspace.env_file.read_text()
-            self.assertIn("SIDEQUESTOR_CODEX_MODEL=gpt-5.6-luna", content)
+            self.assertIn("SIDEQUESTOR_CODEX_MODEL=gpt-6.1-sol", content)
             self.assertIn("SIDEQUESTOR_CODEX_EFFORT=high", content)
             self.assertIn("SIDEQUESTOR_CODEX_PERMISSION_MODE=bypassPermissions", content)
 
@@ -217,11 +217,12 @@ class SetupTests(unittest.TestCase):
             with patch("sidequestor.setup.sync_resources"), \
                  patch("sidequestor.setup.provision_env"), \
                  patch("sidequestor.setup.check_worker_clis", return_value=False) as check, \
+                 patch("sidequestor.setup.verify_slack_helper", return_value=False), \
                  patch("sidequestor.setup.install_production") as install, \
                  redirect_stdout(StringIO()):
                 result = run_setup(workspace, Path("/usr/bin/python3"), input_fn=decline)
             self.assertEqual(result, 1)
-            self.assertTrue(any("Slack OAuth" in prompt for prompt in prompts))
+            self.assertTrue(any("Connect Sidequestor to Slack" in prompt for prompt in prompts))
             check.assert_called_once()
             install.assert_not_called()
 
@@ -320,9 +321,10 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(current_engine_version(workspace), ENGINE_VERSION)
             self.assertTrue((destination / "skills" / "yaas-ops" / "SKILL.md").is_file())
             for parent in ("skills", ".agents/skills", ".claude/skills"):
-                link = workspace.root / parent / "yaas-slack-file"
-                self.assertTrue(link.is_symlink())
-                self.assertTrue((link / "SKILL.md").is_file())
+                for name in ("yaas-slack-file", "yaas-slack-channel"):
+                    link = workspace.root / parent / name
+                    self.assertTrue(link.is_symlink())
+                    self.assertTrue((link / "SKILL.md").is_file())
 
     def test_sync_resources_is_idempotent_and_prunes_stale_skill_symlinks(self):
         with tempfile.TemporaryDirectory() as raw:

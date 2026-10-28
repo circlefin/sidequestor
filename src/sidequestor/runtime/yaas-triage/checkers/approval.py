@@ -115,6 +115,10 @@ def main():
 
     status = item.get("status", "pending_review")
 
+    if item.get("target", {}).get("action") == "sidequestor_upgrade":
+        result.counted(0, "upgrade belongs to the independent upgrade job, not a worker")
+        return
+
     if status == "reviewed":
         result.counted(1, f"manual review complete — {approval_id}")
     elif status == "needs_reply":

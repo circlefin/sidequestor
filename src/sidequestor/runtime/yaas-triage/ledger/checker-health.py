@@ -62,6 +62,10 @@ due <watch_id>
 prune [days]
     Drop entries whose last error is older than `days` (default 30). Guards
     against unbounded growth from watches that have since been deleted.
+
+prune-inactive
+    Clear records for retired watches or disabled connectors. Preserve all records
+    if live watch state is unreadable. Called under the triage lock by housekeeping.
 """
 
 import fcntl
@@ -214,8 +218,25 @@ def cmd_prune(days: str = "30"):
         print(f"pruned {n} stale checker-health entr(ies)")
 
 
+def cmd_prune_inactive():
+    from tick_state import Config, BadEnvKnob
+    try:
+        live = Config(RUNTIME_ROOT, repo_root=REPO_ROOT).active_checker_ids()
+    except (BadEnvKnob, ValueError) as exc:
+        print(f'error:invalid_checker_configuration:{exc}', file=sys.stderr)
+        raise SystemExit(2)
+    if live is None:
+        print('skip:unreadable_watch_state', file=sys.stderr)
+        return
+    def apply(data):
+        for wid in list(data):
+            if wid not in live:
+                data.pop(wid)
+    _mutate(apply)
+
+
 def main():
-    if len(sys.argv) < 3 and (len(sys.argv) < 2 or sys.argv[1] != "prune"):
+    if len(sys.argv) < 3 and (len(sys.argv) < 2 or sys.argv[1] not in ("prune", "prune-inactive")):
         print(__doc__)
         sys.exit(1)
     cmd = sys.argv[1]
@@ -225,6 +246,8 @@ def main():
         cmd_ok(sys.argv[2])
     elif cmd == "due":
         cmd_due(sys.argv[2])
+    elif cmd == "prune-inactive":
+        cmd_prune_inactive()
     elif cmd == "prune":
         cmd_prune(sys.argv[2] if len(sys.argv) > 2 else "30")
     else:

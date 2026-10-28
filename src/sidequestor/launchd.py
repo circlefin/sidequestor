@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import plistlib
 import re
 import signal
 import shutil
@@ -13,7 +14,7 @@ import time
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from .workspace import Workspace
+from .workspace import Workspace, workspace_lock
 from .build_info import build_info
 from .job_path import JobPath, resolve_job_path
 
@@ -375,7 +376,78 @@ def _plist(values: dict) -> str:
     return "\n".join(lines)
 
 
-def install_production(
+def _same_production_jobs(previous, jobs):
+    for name, job in jobs.items():
+        old = previous.get("jobs", {}).get(name, {})
+        if old.get("arguments") != job["arguments"] or old.get("label") != job["label"]:
+            return False
+        try:
+            if plistlib.loads(Path(old["plist"]).read_bytes()) != plistlib.loads(_plist(job["values"]).encode()):
+                return False
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+    return True
+
+
+def runtime_environment() -> dict[str, str]:
+    """Keep interpreter verification and execution on the same import path."""
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    return environment
+
+
+def start_executable(workspace: Workspace, requested: Path) -> Path:
+    """Ordinary starts retain the interpreter already registered to this workspace."""
+    previous = production_status(workspace) or {}
+    registered = previous.get("python")
+    requested = _preserve_executable_path(requested)
+    if not registered or registered == str(requested):
+        return requested
+    registered = Path(registered)
+    if not registered.is_absolute() or not registered.is_file() or not os.access(registered, os.X_OK):
+        raise LaunchdLifecycleError("This workspace's registered Sidequestor runtime is unavailable. Run sq setup to repair it; existing jobs were left unchanged.")
+    try:
+        result = subprocess.run([str(registered), "-P", "-c", "import sidequestor"],
+                                env=runtime_environment(), check=False, capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LaunchdLifecycleError("Cannot verify this workspace's registered runtime. Run sq setup to repair it.") from exc
+    if result.returncode:
+        raise LaunchdLifecycleError("Sidequestor is missing from this workspace's registered runtime. Run sq setup to repair it.")
+    return registered
+
+
+def install_production(workspace: Workspace, executable: Path, dashboard_port: int = 0, *, replace_runtime: bool = False) -> dict:
+    from .dashboard import saved_dashboard_port, wait_for_dashboard_port, stop_dashboard_process
+
+    with workspace_lock(workspace):
+        if not replace_runtime:
+            executable = start_executable(workspace, executable)
+        port = saved_dashboard_port(workspace)
+        previous = production_status(workspace)
+        running = production_is_running(workspace)
+        if running and dashboard_port and dashboard_port != port:
+            raise LaunchdLifecycleError("Stop Sidequestor before changing its dashboard port.")
+        port = dashboard_port or port
+        job_path = resolve_job_path(workspace, _preserve_executable_path(executable))
+        jobs = _production_jobs(workspace, executable, port, job_path)
+        if running and _same_production_jobs(previous, jobs):
+            return previous
+        if previous and previous.get("running"):
+            # A changed launcher/PATH or partial job set needs repair on the saved port.
+            # Stop only this instance's exact recorded labels before reinstalling.
+            _stop_production(workspace)
+        stop_dashboard_process(workspace)
+        if not wait_for_dashboard_port(port, timeout=3 if previous else 0):
+            raise LaunchdLifecycleError(
+                f"Dashboard port {port} is occupied. Stop the existing instance or application; "
+                "Sidequestor will not change ports."
+            )
+        saved_dashboard_port(workspace, port)
+        return _install_production(workspace, executable, port)
+
+
+def _install_production(
     workspace: Workspace, executable: Path, dashboard_port: int = 0,
 ) -> dict:
     """Install package jobs, replacing this workspace's previous package labels."""
@@ -513,6 +585,18 @@ def uninstall_production(workspace: Workspace) -> bool:
 
 
 def stop_production(workspace: Workspace) -> bool:
+    from .dashboard import saved_dashboard_port, stop_dashboard_process
+    with workspace_lock(workspace):
+        try:
+            saved_dashboard_port(workspace)
+        except (SystemExit, OSError):
+            pass  # A damaged port setting must not prevent stopping owned jobs.
+        stopped = _stop_production(workspace)
+        foreground = stop_dashboard_process(workspace)
+        return stopped or foreground
+
+
+def _stop_production(workspace: Workspace) -> bool:
     """Stop this workspace's production jobs while retaining their manifest."""
     manifest = production_status(workspace)
     if not manifest:
