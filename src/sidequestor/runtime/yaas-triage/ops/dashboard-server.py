@@ -230,6 +230,26 @@ def _read_approvals() -> dict:
     return approval_store.read_queue()
 
 
+def _live_approval_items(data: dict) -> list:
+    """Exclude known closed quests without hiding missing or unreadable quests.
+
+    Workers move completed/cancelled quests without necessarily closing their
+    approval records. Those records remain history, not work awaiting a decision.
+    An active copy wins if a quest is being restored.
+    """
+    quests = STATE_DIR / "quests"
+    closed = set()
+    for bucket in ("completed", "archived"):
+        try:
+            closed.update(p.name for p in (quests / bucket).iterdir()
+                          if p.is_dir() and not (quests / "active" / p.name).is_dir())
+        except OSError:
+            pass  # No proof of closure: keep the approval visible.
+    return [item for item in data.get("items", [])
+            if item.get("status") not in TERMINAL_APPROVAL_STATUSES
+            and item.get("quest_id") not in closed]
+
+
 # ── Slack deeplink + outbound-message normalization ───────────────────────────
 # Shared by build_messages() (the Messages tab) and build_quest_detail()'s
 # conversation list. Verbatim-only: a send is surfaced only when we can recover
@@ -1360,9 +1380,8 @@ def build_dashboard(include_briefs: bool = False) -> dict:
     if APPROVALS_FILE.exists():
         try:
             data = _read_approvals()
-            pending_review = [i for i in data.get("items", [])
-                              if i.get("status") not in TERMINAL_APPROVAL_STATUSES
-                              and i.get("action_type") != "manual_instruction"]
+            pending_review = [i for i in _live_approval_items(data)
+                              if i.get("action_type") != "manual_instruction"]
         except Exception:
             pass
 
@@ -1390,8 +1409,7 @@ def build_messages() -> dict:
 
     appr_data  = _read_approvals() if APPROVALS_FILE.exists() else {"items": []}
     appr_by_id = _approvals_index(appr_data)
-    pending = [i for i in appr_data.get("items", [])
-               if i.get("status") not in TERMINAL_APPROVAL_STATUSES]
+    pending = _live_approval_items(appr_data)
     needs_you, other_actions = [], []
     queued_items = []
     for i in pending:

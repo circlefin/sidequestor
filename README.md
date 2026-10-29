@@ -492,6 +492,11 @@ can select a specific dashboard port. This first version has no scheduled dates 
 automatic resumption and is not a policy lock: an explicit `sq start` or `sq tick`
 can still run work.
 
+The dashboard's live review and queued-action lists exclude approvals belonging to
+quests in `completed/` or `archived/`, unless an active copy of that quest exists.
+The original approval records are retained. Missing quest folders alone do not
+hide an approval.
+
 ## How do I get briefings?
 
 Open **Briefings**. If the archive is empty, use **Create a morning briefing quest**

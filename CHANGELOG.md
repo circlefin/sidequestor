@@ -4,6 +4,13 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.2.5 - 2026-10-29
+
+- Exclude approvals for completed or archived quests from the dashboard's live
+  review and queued-action lists, fixing invisible items counted as needing a
+  decision. Retain the original approval records, keep approvals visible when a
+  quest's location is unknown, and prefer an active copy when a quest is restored.
+
 ## 0.2.4 - 2026-10-29
 
 - Reject explicitly empty workspace/instance selectors, including a positional
