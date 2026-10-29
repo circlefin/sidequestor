@@ -25,6 +25,7 @@ sys.path.insert(0, str(RUNTIME_DIR))
 import approval_store
 from timeline_io import append_timeline, quest_dir, utc_now
 from x_credentials import get_access_token, user_identity
+from native_tls import native_ssl_context
 
 _SPEC = importlib.util.spec_from_file_location("sidequestor_x_call", SURFACES_DIR / "x-call.py")
 _X_CALL_MODULE = importlib.util.module_from_spec(_SPEC)
@@ -180,7 +181,7 @@ def _upload_media(payload, credential_id):
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with urllib.request.urlopen(request, timeout=120, context=native_ssl_context()) as response:
         value = json.loads(response.read().decode())
     return _result(value, "upload_media")
 

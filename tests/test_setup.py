@@ -226,7 +226,7 @@ class SetupTests(unittest.TestCase):
             check.assert_called_once()
             install.assert_not_called()
 
-    def test_cursor_provisioning_uses_cursor_defaults_without_foreign_knobs(self):
+    def test_cursor_provisioning_uses_cursor_defaults_and_permission_mode(self):
         with tempfile.TemporaryDirectory() as raw:
             workspace = init_workspace(raw)
             sync_resources(workspace)
@@ -240,14 +240,14 @@ class SetupTests(unittest.TestCase):
             content = workspace.env_file.read_text()
             self.assertNotIn("SIDEQUESTOR_CURSOR_MODEL=", content)
             self.assertNotIn("SIDEQUESTOR_CURSOR_EFFORT", content)
-            self.assertNotIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE", content)
+            self.assertIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE=bypassPermissions", content)
 
     def test_interactive_setup_accepts_cursor(self):
         with tempfile.TemporaryDirectory() as raw:
             workspace = init_workspace(raw)
             sync_resources(workspace)
             workspace.env_file.write_text("SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n")
-            answers = iter(["cursor", "sonnet-4-thinking"])
+            answers = iter(["cursor", "sonnet-4-thinking", ""])
 
             provision_env(workspace, input_fn=lambda _prompt: next(answers), interactive=True)
 
@@ -255,7 +255,20 @@ class SetupTests(unittest.TestCase):
             self.assertIn("SIDEQUESTOR_AGENT=cursor", content)
             self.assertIn("SIDEQUESTOR_CURSOR_MODEL=sonnet-4-thinking", content)
             self.assertNotIn("SIDEQUESTOR_CURSOR_EFFORT", content)
-            self.assertNotIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE", content)
+            self.assertIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE=bypassPermissions", content)
+
+    def test_cursor_provisioning_preserves_existing_permission_mode(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            workspace.env_file.write_text(
+                "SIDEQUESTOR_AGENT=cursor\n"
+                "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+                "SIDEQUESTOR_CURSOR_PERMISSION_MODE=default\n"
+            )
+
+            provision_env(workspace, interactive=False)
+
+            self.assertIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE=default", workspace.env_file.read_text())
 
     def test_interactive_instructions_target_selected_backend_without_writing(self):
         from contextlib import redirect_stdout

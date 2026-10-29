@@ -375,8 +375,37 @@ used by the package lifecycle; do not run them for a Sidequestor workspace.
 
 ## Configurable knobs (in `.env`)
 
-`.env.example` is the canonical list with full reasoning. The knobs most likely to
-come up while debugging:
+The workspace `.env.example` (materialized from packaged `env.example`) is the
+documented settings catalog with full reasoning, not a single
+source of all runtime defaults. The dashboard settings view imports numeric/switch
+defaults from `tick_state.py` and emoji defaults from `reaction_config.py`, plus
+display copies of fallback values from other runtime consumers in `dashboard_settings.py`. Exported
+dashboard process values override `.env`; an absent value uses its runtime fallback,
+while explicit empty values remain visible as empty. The Python loader uses the
+first duplicate assignment; avoid duplicates because a sourced shell can use the last. The gear dialog lists `.env`
+entries first and masks credentials. `SIDEQUESTOR_OPEN_IN` selects dashboard launch
+buttons independently of `SIDEQUESTOR_AGENT`: `codex` (default), `claude`, `cursor`
+(folder only, no prompt), or `terminal`. Onboarding asks the owner to choose early.
+
+### Maintaining configuration defaults
+
+The duplicated defaults are an accepted stabilization decision. Runtime consumers
+remain authoritative; `dashboard_settings.FALLBACKS` contains display copies for
+settings not already imported from shared definitions. Adding a new template entry
+does not automatically add its runtime default to that table.
+
+When adding a variable or changing a fallback, review the runtime reader, dashboard
+mirror/shared import, shipped `package_data/env.example`, setup/provisioning values,
+and relevant docs together. Check unset, explicit, empty and process-overridden
+values, plus aliases where applicable. Add focused runtime and display regression
+coverage. Keep credentials redacted and preserve existing user settings. Do not
+centralize defaults as incidental cleanup.
+
+The full rationale, checklist and corrected Cursor permission-default example are
+recorded in the package repository at
+`docs/architecture-decisions/0006-ACCEPTED-CONFIG-DEFAULT-DUPLICATION.md`.
+
+The knobs most likely to come up while debugging:
 
 | Variable | Default | Effect |
 |---|---|---|

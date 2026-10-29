@@ -660,7 +660,14 @@ def run_command(workspace: Workspace, command: str, args: list[str]) -> int:
         parser.add_argument("prompt", nargs="*")
     elif command == "queue":
         parser.add_argument("instruction", nargs="*")
-    values = parser.parse_args(args)
+    if command in {"ask", "create"}:
+        # Preserve normal parsing, including literal flags after --. On Python
+        # 3.11, interleaved agent flags can leave valid prompt words unconsumed.
+        values, remaining = parser.parse_known_args(args)
+        if remaining:
+            values = parser.parse_intermixed_args(args)
+    else:
+        values = parser.parse_args(args)
     if command == "terminal" and bool(values.quest_id) == values.new_quest:
         parser.error("give either QUEST_ID or --new-quest")
     as_json = command == "terminal" and values.json

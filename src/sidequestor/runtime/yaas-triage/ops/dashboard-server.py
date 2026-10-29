@@ -27,6 +27,7 @@ Endpoints:
     GET  /                    → dashboard.html
     GET  /yaas-triage/assets/sidequestor-mark.png → dashboard logo
     GET  /api/dashboard       → live JSON snapshot of all quest state
+    GET  /api/settings        → redacted configuration overview (authenticated)
     GET  /api/briefs          → canonical Markdown briefings
     GET  /state/<path>        → raw state file
     POST /api/review/<id>     → mark item reviewed (optionally with edits)
@@ -36,6 +37,7 @@ Endpoints:
     POST /api/reclaim/<id>    → recover an expired executing lease
     POST /api/quests          → create an explicitly-marked bootstrap quest
     POST /api/workspace/open  → open this workspace in Cursor or the default app
+    POST /api/workspace/terminal → open a terminal at the workspace folder
     POST /api/quest/<id>/terminal → open the quest's terminal session (sq terminal)
     POST /api/quests/terminal → open the terminal session for creating a quest
 """
@@ -97,6 +99,7 @@ import approval_store
 import tick_check
 import threading
 from types import SimpleNamespace
+from dashboard_settings import build_settings
 from tick_state import (
     BadEnvKnob,
     Config,
@@ -129,6 +132,7 @@ def build_workspace_identity() -> dict:
         "display_name": str(data.get("display_name") or REPO_ROOT.name),
         "path": str(REPO_ROOT),
         "instance_id": str(data.get("instance_id") or ""),
+        "open_in": dashboard_open_in(),
     }
 
 # Workspace-specific hosts. No hardcoded defaults: they belong to whoever runs
@@ -138,6 +142,13 @@ def build_workspace_identity() -> dict:
 def _dotenv(key: str, default: str = "") -> str:
     value = load_environment(REPO_ROOT).get(key)
     return str(value).strip() if value not in (None, "") else default
+
+
+def dashboard_open_in() -> str:
+    # Independent of the worker harness; reload .env on each dashboard poll.
+    value = _dotenv("SIDEQUESTOR_OPEN_IN", "codex").lower()
+    return value if value in {"terminal", "codex", "claude", "cursor"} else "codex"
+
 
 SLACK_HOST = _dotenv("SLACK_WORKSPACE_DOMAIN")            # e.g. acme.slack.com
 JIRA_HOST  = (_dotenv("JIRA_BASE_URL").replace("https://", "")
@@ -2230,12 +2241,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
 
-    def _send_json(self, data: dict, status: int = 200):
+    def _send_json(self, data: dict, status: int = 200, *, cache_control: str = "no-cache"):
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", cache_control)
         self._sec_headers(_CSP_JSON)
         self.end_headers()
         self.wfile.write(body)
@@ -2340,6 +2351,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json_etag(build_control)
             return
 
+        if path == "/api/settings":
+            try:
+                settings = build_settings(REPO_ROOT, RUNTIME_ROOT.parent / "package_data" / "env.example")
+            except (OSError, UnicodeError):
+                self._send_json({"error": "Could not read the packaged settings catalog. Check the Sidequestor installation."},
+                                500, cache_control="no-store")
+                return
+            self._send_json(settings, cache_control="no-store")
+            return
+
         if path == "/api/updates/status":
             from sidequestor.update_check import check_status
             self._send_json(check_status(REPO_ROOT))
@@ -2412,6 +2433,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if not isinstance(payload, dict):
             self._send_json({"error": "request body must be a JSON object"}, 400)
+            return
+
+        if path == "/api/workspace/terminal":
+            self._handle_workspace_terminal()
             return
 
         if path == "/api/workspace/open":
@@ -2509,6 +2534,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "error": "could not open workspace in Cursor or the default application",
             "detail": "; ".join(errors),
         }, 500)
+
+    def _handle_workspace_terminal(self):
+        """Open only the server's workspace in the configured terminal application."""
+        app = _dotenv("SIDEQUESTOR_TERMINAL_APP", "Terminal")
+        try:
+            result = subprocess.run(
+                ["open", "-a", app, str(REPO_ROOT)], cwd=str(REPO_ROOT),
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._send_json({"error": f"could not open terminal: {exc}"}, 500)
+            return
+        if result.returncode:
+            self._send_json({"error": "could not open workspace terminal",
+                             "detail": (result.stderr or "open failed").strip()[:200]}, 500)
+            return
+        self._send_json({"ok": True, "app": app, "path": str(REPO_ROOT)})
 
     def _handle_open_terminal(self, quest_id: str):
         """Open the quest's terminal session; the browser supplies only a quest id."""

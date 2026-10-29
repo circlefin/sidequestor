@@ -13,6 +13,8 @@ import sys
 import urllib.error
 import urllib.request
 
+from native_tls import native_ssl_context
+
 VERSION = "2026-03-11"
 
 
@@ -75,7 +77,9 @@ def call(method, path, body=None):
         data=None if body is None else json.dumps(body).encode(), method=method,
         headers={"Authorization": "Bearer " + token(), "Notion-Version": VERSION,
                  "Content-Type": "application/json"})
-    with urllib.request.build_opener(NoRedirect()).open(req, timeout=20) as response:
+    with urllib.request.build_opener(
+        NoRedirect(), urllib.request.HTTPSHandler(context=native_ssl_context())
+    ).open(req, timeout=20) as response:
         try:
             data = json.load(response)
         except (ValueError, UnicodeError) as exc:

@@ -49,7 +49,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent))
-from reaction_config import load_reaction_emojis
+from reaction_config import EMOJI_NAME, load_reaction_emojis
 
 
 def _react(react_bin, verb, channel, ts, emoji):
@@ -62,12 +62,21 @@ def _react(react_bin, verb, channel, ts, emoji):
         return False
 
 
-def advance(channel, ts, state, react_bin, log=None, env=None):
+def advance(channel, ts, state, react_bin, log=None, env=None, *, retire_warning=False, retire_emojis=()):
     """Add the target, then remove other lifecycle emojis; report complete cleanup."""
     emojis = load_reaction_emojis(env)
     target = emojis[state]
     lifecycle = (emojis["process"], emojis["draft"], emojis["adopt"], emojis["expand"],
                  emojis["loading"], emojis["done"])
+    # Retire the former default on the next transition. When it is a configured
+    # role, use only that role's normal cleanup rules.
+    if retire_warning and "warning" not in emojis.values():
+        lifecycle += ("warning",)
+    for emoji in retire_emojis:
+        if not isinstance(emoji, str) or not EMOJI_NAME.fullmatch(emoji):
+            raise ValueError('invalid previous lifecycle emoji')
+        if emoji not in emojis.values() and emoji not in lifecycle:
+            lifecycle += (emoji,)
 
     # Slack has no atomic swap. Add first so a failed add cannot erase the only
     # visible status. A missing reaction returns success in client.py; any other
@@ -122,7 +131,14 @@ def main():
         log = args[args.index("--log") + 1]
 
     try:
-        return 0 if advance(channel, ts, state, react_bin, log) else 1
+        retired = []
+        for index, argument in enumerate(args):
+            if argument == '--retire-emoji':
+                if index + 1 == len(args):
+                    raise ValueError('--retire-emoji requires an emoji name')
+                retired.append(args[index + 1])
+        return 0 if advance(channel, ts, state, react_bin, log,
+                            retire_warning='--retire-warning' in args, retire_emojis=retired) else 1
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

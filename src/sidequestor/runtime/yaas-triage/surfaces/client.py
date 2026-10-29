@@ -63,6 +63,8 @@ SURFACES_DIR = str(Path(__file__).resolve().parent)
 if SURFACES_DIR not in sys.path:
     sys.path.insert(0, SURFACES_DIR)
 
+from native_tls import native_ssl_context
+
 from slack_credentials import (  # noqa: E402
     AuthenticationError as SlackAuthenticationError,
     CredentialError as SlackCredentialError,
@@ -224,18 +226,20 @@ def keychain(service, account="yaas"):
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
-def request(url, method="GET", headers=None, body=None, timeout=TIMEOUT):
+def request(url, method="GET", headers=None, body=None, timeout=TIMEOUT, *, context=None):
     """Returns (status, text). Raises only for transport failures."""
-    status, text, _ = request_with_headers(url, method, headers, body, timeout)
+    options = {"context": context} if context is not None else {}
+    status, text, _ = request_with_headers(url, method, headers, body, timeout, **options)
     return status, text
 
 
-def request_with_headers(url, method="GET", headers=None, body=None, timeout=TIMEOUT):
+def request_with_headers(url, method="GET", headers=None, body=None, timeout=TIMEOUT, *, context=None):
     """Return response headers for capability checks without exposing bearer tokens."""
     data = body.encode() if isinstance(body, str) else body
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        options = {"context": context} if context is not None else {}
+        with urllib.request.urlopen(req, timeout=timeout, **options) as resp:
             return resp.status, resp.read().decode("utf-8", "replace"), dict(resp.headers)
     except urllib.error.HTTPError as e:
         # An HTTP error is a real response; its body usually says what went wrong.
@@ -397,7 +401,7 @@ def cmd_jira(argv):
             "Accept": "application/json",
             "Content-Type": "application/json",
             "Authorization": f"Basic {auth}",
-        }, body)
+        }, body, context=native_ssl_context())
     except Exception as exc:
         return fail(f"{type(exc).__name__}: {exc}", classify_exception(exc))
 

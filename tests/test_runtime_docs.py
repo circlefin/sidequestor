@@ -54,7 +54,7 @@ class RuntimeDocsTest(unittest.TestCase):
         self.assertIn(str(workspace.root / ".env"), result.stdout)
         self.assertNotIn("src/sidequestor/runtime/.env", result.stdout)
 
-    def _doctor(self, connectors: str) -> str:
+    def _doctor(self, connectors: str, extra_env: dict[str, str] | None = None) -> str:
         with tempfile.TemporaryDirectory(prefix="sidequestor-doctor-connectors-") as raw, \
                 tempfile.TemporaryDirectory(prefix="sidequestor-config-") as config_home:
             with patch.dict(os.environ, {"SIDEQUESTOR_CONFIG_HOME": config_home}, clear=False):
@@ -68,9 +68,20 @@ class RuntimeDocsTest(unittest.TestCase):
                         "SIDEQUESTOR_CONFIG_HOME": config_home,
                         "SIDEQUESTOR_WORKSPACE": str(workspace.root),
                         "SIDEQUESTOR_CHECKER_CONNECTORS": connectors,
+                        **(extra_env or {}),
                     },
                 )
         return result.stdout
+
+    def test_doctor_validates_cursor_permission_modes(self) -> None:
+        self.assertIn(
+            "SIDEQUESTOR_CURSOR_PERMISSION_MODE=default",
+            self._doctor("", {"SIDEQUESTOR_CURSOR_PERMISSION_MODE": "default"}),
+        )
+        self.assertIn(
+            "SIDEQUESTOR_CURSOR_PERMISSION_MODE=unsupported is invalid",
+            self._doctor("", {"SIDEQUESTOR_CURSOR_PERMISSION_MODE": "unsupported"}),
+        )
 
     def test_doctor_fails_a_connector_list_that_tick_would_exit_2_on(self) -> None:
         """doctor used to print this green. It is the tool an operator reaches for when

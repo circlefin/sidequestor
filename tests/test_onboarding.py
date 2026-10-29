@@ -79,6 +79,28 @@ class OnboardingTests(unittest.TestCase):
         self.assertIn("Start my Sidequestor onboarding", argv[1])
         self.assertEqual(environment["SQ_QUEST_ID"], quest_dir.name)
 
+    def test_reaction_practice_progress_survives_resume_and_channel_switch(self):
+        with redirect_stdout(StringIO()):
+            onboarding.run_onboard(self.workspace, "slack", now=1_800_000_000)
+        quest_dir = onboarding.find_quest(self.workspace)
+        marker = onboarding.read_marker(quest_dir)
+        self.assertEqual(marker['reaction_demo'], {'status': 'not_offered', 'samples': {}})
+        self.assertEqual(marker['dashboard_app_choice'], {'status': 'not_asked'})
+        progress = {'status': 'running', 'samples': {'draft': {'channel_id': 'D123', 'message_ts': '1800000001.000001', 'outcome': 'pending'}}}
+        marker['reaction_demo'] = progress
+        marker['dashboard_app_choice'] = {'status': 'chosen', 'value': 'cursor',
+                                          'blocked_by': 'process_environment', 'effective_value': 'codex',
+                                          'service_config_offered': True}
+        onboarding._write_marker(quest_dir, marker)
+        with patch("sidequestor.quest_terminal.find_agent", return_value="/bin/agent"), redirect_stdout(StringIO()):
+            onboarding.run_onboard(self.workspace, "terminal", "claude", execve=self._execve)
+            onboarding.run_onboard(self.workspace, "slack", now=1_800_000_060)
+        self.assertEqual(onboarding.read_marker(quest_dir)['reaction_demo'], progress)
+        self.assertEqual(onboarding.read_marker(quest_dir)['dashboard_app_choice'],
+                         {'status': 'chosen', 'value': 'cursor',
+                          'blocked_by': 'process_environment', 'effective_value': 'codex',
+                          'service_config_offered': True})
+
     def test_second_start_resumes_and_switching_to_slack_wakes_the_quest(self) -> None:
         with patch("sidequestor.quest_terminal.find_agent", return_value="/bin/agent"), \
              redirect_stdout(StringIO()):

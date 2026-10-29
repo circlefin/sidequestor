@@ -74,7 +74,9 @@ file for this role is `state/magic_wand_expanded.json` (`expanded_timestamps`).
 
 The runtime queues `loading` before launching the harness. `handled` and a conscious
 `nothing_to_do` acknowledgement queue `done`; `blocked` queues the configured blocked
-marker (default `warning`). Exhausted retries create a real Inbox review. A durable
+marker (default `clock3`, 🕒): work remains pending for another attempt or needed
+input. It is not completion and does not promise a retry time. Exhausted retries
+create a real Inbox review. A durable
 outbox retries emoji delivery independently of business actions, including after a
 restart. Never rerun a completed send just because an emoji update failed.
 

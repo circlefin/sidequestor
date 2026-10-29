@@ -60,7 +60,7 @@ if [ "$1" = init ]; then mkdir -p "$2/.yaas"; : > "$2/.yaas/instance.json"; : > 
         self.assertFalse((self.home / "sidequestor").exists())
         self.assertEqual(self.log.read_text().splitlines(), ["sq setup", "sq dashboard"])
 
-    def test_circle_metadata_is_seeded_once_without_overwriting(self):
+    def test_supplied_slack_metadata_is_seeded_once_without_overwriting(self):
         self.env.update(SIDEQUESTOR_INSTALL_SLACK_APP_ID="ATEST123",
                         SIDEQUESTOR_INSTALL_SLACK_CLIENT_ID="12345.67890",
                         SIDEQUESTOR_INSTALL_SLACK_WORKSPACE_NAME="Fixture",

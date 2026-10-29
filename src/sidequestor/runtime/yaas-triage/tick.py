@@ -1141,6 +1141,17 @@ def _prune_worker_logs(t):
 def slack_health_ok(t):
     cp = t.run([t.mcp_call, "slack_search_public_and_private",
                 '{"query":"yaas-health-ping","limit":1}'])
+    if cp.returncode == 0:
+        # This existing per-tick probe is also recovery evidence for a cached block.
+        try:
+            from sidequestor.worker_readiness import save_state
+            from sidequestor.workspace import load_workspace
+            from sidequestor.job_path import find_agent
+            binary = find_agent(t.agent, t.env.get("PATH", os.environ.get("PATH", "")))
+            if binary:
+                save_state(load_workspace(t.repo_root), t.agent, binary, t.env, scope="slack")
+        except (ImportError, SystemExit, OSError):
+            pass
     return cp.returncode == 0
 
 
@@ -1523,30 +1534,36 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
         except (ImportError, SystemExit, OSError):
             pass
 
-    # Slack infra-failure guard (Claude backend: read init .mcp_servers status).
-    if worker_ndjson and os.path.exists(worker_ndjson):
-        status = _slack_init_status(worker_ndjson)
-        if (status == "needs-auth" or (status == "failed" and t.dispatch_exit == 0)) and tick_dispatch.needs_slack(target, dirty_watches_json):
-            t.log(f"INFRA FAILURE [{target}] — Slack MCP status='{status}'. Forcing exit 9.")
-            t.dispatch_exit = 9
-            if status == "needs-auth":
-                t.dispatch_dependency_blocked = True
-                try:
-                    from sidequestor.worker_readiness import save_state
-                    from sidequestor.workspace import load_workspace
-                    from sidequestor.job_path import find_agent
-                    binary = find_agent(t.agent, t.env.get("PATH", os.environ.get("PATH", "")))
-                    if binary:
-                        save_state(load_workspace(t.repo_root), t.agent, binary, t.env,
-                                   "Claude Slack MCP needs reconnection. Run sq setup.", scope="slack")
-                except (ImportError, SystemExit, OSError):
-                    pass
-
-    if t.dispatch_exit == 0:
+    # Prefer observed reads over the native MCP connection's startup status.
+    if t.dispatch_exit == 0 and worker_ndjson and os.path.exists(worker_ndjson):
         cpe = t.run(t.py(t.helper("dispatch", "slack-read-health.py"), worker_ndjson))
         if cpe.returncode == 0:
             t.dispatch_slack_read_ok = 1
             t.log(f"WORKER SLACK READ OK [{target}]: successful Slack read observed")
+
+    if worker_ndjson and os.path.exists(worker_ndjson):
+        status = _slack_init_status(worker_ndjson)
+        relevant = tick_dispatch.needs_slack(target, dirty_watches_json)
+        if relevant and (status in ("needs-auth", "failed") or t.dispatch_slack_read_ok == 1):
+            helper_ready = t.dispatch_slack_read_ok == 1
+            try:
+                from sidequestor.worker_readiness import verify_slack_access
+                from sidequestor.workspace import load_workspace
+                from sidequestor.job_path import find_agent
+                binary = find_agent(t.agent, t.env.get("PATH", os.environ.get("PATH", "")))
+                if binary:
+                    helper_ready = verify_slack_access(
+                        load_workspace(t.repo_root), t.agent, binary, t.env,
+                        read_succeeded=helper_ready) is None
+            except (ImportError, SystemExit, OSError):
+                pass
+            if status in ("needs-auth", "failed"):
+                if helper_ready:
+                    t.log(f"SLACK NATIVE MCP [{target}] status='{status}'; supported helper verified")
+                else:
+                    t.log(f"INFRA FAILURE [{target}] — native Slack MCP status='{status}' and helper read not verified. Forcing exit 9.")
+                    t.dispatch_exit = 9
+                    t.dispatch_dependency_blocked = True
 
     # Token accounting — emits gate_dispatch_tokens (the event snapshot reads for `dispatches`).
     if t.agent == "claude":

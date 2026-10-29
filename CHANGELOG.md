@@ -4,7 +4,48 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
-## Unreleased
+## 0.2.3 - 2026-10-29
+
+This release also includes the changes listed under the local 0.2.2 snapshot below;
+0.2.2 was not published to PyPI.
+
+- Use the operating system's certificate trust for update checks and Jira, Notion,
+  and X HTTPS calls through `truststore`, including trusted corporate certificates.
+  Keep TLS verification enabled without recording a certificate-bundle path in
+  workspace settings. Slack and Telegram transports are unchanged.
+- Fix false Claude Slack reconnection warnings by checking the supported Slack
+  helper rather than treating an unrelated MCP connection failure as conclusive.
+  Refresh worker readiness during normal triage, recover after verified successful
+  access, and require actual helper read evidence before clearing Slack blocks.
+- Add a configurable dashboard launch app, independent of the worker harness:
+  `SIDEQUESTOR_OPEN_IN` supports Codex (default), Claude Desktop, Cursor, or Terminal.
+  Workspace, quest, New Quest, and configuration-edit buttons follow the selection.
+  Codex and Claude prepare short editable prompts; Cursor opens the folder.
+  Terminal retains the existing quest sessions. Refine launch-button styling and sizing.
+- Add a searchable, read-only dashboard configuration dialog showing `.env` entries
+  first, then documented defaults, with process overrides identified. Mask credentials
+  and unknown custom values before sending them to the browser; do not cache the
+  settings response. Document the accepted duplication of runtime/display defaults
+  and the maintenance checklist for adding settings.
+- Ask for the dashboard app preference early in onboarding, separately from the
+  background worker choice. Offer optional personalized Slack reaction practice
+  based on the owner's work, with resumable progress and duplicate-send protection.
+- Use `hourglass_flowing_sand` for reaction work in progress and `clock3` for work
+  retained for retry or input. Preserve configured markers and resolve default
+  collisions without replaying completed work.
+- Allow the Google Doc anchored-comment capability preflight to read shared-drive
+  files by sending `supportsAllDrives=true`; comment approval and write guards are
+  unchanged.
+- Fix `sq ask` and `sq create` parsing of agent flags mixed with prompt words on
+  Python 3.11, retaining literal arguments after `--` and invalid-flag checks.
+- Show Cursor's actual `default` permission fallback in the dashboard, separately
+  from setup's explicit `bypassPermissions` value.
+- Use generic Slack labels in the shared bootstrap installer while preserving the
+  private Circle wrapper's optional preconfiguration and publication exclusions.
+- Apply the configured permission mode to Cursor workers. Setup defaults Cursor to
+  `bypassPermissions`; `default` leaves command approval and sandbox behavior to the
+  user's Cursor CLI configuration. Cursor workers now always pass `--trust`, fixing
+  headless runs that exited on Cursor's workspace trust prompt.
 
 ## 0.2.2 - 2026-10-29
 

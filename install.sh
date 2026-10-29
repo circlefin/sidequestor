@@ -39,11 +39,11 @@ fi
 
 registry="${XDG_CONFIG_HOME:-$HOME/.config}/yaas/instances.json"
 workspace="$HOME/sidequestor"
-seed_circle_slack() {
+seed_slack_app() {
     [ -n "${SIDEQUESTOR_INSTALL_SLACK_APP_ID:-}" ] || return 0
-    [ -n "${SIDEQUESTOR_INSTALL_SLACK_CLIENT_ID:-}" ] || fail "Circle Slack Client ID is missing."
-    [ -n "${SIDEQUESTOR_INSTALL_SLACK_WORKSPACE_NAME:-}" ] || fail "Circle Slack workspace name is missing."
-    [ -n "${SIDEQUESTOR_INSTALL_SLACK_WORKSPACE_DOMAIN:-}" ] || fail "Circle Slack workspace domain is missing."
+    [ -n "${SIDEQUESTOR_INSTALL_SLACK_CLIENT_ID:-}" ] || fail "Slack Client ID is missing."
+    [ -n "${SIDEQUESTOR_INSTALL_SLACK_WORKSPACE_NAME:-}" ] || fail "Slack workspace name is missing."
+    [ -n "${SIDEQUESTOR_INSTALL_SLACK_WORKSPACE_DOMAIN:-}" ] || fail "Slack workspace domain is missing."
     env_file="$workspace/.env"
     [ -f "$env_file" ] || fail "Workspace configuration is missing: $env_file"
     missing_keys=""
@@ -74,7 +74,7 @@ seed_circle_slack() {
         printf '%s=%s\n' "$key" "$value" >> "$env_file"
     done
     chmod 600 "$env_file"
-    printf 'Circle Slack app details are ready. Browser authorization still happens in sq setup.\n'
+    printf 'Slack app details are ready. Browser authorization still happens in sq setup.\n'
 }
 if [ -f "$registry" ]; then
     # sq resolves the saved default; do not create a competing workspace.
@@ -87,7 +87,7 @@ else
     else
         printf 'Using your existing workspace at %s.\n' "$workspace"
     fi
-    seed_circle_slack
+    seed_slack_app
     "$sq_command" --workspace "$workspace" setup || fail "Setup is incomplete. Rerun sq setup to continue."
 fi
 

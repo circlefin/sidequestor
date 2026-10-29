@@ -27,6 +27,12 @@ Telegram user-session watches require the optional `sidequestor[telegram]` extra
 script checks the command-line tools it needs before it runs, and
 `yaas-triage/ops/doctor.sh` checks the rest.
 
+Update checks and the Jira, Notion, and X HTTPS helpers use the operating system's
+certificate trust through the installed `truststore` dependency. On macOS this
+includes corporate certificates trusted by the system, without pinning a certificate
+bundle in `.env`. TLS verification remains enabled. Slack and Telegram use their
+existing transports.
+
 ## How do I install it?
 
 ```bash
@@ -95,13 +101,17 @@ for public-channel management/invitations; these are not needed to create the pr
 onboarding interface. Sidequestor's channel-creation helper still creates private channels
 only. File uploads need `files:write`; attachment downloads need `files:read`.
 
-The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-6.1-sol` at `high` effort. Setup checks both the Codex and Claude Code CLIs and offers an npm installation for either missing CLI when Codex or Claude is selected. It checks `cursor-agent` when Cursor is selected. npm installation requires Node.js; the Claude Code npm package requires Node.js 22 or later. Installation is optional, but the selected worker CLI must be available before setup starts jobs. Setup guides CLI login, verifies the selected model, and checks the Slack connection used by workers. Claude’s native Slack MCP authorization is separate from Sidequestor Slack OAuth; setup verifies both. Rerun `sq setup` to reconnect after credentials expire. Setup offers a CLI update; startup checks only advise and never install updates. You can select `cursor` to use the authenticated `cursor-agent` CLI; leave `SIDEQUESTOR_CURSOR_MODEL` unset to use Cursor's default model, or set it to pin a model.
+The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-6.1-sol` at `high` effort. Setup checks both the Codex and Claude Code CLIs and offers an npm installation for either missing CLI when Codex or Claude is selected. It checks `cursor-agent` when Cursor is selected. npm installation requires Node.js; the Claude Code npm package requires Node.js 22 or later. Installation is optional, but the selected worker CLI must be available before setup starts jobs. Setup guides CLI login, verifies the selected model, and checks the Slack connection used by workers. Claude’s native Slack MCP authorization is separate from Sidequestor Slack OAuth; setup verifies the supported Sidequestor helper used by workers. Rerun `sq setup` to reconnect after credentials expire. Setup offers a CLI update; startup checks only advise and never install updates. You can select `cursor` to use the authenticated `cursor-agent` CLI; leave `SIDEQUESTOR_CURSOR_MODEL` unset to use Cursor's default model, or set it to pin a model.
 
 ## How do I get guided onboarding?
 
 At the end of `sq setup`, choose `slack`, `terminal`, or `later`. Choosing Slack or terminal creates
 one onboarding quest for the workspace; `later` postpones it. The quest reviews what you already have, checks your connections, drafts
-your AGENTS.md and skills, proposes quests, and checks in until day 30. It asks before each change.
+your AGENTS.md and skills, proposes quests, offers personalized hands-on reaction practice, and checks in until day 30.
+Early on, it asks whether dashboard launch buttons should use Codex, Claude Desktop, Cursor,
+or Terminal, independently of your background worker harness, and remembers your choice
+when you resume or switch onboarding channels. You can keep the current choice or defer.
+It asks before each change.
 
 ```bash
 # Start or resume onboarding in your Slack DM.
@@ -123,6 +133,8 @@ Text-send permissions stay limited to your verified DM and approved interface ch
 (`allow_send_channels`); other actions retain their normal approvals. Slack must be
 configured before choosing it. Without Slack, background check-ins are recorded for your next
 terminal session. Channel preferences live separately from progress so a worker cannot undo a switch.
+The optional reactions practice uses examples researched from your role and recent work, sent as separate messages in your private onboarding conversation. You choose the reactions to try: answer, draft, save, follow a thread, and expand your own message. It uses your configured emoji names and records progress so resuming onboarding does not resend the exercise.
+
 The agent selects a verified, granted and watched channel with `sq onboard --slack-channel CHANNEL_ID`;
 this selection does not create channels or grant new permissions. `sq onboard --slack-dm`
 returns onboarding to the verified owner DM if the channel becomes unavailable.
@@ -149,13 +161,15 @@ inspect Slack before retrying. No channel is created by upgrading or running set
 
 ## What permissions does the worker need?
 
-For unattended work, `sq setup` defaults to `bypassPermissions` for Codex and Claude. Press Enter to accept it if a blank permission setting prompts you, or enter another supported permission mode. Claude's bypass mode disables its permission checks; Codex's bypass mode disables approvals and its sandbox, allowing filesystem, shell, and network actions without per-action approval. Cursor uses its own CLI execution mode and Sidequestor auto-approves its MCP calls. Use unattended backends only in a workspace where that behavior is acceptable. Existing nonempty permission settings are preserved. If a permission setting is removed entirely, the runtime's own fallback is `acceptEdits` for Claude or `workspace-write` for Codex.
+For unattended work, `sq setup` defaults to `bypassPermissions` for Claude, Codex, and Cursor. Press Enter to accept it if a blank permission setting prompts you, or enter another supported mode. Claude's bypass mode disables its permission checks; Codex's bypass mode disables approvals and its sandbox. Cursor's bypass mode passes `--force --sandbox disabled`, disabling Cursor's command approvals and sandbox. Use unattended backends only in a workspace where that behavior is acceptable. Existing nonempty permission settings are preserved. If a permission setting is removed entirely, the runtime fallback is `acceptEdits` for Claude, `workspace-write` for Codex, and `default` for Cursor. Cursor's `default` mode passes `--trust` and `--approve-mcps` but not `--force` or `--sandbox`, so command approval and sandboxing follow the user's own Cursor CLI configuration (`approvalMode` and `sandbox` in `~/.cursor/cli-config.json`); with stock Cursor settings, unattended shell or network commands may be refused.
 
 ```bash
 # Allow Claude workers to execute unattended tool actions.
 SIDEQUESTOR_CLAUDE_PERMISSION_MODE=bypassPermissions
 # Allow Codex workers to execute unattended tool actions.
 SIDEQUESTOR_CODEX_PERMISSION_MODE=bypassPermissions
+# Allow Cursor workers to execute without command approvals or the sandbox.
+SIDEQUESTOR_CURSOR_PERMISSION_MODE=bypassPermissions
 ```
 
 The optional instruction block targets `CLAUDE.md` for Claude and `AGENTS.md` for every other backend. Neither file is ever created or edited by Sidequestor.
@@ -455,9 +469,69 @@ agent to save a Markdown briefing with a `# Title` in `state/briefs/`. Files the
 appear automatically in the Briefings archive. Saving a local brief does not authorize
 posting or emailing it.
 
+## How do I open a workspace or quest in my chosen app?
+
+Set `SIDEQUESTOR_OPEN_IN=codex` (the default), `claude`, `cursor`, or `terminal` in the
+workspace's `.env`. This preference is independent of the worker harness and is
+reflected on the next dashboard refresh. The quest launch button and the button
+beside **New quest**, the alternative inside the **New quest** dialog, and the
+settings dialog's edit button all follow it. Onboarding offers this choice early;
+you can change it later in `.env`.
+
+Codex and Claude open a new chat in the workspace with a short editable prompt.
+The default workspace prompt is “Within this Sidequestor workspace, I'd like to”.
+The default creation prompt is “I'd like to create a new quest in this Sidequestor
+workspace for .... ”; an existing creation draft, title and non-default priority
+are preserved. The quest-level prompt is “Within this Sidequestor workspace, for
+quest `"<quest-id>"`, I'd like to”.
+Complete the prompt and press Send in the app. Claude Code also asks you to confirm
+the folder. Cursor opens the workspace without a prompt. With `terminal`, the quest button retains its persistent session and
+the top button opens a terminal at the workspace folder.
+
+The buttons use the documented [Codex chat links](https://learn.chatgpt.com/docs/app/commands#chats)
+and [Claude Code desktop links](https://support.claude.com/en/articles/14729294-open-claude-desktop-with-a-link).
+They require the respective desktop app; the dashboard cannot confirm that a browser
+successfully handed a link to an installed app.
+
+## Where can I see my configuration?
+
+Use the small settings button in the dashboard header. The searchable dialog lists
+settings written in your workspace's `.env` first, followed by the remaining
+documented settings and their runtime defaults. It shows when an exported process
+variable takes precedence. Setup examples can differ from runtime defaults.
+
+Defaults are not all stored in one place. The numeric and switch defaults live
+in `tick_state.py`, emoji defaults in `reaction_config.py`, and the settings view
+also maintains display copies of other runtime fallbacks in `dashboard_settings.py`.
+Those other defaults still live with their runtime consumers; for example, the Codex
+launch default also appears in the dashboard server and browser launch fallback.
+This duplication is accepted for the current stabilization work. When adding or
+changing a variable, follow the [configuration maintenance checklist](docs/architecture-decisions/0006-ACCEPTED-CONFIG-DEFAULT-DUPLICATION.md)
+to keep runtime consumers, display defaults, setup values and documentation aligned.
+
+The shipped `env.example` provides the setting catalog and descriptions; setup
+examples are not automatically treated as runtime defaults. The view uses the shared
+environment loader: exported dashboard process values override `.env`, which overrides
+an absent value's runtime fallback. Explicit empty values remain visibly empty because
+they can disable a feature or be invalid, rather than always meaning “use the default”.
+In the Python loader used by this view, canonical `SIDEQUESTOR_*` names win over
+legacy `YAAS_*` names within `.env`, and the first duplicate assignment wins. Avoid
+duplicate assignments: sourcing the file in a shell can use the last one instead. Values written in `.env` are listed first, even if
+an exported variable overrides them.
+
+Credential values and unrecognized custom values are hidden before being sent to
+the browser. The dialog never writes configuration or reads Keychain secrets.
+
+Use its edit button to open the workspace in `SIDEQUESTOR_OPEN_IN` (Codex by
+default). Codex and Claude receive an editable request to work on `.env`; Cursor
+opens the folder without a prompt. Terminal mode opens a terminal at the workspace.
+Save `.env`, then refresh the dialog to see the new values. Loop interval changes
+require `sq stop` followed by `sq start`; exported settings and existing terminal
+sessions can also require a restart. This preference does not change the worker harness.
+
 ## How do I work on one quest in a terminal?
 
-Select a quest in the dashboard and choose **Open in terminal**. Sidequestor opens a Terminal
+Set `SIDEQUESTOR_OPEN_IN=terminal`, select a quest in the dashboard and choose **Open in terminal**. Sidequestor opens a Terminal
 window attached to that quest's own session. The session keeps running after you close the
 window, and opening it again joins the same session instead of starting another. Sessions are
 named `sq-<instance>-<quest-id>`, so the same quest ID in two workspaces never shares one.
@@ -597,7 +671,7 @@ If the installed command itself is broken, upgrade with the installing tool dire
 
 `.env`, `settings.json`, `state/`, `logs/`, and your personal `skills/` survive. `.yaas/engine/current/` is wiped and rebuilt every sync; hand-edits there are intentionally lost. An existing `.env` never gains newly added knobs because `provision_env` fills only placeholders, so diff it against `.env.example` after upgrading. Plists embed the installation’s absolute interpreter path: upgrading in place is fine, but recreating the environment (for example `uv tool install --force` with a different Python, or a new venv) means running `sq start` again.
 
-Reaction defaults use standard names: `robot_face`, `hourglass_flowing_sand`, and `white_check_mark`. Pickup is queued before harness launch; durable status delivery retries Slack failures without repeating completed actions. Blocked work shows `warning` (configurable with `SIDEQUESTOR_REACTION_BLOCKED_EMOJI`); exhausted retries create an Inbox review. Conscious no-action outcomes show done. Save reactions remain silent. Existing historical loading-only orphans are not automatically replayed. To retain a custom set, pin `SIDEQUESTOR_REACTION_PROCESS_EMOJI`, `SIDEQUESTOR_REACTION_LOADING_EMOJI`, and `SIDEQUESTOR_REACTION_DONE_EMOJI`.
+Reaction defaults use standard names: `robot_face`, `hourglass_flowing_sand`, and `white_check_mark`. Pickup is queued before harness launch; durable status delivery retries Slack failures without repeating completed actions. Work retained for retry or input shows 🕒 (`clock3`, configurable with `SIDEQUESTOR_REACTION_BLOCKED_EMOJI`); exhausted retries create an Inbox review. Conscious no-action outcomes show done. Save reactions remain silent. Existing historical loading-only orphans are not automatically replayed. To retain a custom set, pin `SIDEQUESTOR_REACTION_PROCESS_EMOJI`, `SIDEQUESTOR_REACTION_LOADING_EMOJI`, and `SIDEQUESTOR_REACTION_DONE_EMOJI`.
 
 The configurable `expand` reaction defaults to 🪄 (`magic_wand`). Its first scan leaves pre-existing wand reactions alone, so upgrading does not turn old reactions into edit requests. It expands your own Slack message in place, then carries out its explicit requests or creates a quest for ongoing work. It uses the same processing/done/blocked lifecycle as other action reactions. The edit helper verifies ownership, checks for intervening edits, and retains a separate edit receipt so retries do not expand a completed edit again. Set `SIDEQUESTOR_REACTION_EXPAND_EMOJI` to choose another trigger.
 

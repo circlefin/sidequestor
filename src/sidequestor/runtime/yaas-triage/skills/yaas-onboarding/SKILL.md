@@ -1,6 +1,6 @@
 ---
 name: yaas-onboarding
-description: Run the owner's guided Sidequestor onboarding (Stage 0 inventory, Stage A configuration checks, Stage B AGENTS.md and skills, Stage C quests, Stage D check-ins to day 30). Load on every dispatch of the quest whose folder holds onboarding.json, and in a terminal session started by `sq onboard --terminal`. Talks to the owner through the channel recorded in onboarding-channel.json.
+description: Run the owner's guided Sidequestor onboarding (Stage 0 inventory, Stage A configuration checks and dashboard app choice, Stage B AGENTS.md and skills, Stage C quests and personalized reactions practice, Stage D check-ins to day 30). Load on every dispatch of the quest whose folder holds onboarding.json, and in a terminal session started by `sq onboard --terminal`. Talks to the owner through the channel recorded in onboarding-channel.json.
 ---
 
 # yaas-onboarding
@@ -18,6 +18,19 @@ The onboarding quest folder's `onboarding.json` stores progress:
 - `skipped_stage_a`: set to `true` if the owner chose a quick start.
 - `interface_offer`: `offered`, `accepted`, `declined` or `unavailable`, plus the approved name when applicable.
 - `interface_channel_id`, `interface_quest_id`: verified created channel and ongoing quest.
+- `dashboard_app_choice`: optional app-preference progress. `status` is `not_asked`,
+  `asked`, `chosen` or `deferred`; `value` records the last owner-selected `codex`,
+  `claude`, `cursor` or `terminal`. Missing means `not_asked`. The actual setting is
+  `SIDEQUESTOR_OPEN_IN` in the workspace `.env`, not this progress record.
+  `question_message` may store the verified Slack `channel_id` and `message_ts`.
+  `blocked_by: process_environment` and `effective_value` record a saved selection
+  whose dashboard process override still wins; `service_config_offered` records
+  whether the one-time offer to resolve that override was delivered.
+- `reaction_demo`: optional practice progress. `status` is `not_offered`, `offered`,
+  `running`, `completed`, `skipped` or `deferred`; `samples` maps each reaction role
+  to its verified message coordinates and observed outcome. Missing means
+  `not_offered`. Keep source references and the owning quest for the adopt example
+  here too. These coordinates are receipts, never a channel preference.
 
 The CLI-owned `onboarding-channel.json` stores `channel` (`slack` or `terminal`).
 Read it on every dispatch and immediately before a message; it overrides any legacy
@@ -98,6 +111,70 @@ browser login or operating-system permission in plain language.
   Anything addressed to other people (for
   example asking a colleague about a skill) is a draft the owner sends.
 - Third-party skills, connectors and installs need the owner's OK first.
+
+## Choose the dashboard app early
+
+Ask once near the start of onboarding, including a quick start that skips Stage A:
+
+> Which app should the dashboard's “Go to…” / “Open in…” buttons use: Codex,
+> Claude Desktop (Claude Code), Cursor, or Terminal? The default is Codex.
+> This is separate from the agent that runs your background quests.
+
+Prefer the dashboard control payload's `workspace.open_in` for its current effective
+choice. If the dashboard is unavailable, inspect only the workspace's
+`SIDEQUESTOR_OPEN_IN` (or legacy `YAAS_OPEN_IN`) and describe it as the stored
+preference, which may differ from an exported process override. Reading this
+configuration is allowed; writing a new choice requires the owner's selection.
+Never print other `.env` values. Name the current valid choice and offer to keep it.
+An empty or unrecognized value uses the Codex fallback, not an invalid app.
+Do not infer a desktop preference from `SIDEQUESTOR_AGENT`,
+the onboarding channel, or which CLI is running this session. Codex and Claude open
+a workspace chat with a short editable prompt; the owner presses Send. Cursor opens
+the workspace folder without a prompt. Terminal keeps the existing interactive
+terminal flow. The app must be installed; explain that if needed, and never install
+one or switch the worker harness just because they select a dashboard app.
+
+Record `asked` after the question is shown or its delivery is confirmed; a definitive
+send failure must not leave it marked as awaiting an answer. In Slack, keep the sent
+message coordinates in `dashboard_app_choice.question_message` and inspect an
+uncertain delivery before retrying. Read the recent
+conversation before offering again so a delivered question is not repeated. An explicit
+selection (including “keep that one”) authorizes only this setting change; do not ask
+for a second confirmation.
+Save their selected `value` in progress immediately so a resume can finish applying
+and verifying it without repeating the question. **`asked` with a `value` means the
+answer has been received: resume applying/verifying it, never ask again.** If `.env`
+already contains that value, do not rewrite it. If the dashboard is unavailable,
+leave verification pending and continue other onboarding steps; retry verification
+at the next normal owner interaction without repeating the question. Update only `SIDEQUESTOR_OPEN_IN` in
+this workspace's `.env`, if a change is needed. Preserve all unrelated entries, comments and file permissions.
+Update existing active occurrences rather than appending a duplicate that the first
+value would shadow. Use one canonical value, `codex`, `claude`, `cursor`, or `terminal`;
+never execute/source `.env` or expose its credentials. Verify the dashboard reports
+the chosen `workspace.open_in` on its next poll. If an exported process variable wins,
+explain that and ask before changing process/service configuration; do not claim the
+buttons switched when they did not. If the saved `.env` choice is effective, record
+`chosen`. If `.env` was saved but the process override still wins, also record
+`chosen`, with `blocked_by: process_environment` and the actual `effective_value`.
+Tell the owner which app the dashboard still uses. Offer once to resolve the service
+override, saving `service_config_offered` after delivery, and wait for that separate
+approval; do not repeat the offer or keep reapplying `.env` on subsequent interactions.
+The app choice is complete and must not block later onboarding. Recheck and clear
+`blocked_by` only after the dashboard actually reports the requested value.
+A previously confirmed choice is not a reason to overwrite a later manual `.env` edit.
+
+If they defer, record `deferred`, leave the current setting intact, and continue;
+this optional choice must not block onboarding. Mention the gear/settings dialog as
+the place to see or change it later. Do not repeat a question that is awaiting an
+answer, or re-offer a chosen/deferred preference unless the owner asks. Resume from
+this record after a channel switch. Active older onboardings missing this field get
+the offer once at their next normal owner interaction, even if past Stage A; never
+reopen completed or archived onboarding for it, and always skip when `stage` is
+`done`, even if the quest folder has not been moved yet. An agent-initiated Stage D
+check-in is not an owner interaction for this offer: wait for the owner's reply.
+In terminal mode, only the interactive session
+asks this question. Background terminal-mode dispatches keep their existing nudge
+behavior and must not ask it or edit `.env`.
 
 ## Offer a Slack interface early
 
@@ -204,6 +281,8 @@ gets a shorter onboarding that builds on what they have.
 
 ## Stage A: Configuration checks
 
+Complete the early dashboard app question above if it has not been offered yet.
+
 1. Confirm the Sidequestor loop is running and picking up changes (`sq doctor`, dashboard
    heartbeat). If it isn't, give the exact fix.
 2. Audit the MCP and CLI connections the owner should be using, in two groups:
@@ -270,10 +349,80 @@ gets a shorter onboarding that builds on what they have.
    (see the yaas-quest-creation skill).
 4. Show how to control and monitor quests in plain language from their chosen Slack
    conversation: ask what is running, inspect progress, create/change a quest, and
-   pause or resume one. Link to the dashboard for reviews and status. Technical CLI
+   pause or resume one. Link to the dashboard for reviews and status, show the configured
+   app launch buttons at workspace, New Quest and quest level, and point out the
+   settings gear for later changes. Cursor opens the folder without a prompt. Technical CLI
    equivalents are optional for owners who ask for them; operate the harness for
-   everyone else. Keep it shorter for experienced owners. Record
-   `stage_c_completed_at`.
+   everyone else. Keep it shorter for experienced owners.
+5. Offer the personalized reactions practice below before wrapping up Stage C.
+   Completion or an explicit skip is enough; unavailable Slack may defer it without
+   blocking terminal onboarding. Then record `stage_c_completed_at`.
+
+### Hands-on reactions: use examples from the owner's work
+
+Invite the owner to try reactions, rather than only explaining the emoji list:
+"Want to try a few examples based on your day-to-day work? I'll send a separate
+practice message for each action, and you can add the suggested reaction."
+Wait for their agreement before sending the exercise. A decline is `skipped`;
+do not offer it repeatedly. If an active Stage D quest has never offered it, offer
+it once at the next check-in. Do not reopen completed onboarding for this exercise.
+
+1. **Research before composing.** Reuse the verified Stage B findings, existing
+   quests and context first. Fill gaps with the owner's profile and recent activity
+   from working, authorized connections. Establish their role, a current workstream,
+   recurring requests and a useful reference. Pick examples that resemble their actual
+   work: a customer question, engineering handoff, review request, project update or
+   meeting preparation as appropriate. If context is insufficient, ask one short
+   question rather than inventing their job, projects or obligations. Record the
+   references used; do not re-scan all sources on every retry.
+2. **Resolve the actual emojis.** Run
+   `python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/reaction_config.py"` and use the
+   returned names in every invitation. Explain the configured `loading`, `done` and
+   `blocked` markers too: pending work may retry or need input; never promise a time.
+3. **Use the selected private conversation.** Reread `onboarding-channel.json`,
+   verify the owner DM or approved private interface and its existing send grant,
+   and use the normal quest-scoped `slack-send.py` surface. Keep `allow_send: false`.
+   In terminal mode, offer an optional switch through `sq onboard --slack` only with
+   the owner's agreement; otherwise show the explanation in terminal and defer the
+   hands-on part. Missing Slack must not block the remaining onboarding stages.
+4. **Send several distinct sample messages.** Use a separate top-level message
+   for each supported example below, in a small batch. Prefix each with the usual
+   `:sidequestor-yaas: ` and clearly label it "Practice". Put the situation and the
+   instruction in the message, e.g. "Add :<resolved-draft-emoji>: to draft a reply
+   here." Fill examples from the research; do not send generic placeholder text.
+   Keep all resulting replies and drafts in the practice threads. Do not tag other
+   people, post to business channels or invent production incidents, deadlines,
+   customer claims or commitments to make a demonstration interesting.
+
+| Role | Personalized practice and what to show |
+|---|---|
+| `process` | A realistic question about the owner's current work, answerable from verified references. Ask them to add the process emoji; the agent researches and answers in this private practice thread. |
+| `draft` | A plausible colleague/customer request related to that work. Ask for the draft emoji; create a draft in the practice thread for the owner to inspect. No message goes to the real colleague/customer. |
+| `save` | A real, useful and verified reference or fact from the research, with its source link. Ask for the save emoji; show how to find the saved context afterwards. Do not save invented scenario facts or teach that save sends a reply. |
+| `adopt` | A small practice follow-up explicitly belonging to the existing onboarding quest (or an unambiguous approved interface quest) that already watches this conversation. Establish that owner before offering the emoji. Ask for adopt, verify the thread watch was added/re-armed, then invite one small owner update to demonstrate follow-up. Do not create a business quest or promise tracking without a verified owner. |
+| `expand` | Send a personalized rough-message suggestion and ask the owner to post it as their own normal message, then add the expand emoji to that message. Verify its authorship before editing. Keep it a private, low-risk practice update with no external action request. Show the in-place edit; never replace it with a new reply. |
+
+5. **Let the owner trigger the real workflow.** Never add trigger reactions for
+   them or simulate successful results. Use the ordinary reactions worker, ledger
+   and guarded helpers. Load `yaas-reactions/SKILL.md` when interpreting outcomes.
+   The onboarding quest must not also execute the same reaction action. Its job is
+   to guide, observe and explain; its existing owner-conversation watch receives
+   questions and updates. Ignore your own prefixed output as usual.
+6. **Resume without duplicates.** After each successful send, record the returned
+   channel/message timestamps under `reaction_demo.samples[role]`. On a retry or
+   uncertain send, live-read the selected conversation and reconcile existing
+   practice messages before posting another. Never resend the full batch just
+   because one example is pending. Observe actual acknowledgements, watch additions,
+   saved context or edit receipts before marking an example complete. Explain a
+   failure honestly; a practice reaction must not become fake success.
+7. **Connect the result to daily work.** Give a short recap using the owner's
+   situations: which emoji gets an answer, prepares a draft, remembers useful
+   context, follows a thread or improves their own wording. Ask which example they
+   found useful. Record `completed` after the chosen examples have verified outcomes,
+   or `skipped` if the owner stops. Leave unfinished examples recorded as pending;
+   unavailable capabilities can be `deferred` without stalling onboarding. Stop
+   tutorial-only follow-up when the owner is finished, through the normal watch
+   helper; preserve all real quest watches and normal reaction receipts.
 
 ## Stage D: Check-ins
 

@@ -113,6 +113,7 @@ def provision_env(workspace: Workspace, *, input_fn=input, interactive: bool = T
         "SIDEQUESTOR_CLAUDE_MODEL", "SIDEQUESTOR_CODEX_MODEL", "SIDEQUESTOR_CURSOR_MODEL",
         "SIDEQUESTOR_CLAUDE_EFFORT", "SIDEQUESTOR_CODEX_EFFORT",
         "SIDEQUESTOR_CLAUDE_PERMISSION_MODE", "SIDEQUESTOR_CODEX_PERMISSION_MODE",
+        "SIDEQUESTOR_CURSOR_PERMISSION_MODE",
         "SLACK_APP_ID", "SLACK_CLIENT_ID", "SLACK_WORKSPACE_NAME", "SLACK_WORKSPACE_DOMAIN",
     )}
     values: dict[str, str] = {}
@@ -153,24 +154,25 @@ def provision_env(workspace: Workspace, *, input_fn=input, interactive: bool = T
         if model:
             values[model_key] = model
 
-    # Cursor's CLI has its own execution mode and does not expose the Claude/Codex
-    # effort or permission flags used by the other backends.
+    # Cursor has no reasoning-effort flag exposed by Sidequestor.
     if agent != "cursor":
         effort_key = f"SIDEQUESTOR_{agent.upper()}_EFFORT"
-        permission_key = f"SIDEQUESTOR_{agent.upper()}_PERMISSION_MODE"
         effort = existing.get(effort_key)
         if effort in _PLACEHOLDERS:
             effort = _prompt("Reasoning effort", "high", input_fn=input_fn) if interactive else "high"
             values[effort_key] = effort
-        permission = existing.get(permission_key)
-        if permission in _PLACEHOLDERS:
-            # Kept as the default because restricted modes block the helper scripts headless
-            # workers must run (Claude's acceptEdits denies `python3 ...` in -p mode).
-            print("Worker permission default is bypassPermissions: workers run shell, file and "
-                  "network actions without approval while reading untrusted Slack, email and "
-                  "GitHub text. Use it only in a workspace where that is acceptable.")
-            permission = _prompt("Worker permission mode", "bypassPermissions", input_fn=input_fn) if interactive else "bypassPermissions"
-            values[permission_key] = permission
+
+    permission_key = f"SIDEQUESTOR_{agent.upper()}_PERMISSION_MODE"
+    permission = existing.get(permission_key)
+    if permission in _PLACEHOLDERS:
+        # Kept as the default because restricted modes block helper scripts headless
+        # workers must run. Cursor's bypass mode also disables its sandbox.
+        print("Worker permission default is bypassPermissions: workers may run shell, file and "
+              "network actions without approval while reading untrusted Slack, email "
+              "and GitHub text. Cursor bypass mode also disables its sandbox. Use it only in a "
+              "workspace where that behavior is acceptable.")
+        permission = _prompt("Worker permission mode", "bypassPermissions", input_fn=input_fn) if interactive else "bypassPermissions"
+        values[permission_key] = permission
 
     if enabled:
         for key in ("SLACK_APP_ID", "SLACK_CLIENT_ID", "SLACK_WORKSPACE_NAME", "SLACK_WORKSPACE_DOMAIN"):

@@ -34,6 +34,19 @@ class VersionCompareTest(unittest.TestCase):
         self.assertFalse(uc.is_newer("9" * 5000, "0.1.51"))
 
 
+class FetchLatestTest(unittest.TestCase):
+    def test_fetch_uses_native_trust_with_certificate_verification(self):
+        with patch.object(uc.urllib.request, "urlopen") as fetch:
+            fetch.return_value.__enter__.return_value.read.return_value = (
+                b'{"info": {"version": "0.2.3"}}')
+            self.assertEqual(uc.fetch_latest(), "0.2.3")
+        context = fetch.call_args.kwargs["context"]
+        self.assertIsInstance(context, uc.truststore.SSLContext)
+        self.assertEqual(context.verify_mode, uc.ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(fetch.call_args.kwargs["timeout"], uc.FETCH_TIMEOUT_SEC)
+
+
 class RunCheckTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="sidequestor-update-check-")

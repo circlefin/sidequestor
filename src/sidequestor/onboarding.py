@@ -119,7 +119,9 @@ def _context(channel: str) -> str:
     return (
         "### Objective\n\n"
         "Walk the owner through Sidequestor onboarding: Stage 0 (what is already here), "
-        "Stage A (configuration checks), Stage B (AGENTS.md and skills), Stage C (quests) and "
+        "Stage A (configuration checks and dashboard app choice), "
+        "Stage B (AGENTS.md and skills), Stage C (quests and "
+        "personalized hands-on reaction practice) and "
         "Stage D (check-ins until day 30), then close this quest.\n\n"
         "### Procedure\n\n"
         f"Load `{SKILL}` on every dispatch and follow it. It is the source of truth for the "
@@ -176,6 +178,8 @@ def create_quest(workspace: Workspace, channel: str, *, run=subprocess.run,
         "started_at": stamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "stage": "0",
         "stage_c_completed_at": None,
+        "reaction_demo": {"status": "not_offered", "samples": {}},
+        "dashboard_app_choice": {"status": "not_asked"},
     })
     _write_json(quest_dir / CHANNEL_MARKER, {"channel": channel})
     return quest_dir

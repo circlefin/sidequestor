@@ -194,6 +194,29 @@ class ConnectorPolicyTest(unittest.TestCase):
                 handler._handle_open_workspace()
             self.assertEqual(run.call_args.args[0][2], 'Visual Studio Code')
 
+    def test_dashboard_launch_preference_reloads_and_is_independent_of_harness(self):
+        spec = importlib.util.spec_from_file_location('launch_dashboard', TRIAGE / 'ops/dashboard-server.py')
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, self.env, clear=True), patch.object(sys, 'argv', ['dashboard-server.py']):
+            spec.loader.exec_module(module)
+            for value, expected in ((None, 'codex'), ('', 'codex'), ('Cursor', 'cursor'),
+                                    (' CLAUDE ', 'claude'), ('terminal', 'terminal'),
+                                    ('claude', 'claude'), ('codex', 'codex'), ('cursor', 'cursor'), ('invalid', 'codex')):
+                self.envfile.write_text('SIDEQUESTOR_AGENT=claude\n' + (
+                    f'SIDEQUESTOR_OPEN_IN={value}\n' if value is not None else ''))
+                self.assertEqual(module.build_workspace_identity()['open_in'], expected)
+            handler = object.__new__(module.Handler)
+            replies = []
+            handler._send_json = lambda *args: replies.append(args)
+            self.envfile.write_text('SIDEQUESTOR_TERMINAL_APP=iTerm\n')
+            with patch.object(module.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run:
+                handler._handle_workspace_terminal()
+            self.assertEqual(run.call_args.args[0], ['open', '-a', 'iTerm', str(self.root.resolve())])
+            self.assertTrue(replies[-1][0]['ok'])
+            with patch.object(module.subprocess, 'run', side_effect=OSError('missing')):
+                handler._handle_workspace_terminal()
+            self.assertEqual(replies[-1][1], 500)
+
     def test_retire_clears_its_health_record(self):
         path = self.install_health()
         self.run_helper('ledger/add-watch.py', 'retire', 'quest-test', 'watch-live', 'obsolete')

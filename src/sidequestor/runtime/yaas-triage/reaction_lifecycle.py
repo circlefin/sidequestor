@@ -172,7 +172,19 @@ class Lifecycle:
                     desired = 'loading' if any(r['desired'] == 'loading' for r in group) else (
                         'blocked' if any(r['desired'] == 'blocked' for r in group) else 'done')
                 try:
-                    success = self.deliver(record['channel_id'], record['message_ts'], desired)
+                    # Only old, tracked blocked deliveries need the former default
+                    # removed. New transitions must not pay an extra API call.
+                    retire_warning = (not self.env.get('SIDEQUESTOR_REACTION_BLOCKED_EMOJI')
+                                      and not self.env.get('YAAS_REACTION_BLOCKED_EMOJI')
+                                      and 'warning' not in self.emojis.values()
+                                      and any(r.get('delivered') == 'blocked' and not r.get('delivered_emoji')
+                                              for r in group))
+                    options = {'retire_warning': True} if retire_warning else {}
+                    retired = sorted({r['delivered_emoji'] for r in group
+                                      if r.get('delivered_emoji') and r['delivered_emoji'] not in self.emojis.values()})
+                    if retired:
+                        options['retire_emojis'] = retired
+                    success = self.deliver(record['channel_id'], record['message_ts'], desired, **options)
                 except (OSError, subprocess.SubprocessError):
                     success = False
                 with self.locked() as records:
@@ -186,16 +198,22 @@ class Lifecycle:
                         for iid, revision in revisions.items():
                             sibling = records.get(iid, {})
                             if sibling.get('revision') == revision:
-                                sibling.update(confirmed=True, delivered=desired)
+                                sibling.update(confirmed=True, delivered=desired,
+                                               delivered_emoji=self.emojis[desired])
                 if success:
                     try_log_inbox(self.root, f"reaction-status:{record['item_id']}:{record['revision']}", {
                         'event': 'reaction_started' if desired == 'loading' else 'reaction_finished',
                         'channel_id': record['channel_id'], 'message_ts': record['message_ts'],
                         'status': desired, 'succeeded': True, 'note': f'Reaction status confirmed: {desired}'})
 
-    def deliver(self, channel, ts, state):
-        cp = subprocess.run([sys.executable, str(HERE / 'surfaces/react-lifecycle.py'),
-                             'advance', channel, ts, state], env=self.env,
+    def deliver(self, channel, ts, state, *, retire_warning=False, retire_emojis=()):
+        arguments = [sys.executable, str(HERE / 'surfaces/react-lifecycle.py'),
+                     'advance', channel, ts, state]
+        if retire_warning:
+            arguments.append('--retire-warning')
+        for emoji in retire_emojis:
+            arguments.extend(['--retire-emoji', emoji])
+        cp = subprocess.run(arguments, env=self.env,
                             capture_output=True, timeout=200)
         return cp.returncode == 0
 

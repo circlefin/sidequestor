@@ -21,12 +21,15 @@ import json
 import os
 import re
 import signal
+import ssl
 import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
 from typing import Callable
+
+import truststore
 
 from . import __version__
 
@@ -99,7 +102,9 @@ def check_status(workspace_root: Path, installed: str = __version__) -> dict:
 def fetch_latest(url: str = PYPI_URL, timeout: float = FETCH_TIMEOUT_SEC) -> str:
     request = urllib.request.Request(url, headers={"Accept": "application/json",
                                                    "User-Agent": f"sidequestor/{__version__}"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    # Use OS-managed trust consistently across Python distributions and launchd.
+    context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
         data = json.loads(response.read(2_000_000))
     version = data["info"]["version"]
     if parse_version(version) is None:

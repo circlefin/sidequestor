@@ -288,6 +288,7 @@ def _preflight(payload):
     try:
         file = _gws("drive", "files", "get", "--params", json.dumps({
             "fileId": doc_id, "fields": "capabilities(canComment)",
+            "supportsAllDrives": True,
         }))
         if not (file.get("capabilities") or {}).get("canComment"):
             raise PrerequisiteError("the authenticated Google account cannot comment on this document")

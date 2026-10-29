@@ -47,6 +47,10 @@ class GDocCommentTests(unittest.TestCase):
             with calls.open("a") as stream:
                 stream.write(json.dumps(args) + "\\n")
             if args[:3] == ["drive", "files", "get"]:
+                params = json.loads(args[args.index("--params") + 1])
+                if os.environ.get("FAKE_SHARED_DRIVE") == "1" and params.get("supportsAllDrives") is not True:
+                    print("error[api]: File not found: doc-123", file=sys.stderr)
+                    raise SystemExit(2)
                 result = {"capabilities": {
                     "canComment": os.environ.get("FAKE_CAN_COMMENT", "1") == "1",
                     "canEdit": os.environ.get("FAKE_CAN_EDIT", "1") == "1",
@@ -142,6 +146,16 @@ class GDocCommentTests(unittest.TestCase):
             event = json.loads(quest.joinpath("timeline.ndjson").read_text().splitlines()[-1])
             self.assertEqual("gdoc_comments_added", event["event"])
             self.assertEqual(["comment-1"], event["comment_ids"])
+
+    def test_shared_drive_document_can_be_commented_and_verified(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.workspace(root, allow_send=True)
+            gws, calls = self.fake_gws(root)
+            result = self.run_helper(root, gws, self.payload(), FAKE_SHARED_DRIVE="1")
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("anchored", json.loads(result.stdout)["results"][0]["status"])
+            self.assertEqual(1, len(self.writes(calls)))
 
     def test_non_bmp_anchor_uses_utf16_offsets_and_tab_id(self):
         with tempfile.TemporaryDirectory() as raw:

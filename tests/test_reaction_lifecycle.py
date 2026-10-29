@@ -66,6 +66,36 @@ class LifecycleTest(unittest.TestCase):
         self.manager.request(self.item, 'loading')
         self.assertEqual(self.records()[self.item['item_id']]['desired'], 'loading')
 
+    def test_legacy_warning_cleanup_is_queued_only_once_without_repeating_business_action(self):
+        self.manager.request(self.item, 'blocked')
+        with self.manager.locked() as records:
+            records[self.item['item_id']].update(confirmed=True, delivered='blocked')
+        self.manager.request(self.item, 'loading')
+        with patch.object(self.manager, 'deliver', return_value=True) as deliver:
+            self.manager.flush()
+            deliver.assert_called_once_with('C123', '1000.000001', 'loading', retire_warning=True)
+        record = self.records()[self.item['item_id']]
+        self.assertFalse(record['final'])
+        self.assertEqual(record['delivered_emoji'], 'hourglass_flowing_sand')
+        self.manager.request(self.item, 'blocked')
+        with patch.object(self.manager, 'deliver', return_value=True) as deliver:
+            self.manager.flush()
+            deliver.assert_called_once_with('C123', '1000.000001', 'blocked')
+
+    def test_previous_repeat_marker_is_retired_once_when_default_changes(self):
+        self.manager.request(self.item, 'blocked')
+        with self.manager.locked() as records:
+            records[self.item['item_id']].update(confirmed=True, delivered='blocked', delivered_emoji='repeat')
+        self.manager.request(self.item, 'loading')
+        with patch.object(self.manager, 'deliver', return_value=True) as deliver:
+            self.manager.flush()
+            deliver.assert_called_once_with('C123', '1000.000001', 'loading', retire_emojis=['repeat'])
+        self.manager.request(self.item, 'blocked')
+        with patch.object(self.manager, 'deliver', return_value=True) as deliver:
+            self.manager.flush()
+            deliver.assert_called_once_with('C123', '1000.000001', 'blocked')
+        self.assertEqual(self.records()[self.item['item_id']]['delivered_emoji'], 'clock3')
+
     def test_failed_review_does_not_remove_work_from_retry(self):
         with patch.object(lifecycle.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'helper')):
             with self.assertRaises(subprocess.CalledProcessError):
@@ -238,6 +268,30 @@ class SurfaceTest(unittest.TestCase):
             self.assertFalse(self.surface.advance('C123', '1000.1', 'done', 'unused', env={}))
         self.assertEqual(react.call_count, 1)
         self.assertEqual(react.call_args.args[1], 'add')
+
+    def test_retry_marker_replaces_legacy_warning_after_successful_add(self):
+        with patch.object(self.surface, '_react', return_value=True) as react:
+            self.assertTrue(self.surface.advance('C123', '1000.1', 'blocked', 'unused', env={}, retire_warning=True))
+        self.assertEqual(react.call_args_list[0].args[-1], 'clock3')
+        self.assertIn(('remove', 'warning'), [(c.args[1], c.args[-1]) for c in react.call_args_list])
+
+    def test_legacy_warning_is_preserved_when_it_is_a_configured_role(self):
+        with patch.object(self.surface, '_react', return_value=True) as react:
+            self.assertTrue(self.surface.advance('C123', '1000.1', 'done', 'unused',
+                env={'SIDEQUESTOR_REACTION_SAVE_EMOJI': 'warning'}, retire_warning=True))
+        self.assertNotIn(('remove', 'warning'), [(c.args[1], c.args[-1]) for c in react.call_args_list])
+
+    def test_previous_repeat_is_removed_after_clock_is_added(self):
+        with patch.object(self.surface, '_react', return_value=True) as react:
+            self.assertTrue(self.surface.advance('C123', '1000.1', 'blocked', 'unused', env={}, retire_emojis=['repeat']))
+        self.assertEqual(react.call_args_list[0].args[-1], 'clock3')
+        self.assertIn(('remove', 'repeat'), [(c.args[1], c.args[-1]) for c in react.call_args_list])
+
+    def test_retired_emoji_cannot_remove_an_explicit_save_marker(self):
+        with patch.object(self.surface, '_react', return_value=True) as react:
+            self.assertTrue(self.surface.advance('C123', '1000.1', 'blocked', 'unused',
+                env={'SIDEQUESTOR_REACTION_SAVE_EMOJI': 'repeat'}, retire_emojis=['repeat']))
+        self.assertNotIn(('remove', 'repeat'), [(c.args[1], c.args[-1]) for c in react.call_args_list])
 
     def test_failed_cleanup_is_retryable(self):
         def react(binary, verb, *args):

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .job_path import resolve_job_path
 from .native import RUNTIME_ROOT, _apply_env_aliases, _load_workspace_env
-from .worker_readiness import auth_check, invoke, invocation_failure, save_state, read_state
+from .worker_readiness import auth_check, invoke, invocation_failure, save_state, slack_helper_ready, SLACK_ACCESS_ERROR
 
 
 def worker_environment(workspace, executable):
@@ -110,7 +110,10 @@ def setup_worker(workspace, executable, *, interactive=True, input_fn=input):
         print("AI login and selected model: verified")
         if agent == "claude":
             return verify_claude_slack(workspace, binary, environment, interactive=interactive)
-        return verify_slack_helper(workspace, environment)
+        if verify_slack_helper(workspace, environment):
+            save_state(workspace, agent, binary, environment, scope="slack")
+            return True
+        return False
     except KeyboardInterrupt:
         print("\nSetup interrupted. Rerun sq setup to continue.")
         return False
@@ -135,15 +138,8 @@ def slack_identity(workspace, environment):
 def verify_slack_helper(workspace, environment):
     if not slack_required(environment):
         return True
-    user_id = slack_identity(workspace, environment)
-    if not user_id:
-        print("Slack identity is missing. Complete Slack OAuth with sq setup.")
-        return False
-    command = ["bash", str(RUNTIME_ROOT / "yaas-triage/surfaces/mcp-call.sh"),
-               "slack_read_user_profile", json.dumps({"user_id": user_id})]
-    result = invoke(command, workspace, environment)
-    if result.returncode:
-        print("Sidequestor Slack access needs attention. Complete Slack OAuth with sq setup.")
+    if not slack_helper_ready(workspace, environment):
+        print("Sidequestor Slack read could not be verified. Check the connection and credentials, then rerun sq setup.")
         return False
     print("Sidequestor Slack access: verified")
     return True
@@ -163,60 +159,18 @@ def claude_slack_status(text):
 
 
 def verify_claude_slack(workspace, binary, environment, *, interactive):
-    if not slack_required(environment) and not read_state(workspace).get("slack"):
+    """Verify the supported worker helper; native Claude MCP OAuth is optional."""
+    if not slack_required(environment):
+        save_state(workspace, "claude", binary, environment, scope="slack")
         return True
-    config = RUNTIME_ROOT / "yaas-triage/dispatch/worker.mcp.json"
-    base = [binary, "--strict-mcp-config", "--mcp-config", str(config)]
-    user_id = slack_identity(workspace, environment)
-    if not user_id and slack_required(environment):
-        print("Slack identity could not be verified. Complete Slack OAuth with sq setup.")
-        return False
-    tool = "slack_read_user_profile" if user_id else "slack_search_public_and_private"
-    prompt = (f'Use only slack_read_user_profile for user_id {user_id}.' if user_id else
-              'Use only slack_search_public_and_private with query "from:me" and count 1.')
-    prompt += ' Do not write anything. Report whether the read succeeded.'
-    command = base + ["-p", prompt, "--tools", "", "--allowedTools", f"mcp__slack__{tool}",
-                      "--permission-mode", "default", "--output-format", "stream-json", "--verbose"]
-    model = environment.get("YAAS_CLAUDE_MODEL")
-    if model:
-        command += ["--model", model]
-    result = invoke(command, workspace, environment, timeout=90)
-    if claude_slack_status(result.stdout) == "needs-auth":
-        save_state(workspace, "claude", binary, environment,
-                   "Claude Slack MCP needs reconnection. Run sq setup.", scope="slack")
-        if not interactive:
-            print("Claude Slack MCP needs connection. Run sq setup interactively.")
-            return False
-        print("Claude needs a separate Slack sign-in. Setup will open Claude's MCP menu.")
-        print("  1. Select slack, then choose its authentication/sign-in option.")
-        print("  2. Complete authorization in your browser, then return to Claude.")
-        print("  3. Type /exit to return here. Setup will verify Slack and continue.")
-        print("If the menu does not open automatically, type /mcp inside Claude.")
-        # The interactive session is guaranteed to load the same explicit configuration.
-        # MCP-management subcommands on older CLIs may ignore root session flags.
-        # --mcp-config accepts multiple values, so terminate option parsing before
-        # the slash-command prompt; otherwise /mcp is treated as a config file.
-        if invoke(base + ["--", "/mcp"], workspace, environment, interactive=True).returncode:
-            print("Claude closed with an error. Slack sign-in was not verified. Rerun sq setup to try again.")
-            return False
-        result = invoke(command, workspace, environment, timeout=90)
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".ndjson") as stream:
-        stream.write(result.stdout)
-        stream.flush()
-        check = invoke([sys.executable, str(RUNTIME_ROOT / "yaas-triage/dispatch/slack-read-health.py"), stream.name], workspace, environment)
-    if result.returncode or check.returncode or claude_slack_status(result.stdout) != "connected":
-        if claude_slack_status(result.stdout) == "needs-auth":
-            save_state(workspace, "claude", binary, environment,
-                       "Claude Slack MCP needs reconnection. Run sq setup.", scope="slack")
-        if claude_slack_status(result.stdout) == "needs-auth":
-            print("Slack is still signed out in Claude. Rerun sq setup, finish Slack authentication in the MCP menu, then type /exit.")
-        else:
-            print("Claude worker Slack read was not verified. Check its connection and rerun sq setup.")
-        return False
-    save_state(workspace, "claude", binary, environment, scope="slack")
-    print("Claude worker Slack MCP: verified")
-    return verify_slack_helper(workspace, environment)
+    if verify_slack_helper(workspace, environment):
+        save_state(workspace, "claude", binary, environment, scope="slack")
+        print("Claude worker Slack access: verified through Sidequestor helper")
+        return True
+    save_state(workspace, "claude", binary, environment,
+               SLACK_ACCESS_ERROR,
+               scope="slack")
+    return False
 
 
 def _report_worker_version(workspace, executable):
