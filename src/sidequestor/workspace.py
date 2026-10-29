@@ -8,6 +8,7 @@ import tempfile
 from contextlib import contextmanager
 import os
 import secrets
+import shlex
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,11 @@ class Workspace:
     @property
     def env_file(self) -> Path:
         return self.root / ".env"
+
+
+def workspace_command(workspace: Workspace, *arguments: str) -> str:
+    """Format a copyable command that keeps its workspace target explicit."""
+    return shlex.join(["sq", "--workspace", str(workspace.root), *arguments])
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -114,7 +120,7 @@ def _valid_rows(rows: list[dict]) -> list[dict]:
     for row in rows:
         try:
             ws = load_workspace(row["path"])
-        except (SystemExit, OSError, KeyError, TypeError):
+        except (SystemExit, OSError, KeyError, TypeError, RuntimeError, ValueError):
             continue
         if ws.instance_id == row.get("instance_id"):
             valid.append(row)
@@ -126,7 +132,20 @@ def _register(workspace: Workspace) -> None:
     with file_lock(registry.with_suffix(".lock")):
         rows = list_instances()
         old = next((r for r in rows if r.get("instance_id") == workspace.instance_id), {})
-        rows = [r for r in rows if r.get("instance_id") != workspace.instance_id]
+        retained = []
+        was_default = bool(old.get("default"))
+        for row in rows:
+            try:
+                same_path = bool(row.get("path")) and Path(row["path"]).expanduser().resolve() == workspace.root
+            except (OSError, RuntimeError, TypeError, ValueError):
+                same_path = False
+            if same_path:
+                was_default = was_default or bool(row.get("default"))
+            if not same_path and row.get("instance_id") != workspace.instance_id:
+                retained.append(row)
+        rows = retained
+        if was_default:
+            old = dict(old, default=True)
         rows.append(dict(old, instance_id=workspace.instance_id,
                          display_name=workspace.display_name, path=str(workspace.root)))
         valid = _valid_rows(rows)
@@ -144,7 +163,7 @@ def default_workspace() -> Workspace | None:
             row = defaults[0]
             try:
                 ws = load_workspace(row["path"])
-            except (SystemExit, KeyError, TypeError):
+            except (SystemExit, OSError, KeyError, TypeError, RuntimeError, ValueError):
                 raise SystemExit("Default workspace is unavailable. Run sq setup --select-workspace, or sq --workspace PATH setup.")
             if ws.instance_id != row.get("instance_id"):
                 raise SystemExit("Default workspace identity changed. Run sq setup --select-workspace, or sq --workspace PATH setup.")

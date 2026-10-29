@@ -50,10 +50,18 @@ sidequestor init .
 # Save the ready-to-paste Slack YAML manifest.
 sq setup --manifest > slack-app-manifest.yaml
 # Run interactive onboarding; bypassPermissions is the default worker permission mode.
-sq setup
+sq --workspace . setup
 # Start triage, heartbeat, and the dashboard and print the dashboard URL.
-sq start
+sq --workspace . start
 ```
+
+Always target the folder explicitly when setting up a new or additional workspace.
+`cd` and `sidequestor init .` do not override an existing saved default or an exported
+workspace variable. `sq init` prints the exact next setup command for its folder,
+including safe quoting for paths with spaces. Use that command or `sq --workspace . setup`
+from inside the intended workspace.
+Setup saves its selected workspace as the default; initializing an additional
+folder alone does not replace an existing default.
 
 The repository also includes `install.sh` for a fresh macOS install. It installs the
 PyPI package with uv when needed, creates `~/sidequestor` only when no workspace is
@@ -75,7 +83,20 @@ only while that environment is active, or by full path such as `.venv/bin/sq`.
 
 `sq start`, `sq stop`, and `sq dashboard` use your saved default workspace from any terminal directory. The first sole valid workspace is adopted automatically in the existing `~/.config/yaas/instances.json` registry (or the configured config home); no files are moved. With multiple workspaces, run `sq setup --select-workspace` once. Explicit `--workspace PATH` or `--instance ID` overrides the default. The selected workspace path is printed on lifecycle commands. `sq status` shows its path, saved dashboard address, and connection issues. `sq dashboard` opens the running dashboard; `sq dashboard url` prints its URL for scripts.
 
-The dashboard defaults to **http://localhost:8877**. Its port is saved in `.yaas/instance.json`; existing published addresses are retained on upgrade. Starting again reuses running jobs. A port conflict is reported without silently choosing 8878 or 8879. Stop Sidequestor before explicitly changing its port with `sq start --dashboard-port PORT`. Missing AI login or confirmed Claude MCP authentication failures pause affected dispatches without adding quest no-progress backoff; rerun `sq setup` to verify and resume.
+Targeting precedence is an explicit `--workspace PATH` or `--instance ID`, then
+`SIDEQUESTOR_WORKSPACE` (or legacy `YAAS_WORKSPACE`), then the saved default. The
+current directory is used only when no environment workspace or registered default
+is selected. This also applies to `sq setup`. Combining `--workspace` and `--instance`
+is rejected before any action.
+Explicitly empty `--workspace` or `--instance` values are also rejected. An unset
+shell variable passed as a selector cannot silently fall back to the default.
+The default picker offers only registrations whose
+folders still have the expected identity, shows their IDs, and rechecks the chosen
+identity before saving. Inspect skipped stale/missing registrations with
+`sq instances list --all`; refresh a folder with
+`sq --workspace /path/to/workspace instances register`.
+
+The dashboard defaults to **http://localhost:8877**. Its port is saved in `.yaas/instance.json`; existing published addresses are retained on upgrade. Starting again reuses running jobs. A port conflict is reported without silently choosing 8878 or 8879. Stop Sidequestor before explicitly changing its port with `sq start --dashboard-port PORT`. Missing AI login or confirmed Claude MCP authentication failures pause affected dispatches without adding quest no-progress backoff; rerun `sq --workspace /path/to/workspace setup` to verify and resume.
 
 Background jobs record the PATH of the terminal that runs `sq start`, with the installation's own
 `bin` first, and `sq start` prints the agent CLI they will use. If it reports the CLI as missing,
@@ -90,18 +111,18 @@ Commands use your saved default workspace. Explicit `--workspace PATH`, `--insta
 2. Choose the workspace and Install to Workspace; an administrator may need to approve it.
 3. Confirm that **Agents → Slack Model Context Protocol (MCP) Server** is enabled. The manifest requests this automatically; enable it there manually only if Slack or workspace policy leaves it off.
 4. In **OAuth and Permissions → User Token Scopes**, verify the user scopes listed in the generated manifest. There are no bot scopes. `reactions:read` may need workspace-admin approval; without it reaction monitoring silently finds nothing. `reactions:write` is required or lifecycle transitions fail with `missing_scope`.
-5. If you grant a scope later, reinstall the app and run `sq setup` again.
+5. If you grant a scope later, reinstall the app and run `sq --workspace /path/to/workspace setup` again.
 6. In Basic Information, copy the App ID and Client ID into `.env`, then complete OAuth.
 
 For an existing app, generate the updated manifest with `sq setup --manifest`, add the newly
-requested user scopes in the app's OAuth settings, reinstall the app, and run `sq setup` again to
+requested user scopes in the app's OAuth settings, reinstall the app, and run `sq --workspace /path/to/workspace setup` again to
 re-authorize the token. The manifest and OAuth flow use the same scope list in
 `setup/yaas-app-config.json`. It includes `channels:write` and `channels:write.invites`
 for public-channel management/invitations; these are not needed to create the private
 onboarding interface. Sidequestor's channel-creation helper still creates private channels
 only. File uploads need `files:write`; attachment downloads need `files:read`.
 
-The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-6.1-sol` at `high` effort. Setup checks both the Codex and Claude Code CLIs and offers an npm installation for either missing CLI when Codex or Claude is selected. It checks `cursor-agent` when Cursor is selected. npm installation requires Node.js; the Claude Code npm package requires Node.js 22 or later. Installation is optional, but the selected worker CLI must be available before setup starts jobs. Setup guides CLI login, verifies the selected model, and checks the Slack connection used by workers. Claude’s native Slack MCP authorization is separate from Sidequestor Slack OAuth; setup verifies the supported Sidequestor helper used by workers. Rerun `sq setup` to reconnect after credentials expire. Setup offers a CLI update; startup checks only advise and never install updates. You can select `cursor` to use the authenticated `cursor-agent` CLI; leave `SIDEQUESTOR_CURSOR_MODEL` unset to use Cursor's default model, or set it to pin a model.
+The wizard never overwrites real values. It fills only blank or placeholder settings, and `sq setup --instructions` never edits files. The selected backend is `codex` by default; the default Codex model is `gpt-6.1-sol` at `high` effort. Setup checks both the Codex and Claude Code CLIs and offers an npm installation for either missing CLI when Codex or Claude is selected. It checks `cursor-agent` when Cursor is selected. npm installation requires Node.js; the Claude Code npm package requires Node.js 22 or later. Installation is optional, but the selected worker CLI must be available before setup starts jobs. Setup guides CLI login, verifies the selected model, and checks the Slack connection used by workers. Claude’s native Slack MCP authorization is separate from Sidequestor Slack OAuth; setup verifies the supported Sidequestor helper used by workers. Rerun `sq --workspace /path/to/workspace setup` to reconnect after credentials expire. Setup offers a CLI update; startup checks only advise and never install updates. You can select `cursor` to use the authenticated `cursor-agent` CLI; leave `SIDEQUESTOR_CURSOR_MODEL` unset to use Cursor's default model, or set it to pin a model.
 
 ## How do I get guided onboarding?
 
@@ -142,7 +163,7 @@ returns onboarding to the verified owner DM if the channel becomes unavailable.
 ## How do I create a private Slack channel?
 
 After upgrading, add `groups:write`, `groups:write.invites`, and `groups:write.topic` to
-**User Token Scopes**, reinstall the Slack app, and run `sq setup` again to authorize them.
+**User Token Scopes**, reinstall the Slack app, and run `sq --workspace /path/to/workspace setup` again to authorize them.
 The generated manifest includes these scopes.
 
 ```bash
@@ -409,14 +430,19 @@ items because dirty watermarks are committed only after successful acknowledgeme
 `tick --isolated --fake-worker` to acknowledge them safely, then confirm a final dry run is clean.
 
 ```bash
+# These examples target the initialized workspace in the current directory.
 # Print the optional block without changing any files.
-sq setup --instructions
+sq --workspace . setup --instructions
 # Use defaults without OAuth.
-sq setup --non-interactive
+sq --workspace . setup --non-interactive
 # Use the lower-level launchd operations when needed.
-sq setup --render-only|install|status|uninstall
+sq --workspace . setup --render-only
+sq --workspace . setup status
+# Shadow install/uninstall remain available without loading production jobs.
+sq --workspace . setup install
+sq --workspace . setup uninstall
 # Install the production launchd jobs.
-sq setup --production install
+sq --workspace . setup --production install
 ```
 
 ## How do I run and inspect it?
@@ -444,6 +470,13 @@ sq stop INSTANCE_ID
 # Print the installed package build identity.
 sq --version
 ```
+
+An instance ID must still match the identity in its registered folder. If a folder
+has been recreated or rekeyed, commands reject its old ID rather than acting on the
+new instance. `sq instances list --all` marks these entries `STALE`; they are excluded
+from the running list. Run `sq --workspace /path/to/workspace instances register`
+to refresh that folder's registration and remove its old IDs. Registration and
+rekeying preserve the folder's default-workspace selection.
 
 `sq pause` stops triage, heartbeat, and the dashboard using the same verified lifecycle
 as `sq stop`. It can interrupt an active worker; it does not wait for that worker to
@@ -655,8 +688,16 @@ Inbox is permanent and is restored automatically, including outstanding review w
 Reaction actions, source/result links where available, and outcomes are recorded in Inbox.
 
 One uv or pipx installation is shared by every workspace, so `sq upgrade` restarts only the
-workspace it runs in and lists any other running workspaces that need `sq --workspace PATH start`
-to pick up the new version.
+workspace it runs in and lists any other running workspaces whose long-running jobs
+and launchd settings need refreshing. Package-only upgrades list these workspaces too.
+Wait for their active workers to finish, then use the printed refresh commands. They
+name the upgraded installation's exact Python, avoiding an older workspace-local
+`sq` earlier on PATH. A normal start detects changed plists and rewrites/reloads them
+on the saved dashboard port; `launchctl kickstart` alone does not rewrite a plist.
+
+The dashboard reports the running package's build identity ahead of inherited
+launchd version labels. An existing Python process can still have the old build
+loaded until it restarts; a freshly launched process uses the installed build.
 
 The first upgrade to the stable per-user Slack Keychain helper can show one macOS password prompt.
 Choose **Always Allow** so background refreshes can use that same helper identity without prompting

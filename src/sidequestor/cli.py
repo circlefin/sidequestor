@@ -50,6 +50,7 @@ from .workspace import (
     register_workspace,
     default_workspace,
     set_default_workspace,
+    workspace_command,
     rekey_workspace,
     validate_workspace,
 )
@@ -127,7 +128,7 @@ def _workspace_from_environment() -> str | None:
 def _usage() -> str:
     lines = ["usage: sidequestor [--workspace PATH] COMMAND [ARGS...]", "", "commands:"]
     lines.extend(f"  {name:15} {description}" for name, description in COMMANDS.items())
-    lines.extend(["", "global options:", "  --workspace PATH  select an initialized workspace (default: current directory)",
+    lines.extend(["", "global options:", "  --workspace PATH  select an initialized workspace (otherwise environment, saved default, then current directory)",
                   "  --instance ID     select an instance from the advisory registry",
                   "  --version         print the engine version", "  --help            print this help"])
     return "\n".join(lines)
@@ -164,6 +165,15 @@ def _command_help(command: str) -> str:
     return f"usage: {usage}\n\n{COMMANDS[command]}"
 
 
+def _validate_workspace_selection(workspace_path: str | None, instance: str | None) -> None:
+    if workspace_path == "":
+        raise SystemExit("--workspace requires a non-empty path; no instance was selected")
+    if instance == "":
+        raise SystemExit("--instance requires a non-empty ID or name; no instance was selected")
+    if workspace_path is not None and instance is not None:
+        raise SystemExit("choose either --workspace or --instance, not both")
+
+
 def _extract_globals(argv: list[str]) -> tuple[str | None, str | None, list[str]]:
     workspace = None
     instance = None
@@ -190,20 +200,36 @@ def _extract_globals(argv: list[str]) -> tuple[str | None, str | None, list[str]
             continue
         remaining.append(value)
         index += 1
+    _validate_workspace_selection(workspace, instance)
     return workspace, instance, remaining
 
 
+def _registered_workspace(instance: str) -> Workspace:
+    _validate_workspace_selection(None, instance)
+    matches = [row for row in list_instances()
+               if row.get("instance_id") == instance or row.get("display_name") == instance]
+    if len(matches) != 1:
+        raise SystemExit(f"instance not found or ambiguous: {instance}")
+    row = matches[0]
+    try:
+        workspace = load_workspace(row["path"])
+    except (OSError, SystemExit, KeyError, TypeError, RuntimeError, ValueError) as exc:
+        raise SystemExit(f"Registered workspace is unavailable for {instance}. Run sq --workspace PATH instances register to refresh it.") from exc
+    if workspace.instance_id != row.get("instance_id"):
+        raise SystemExit(
+            f"stale instance registration: {instance}; {workspace.root} now belongs to "
+            f"{workspace.instance_id}. Run {workspace_command(workspace, 'instances', 'register')} "
+            "to refresh its registration."
+        )
+    return workspace
+
+
 def _workspace(workspace_path: str | None, instance: str | None) -> Workspace:
-    if workspace_path and instance:
-        raise SystemExit("choose either --workspace or --instance, not both")
+    _validate_workspace_selection(workspace_path, instance)
     if workspace_path:
         return find_workspace(workspace_path)
     if instance:
-        matches = [row for row in list_instances()
-                   if row.get("instance_id") == instance or row.get("display_name") == instance]
-        if len(matches) != 1:
-            raise SystemExit(f"instance not found or ambiguous: {instance}")
-        return load_workspace(matches[0]["path"])
+        return _registered_workspace(instance)
     inherited = _workspace_from_environment()
     if inherited:
         return find_workspace(inherited)
@@ -224,6 +250,7 @@ def _cmd_init(args: list[str]) -> int:
     sync_resources(workspace)
     print(f"initialized Sidequestor workspace: {workspace.root}")
     print(f"instance_id: {workspace.instance_id}")
+    print("Next: " + workspace_command(workspace, "setup"))
     print("Slack app manifest: run `sq setup --manifest > slack-app-manifest.yaml` to generate the ready-to-paste YAML.")
     return 0
 
@@ -242,7 +269,7 @@ def _cmd_instances(
     action = args[0] if args else "list"
     if action == "list":
         parser = argparse.ArgumentParser(prog="sidequestor instances list")
-        parser.add_argument("--all", action="store_true", help="include registered workspaces that are not running")
+        parser.add_argument("--all", action="store_true", help="include stopped, missing, and stale registrations")
         values = parser.parse_args(args[1:])
         rows = []
         for registered in list_instances():
@@ -250,12 +277,15 @@ def _cmd_instances(
             path = str(registered.get("path", ""))
             try:
                 workspace = load_workspace(path)
-            except (OSError, SystemExit):
+            except (OSError, SystemExit, RuntimeError, ValueError):
                 row["status"] = "missing"
                 row["path"] = path
             else:
                 row["path"] = str(workspace.root)
-                row["status"] = "running" if production_is_running(workspace) else "stopped"
+                if workspace.instance_id != row.get("instance_id"):
+                    row["status"] = "stale"
+                else:
+                    row["status"] = "running" if production_is_running(workspace) else "stopped"
             if values.all or row["status"] == "running":
                 rows.append(row)
         if not rows and not values.all:
@@ -693,6 +723,7 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
     # Vacation-friendly names for the existing lifecycle, not a second scheduler
     # or a new state machine. Preserve all targeting, safety checks and failures.
     command = {"pause": "stop", "resume": "start"}.get(command, command)
+    _validate_workspace_selection(workspace_path, instance)
     if command == "init":
         return _cmd_init(args)
     if command == "instances":
@@ -709,27 +740,33 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
         raise SystemExit("choose one of INSTANCE_ID, --workspace, or --instance")
     if command == "stop" and (args or instance):
         target = args[0] if args else instance
-        matches = [row for row in list_instances()
-                   if row.get("instance_id") == target or row.get("display_name") == target]
-        if len(matches) != 1:
-            raise SystemExit(f"instance not found or ambiguous: {target}")
-        return _cmd_stop(load_workspace(matches[0]["path"]))
+        return _cmd_stop(_registered_workspace(target))
     if (command == "upgrade" and not (workspace_path or instance or _workspace_from_environment())
             and find_workspace_root() is None):
         return run_upgrade(None, args)
     if command == "setup" and args == ["--select-workspace"]:
-        rows = list_instances()
-        if not rows:
-            raise SystemExit("No registered workspaces. Run sq --workspace PATH setup.")
-        for index, row in enumerate(rows, 1):
-            print(f"{index}. {row.get('display_name')} ({row.get('path')})")
+        choices = []
+        for row in list_instances():
+            try:
+                candidate = load_workspace(row["path"])
+            except (OSError, SystemExit, KeyError, TypeError, RuntimeError, ValueError):
+                continue
+            if candidate.instance_id == row.get("instance_id") and candidate not in choices:
+                choices.append(candidate)
+        if not choices:
+            raise SystemExit("No valid registered workspaces. Run sq --workspace PATH instances register, then retry.")
+        for index, candidate in enumerate(choices, 1):
+            print(f"{index}. {candidate.display_name} ({candidate.root}) [{candidate.instance_id}]")
         try:
             choice = int(input("Default workspace number: "))
-            if not 1 <= choice <= len(rows):
+            if not 1 <= choice <= len(choices):
                 raise ValueError()
-            selected = load_workspace(rows[choice - 1]["path"])
         except (ValueError, EOFError):
             raise SystemExit("No default selected.")
+        chosen = choices[choice - 1]
+        selected = load_workspace(chosen.root)
+        if selected.instance_id != chosen.instance_id:
+            raise SystemExit("stale instance registration: workspace identity changed while selecting; retry sq setup --select-workspace.")
         set_default_workspace(selected)
         print(f"Default workspace: {selected.root}")
         return 0

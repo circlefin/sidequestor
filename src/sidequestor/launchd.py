@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from .workspace import Workspace, workspace_lock
+from .workspace import Workspace, workspace_lock, workspace_command
 from .build_info import build_info
 from .job_path import JobPath, resolve_job_path
 
@@ -406,14 +406,14 @@ def start_executable(workspace: Workspace, requested: Path) -> Path:
         return requested
     registered = Path(registered)
     if not registered.is_absolute() or not registered.is_file() or not os.access(registered, os.X_OK):
-        raise LaunchdLifecycleError("This workspace's registered Sidequestor runtime is unavailable. Run sq setup to repair it; existing jobs were left unchanged.")
+        raise LaunchdLifecycleError(f"This workspace's registered Sidequestor runtime is unavailable. Run {workspace_command(workspace, 'setup')} to repair it; existing jobs were left unchanged.")
     try:
         result = subprocess.run([str(registered), "-P", "-c", "import sidequestor"],
                                 env=runtime_environment(), check=False, capture_output=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise LaunchdLifecycleError("Cannot verify this workspace's registered runtime. Run sq setup to repair it.") from exc
+        raise LaunchdLifecycleError(f"Cannot verify this workspace's registered runtime. Run {workspace_command(workspace, 'setup')} to repair it.") from exc
     if result.returncode:
-        raise LaunchdLifecycleError("Sidequestor is missing from this workspace's registered runtime. Run sq setup to repair it.")
+        raise LaunchdLifecycleError(f"Sidequestor is missing from this workspace's registered runtime. Run {workspace_command(workspace, 'setup')} to repair it.")
     return registered
 
 

@@ -29,7 +29,11 @@ vm.runInContext(definitions.concat(names.map(declaration)).join('\n') + String.r
   globalThis.$=()=>subhead;
   globalThis.state={control:{attention:[{id:'worker-readiness:slack',detail:'Claude Slack MCP needs reconnection. Run sq setup.'}]}};
   renderSubhead('live',null,{});
-  assert.ok(subhead.innerHTML.includes('run <code>sq setup</code> from any folder'));
+  assert.ok(subhead.innerHTML.includes('run <code>sq --workspace . setup</code> from this workspace’s folder'));
+  state.control.workspace={path:"/Users/me/new workspace's folder"};
+  renderSubhead('live',null,{});
+  assert.ok(subhead.innerHTML.includes(esc("sq --workspace '/Users/me/new workspace'\"'\"'s folder' setup")));
+  assert.ok(subhead.innerHTML.includes('from any folder'));
   const original='## Proposal\n\n**Read this**\n\n- First\n- Second';
   const spec={id:'a',quest_id:'q',action_type:'file_edit',message_text:original,context:'## Why\n\nA reason',available_actions:['review','revise']};
   const markup=approvalCard(spec);

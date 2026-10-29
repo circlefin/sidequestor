@@ -154,7 +154,39 @@ class UpdateSurfacesTest(unittest.TestCase):
 
     def test_dashboard_build_info_carries_cached_update(self):
         update = self._dashboard().build_build_info()["update"]
-        self.assertEqual((update["installed"], update["latest"]), ("0.1.51", "99.0.0"))
+        from sidequestor import __version__
+        self.assertEqual((update["installed"], update["latest"]), (__version__, "99.0.0"))
+
+    def test_dashboard_package_identity_wins_over_stale_launch_environment(self):
+        identity = {"version": "0.2.3", "commit_full": "", "ref": "",
+                    "source": "unknown", "engine": "0.2.3"}
+        with patch.dict(os.environ, {"SIDEQUESTOR_COMMIT": "old-commit",
+                                    "SIDEQUESTOR_REF": "old-branch"}), \
+                patch("sidequestor.build_info.build_info", return_value=identity):
+            server = self._dashboard()
+            info = server.build_build_info()
+        self.assertEqual(info["version"], "0.2.3")
+        self.assertEqual(info["update"]["installed"], "0.2.3")
+        self.assertEqual(info["commit_full"], "")
+        self.assertEqual(info["ref"], "")
+
+    def test_dashboard_keeps_startup_identity_when_first_polled_after_upgrade(self):
+        old = {"version": "0.2.2", "commit_full": "", "ref": "", "engine": "0.2.2"}
+        with patch("sidequestor.build_info.build_info", return_value=old):
+            server = self._dashboard()
+        with patch("sidequestor.build_info.build_info", return_value={"version": "0.2.3"}):
+            self.assertEqual(server.build_build_info()["version"], "0.2.2")
+
+    def test_dashboard_recovery_action_targets_the_viewed_workspace(self):
+        import shlex
+        from sidequestor.workspace import init_workspace
+        init_workspace(self.root)
+        server = self._dashboard()
+        with patch("sidequestor.worker_readiness.current_state", return_value={"slack": "Run sq setup."}):
+            control = server.build_control()
+        item = next(row for row in control["attention"] if row["id"] == "worker-readiness:slack")
+        command = item["action"].removeprefix("Run ").removesuffix(" in your terminal.")
+        self.assertEqual(shlex.split(command), ["sq", "--workspace", str(self.root.resolve()), "setup"])
 
     def test_dashboard_hides_update_when_check_is_turned_off(self):
         (self.root / ".env").write_text("SIDEQUESTOR_UPDATE_CHECK=0\n")

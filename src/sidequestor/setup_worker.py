@@ -10,6 +10,7 @@ from pathlib import Path
 from .job_path import resolve_job_path
 from .native import RUNTIME_ROOT, _apply_env_aliases, _load_workspace_env
 from .worker_readiness import auth_check, invoke, invocation_failure, save_state, slack_helper_ready, SLACK_ACCESS_ERROR
+from .workspace import workspace_command
 
 
 def worker_environment(workspace, executable):
@@ -49,7 +50,7 @@ def setup_worker(workspace, executable, *, interactive=True, input_fn=input):
     path, environment = worker_environment(workspace, executable)
     agent, binary = path.agent, path.agent_binary
     if not binary:
-        print("Selected worker CLI is unavailable. Check SIDEQUESTOR_PATH and rerun sq setup.")
+        print(f"Selected worker CLI is unavailable. Check SIDEQUESTOR_PATH and rerun {workspace_command(workspace, 'setup')}.")
         return False
     if agent not in {"claude", "codex"}:
         return True
@@ -59,14 +60,14 @@ def setup_worker(workspace, executable, *, interactive=True, input_fn=input):
         if interactive and input_fn("Check/install the latest worker CLI release? [y/N]: ").strip().lower() in {"y", "yes"}:
             from .launchd import production_status
             if (production_status(workspace) or {}).get("running"):
-                print("Stop Sidequestor with sq stop before updating its worker CLI, then rerun sq setup. Existing jobs were left running.")
+                print(f"Stop Sidequestor with {workspace_command(workspace, 'stop')} before updating its worker CLI, then rerun {workspace_command(workspace, 'setup')}. Existing jobs were left running.")
                 return False
             command = update_command(agent, binary, environment)
             if command is None:
-                print("CLI installation is unmanaged. Update it with its original installer, then rerun sq setup.")
+                print(f"CLI installation is unmanaged. Update it with its original installer, then rerun {workspace_command(workspace, 'setup')}.")
                 return False
             if invoke(command, workspace, environment, timeout=180, interactive=True).returncode:
-                print("CLI update failed. Existing settings were preserved; rerun sq setup after resolving it.")
+                print(f"CLI update failed. Existing settings were preserved; rerun {workspace_command(workspace, 'setup')} after resolving it.")
                 return False
             path, environment = worker_environment(workspace, executable)
             binary = path.agent_binary
@@ -78,14 +79,14 @@ def setup_worker(workspace, executable, *, interactive=True, input_fn=input):
         if reason:
             save_state(workspace, agent, binary, environment, reason)
             if not interactive:
-                print(reason)
+                print(reason.replace("Run sq setup.", f"Run {workspace_command(workspace, 'setup')}."))
                 return False
             print("Connect your AI account in the login flow; setup will continue afterwards.")
             command = [binary, "auth", "login"] if agent == "claude" else [binary, "login"]
             if invoke(command, workspace, environment, timeout=300, interactive=True).returncode:
                 return False
             if auth_check(workspace, agent, binary, environment):
-                print("AI login was not verified. Rerun sq setup to continue.")
+                print(f"AI login was not verified. Rerun {workspace_command(workspace, 'setup')} to continue.")
                 return False
         model = environment.get(f"YAAS_{agent.upper()}_MODEL", "")
         if agent == "claude":
@@ -104,7 +105,10 @@ def setup_worker(workspace, executable, *, interactive=True, input_fn=input):
                 failed = True
         if failed:
             reason = invocation_failure(workspace, agent, binary, environment, text, trusted_cli=True, direct_auth=True)
-            print(reason or "Model verification did not complete. Check connection/quota and rerun sq setup.")
+            if reason:
+                print(reason.replace("Run sq setup.", f"Run {workspace_command(workspace, 'setup')}."))
+            else:
+                print(f"Model verification did not complete. Check connection/quota and rerun {workspace_command(workspace, 'setup')}.")
             return False
         save_state(workspace, agent, binary, environment)
         print("AI login and selected model: verified")
@@ -115,10 +119,10 @@ def setup_worker(workspace, executable, *, interactive=True, input_fn=input):
             return True
         return False
     except KeyboardInterrupt:
-        print("\nSetup interrupted. Rerun sq setup to continue.")
+        print(f"\nSetup interrupted. Rerun {workspace_command(workspace, 'setup')} to continue.")
         return False
     except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"Worker verification could not complete ({type(exc).__name__}). Rerun sq setup.")
+        print(f"Worker verification could not complete ({type(exc).__name__}). Rerun {workspace_command(workspace, 'setup')}.")
         return False
 
 
@@ -139,7 +143,7 @@ def verify_slack_helper(workspace, environment):
     if not slack_required(environment):
         return True
     if not slack_helper_ready(workspace, environment):
-        print("Sidequestor Slack read could not be verified. Check the connection and credentials, then rerun sq setup.")
+        print(f"Sidequestor Slack read could not be verified. Check the connection and credentials, then rerun {workspace_command(workspace, 'setup')}.")
         return False
     print("Sidequestor Slack access: verified")
     return True
@@ -193,7 +197,7 @@ def _report_worker_version(workspace, executable):
         if installed and available:
             parse = lambda value: tuple(map(int, value.split(".")))
             if parse(available.group()) > parse(installed.group()):
-                print(f"Worker CLI update available ({available.group()}). Run sq setup to review/update it.")
+                print(f"Worker CLI update available ({available.group()}). Run {workspace_command(workspace, 'setup')} to review/update it.")
     except (OSError, subprocess.TimeoutExpired):
         pass
 

@@ -317,20 +317,34 @@ can be disabled workspace-wide with
 ## Setup (first time or new colleague)
 
 ```bash
-git clone <this repo>
-cd <repo>
-cp .env.example .env             # configure the adapters you use
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/setup/setup.sh"
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/ops/doctor.sh"          # is this machine configured (real creds, PATH, plist)
-python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/ops/health-monitor.py"   # is it working right now
-bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/tests/run-all.sh"     # is the code correct (fixtures, safe any time)
+uv tool install sidequestor
+uv tool update-shell
+# Open a new terminal if sq is not yet on PATH.
+mkdir -p "$HOME/sidequestor"
+cd "$HOME/sidequestor"
+sq init .
+sq setup --manifest > slack-app-manifest.yaml
+# Create/install your Slack app from the manifest, then configure this exact folder.
+sq --workspace . setup
+sq --workspace . doctor
 ```
 
-With local Slack checking enabled, `setup.sh` walks through Slack OAuth (PKCE flow, no client secret needed), stores the complete rotating user-token bundle
+For another workspace, replace the folder above. Always use `--workspace` for a
+new workspace or a repair aimed at a particular folder; changing directory alone
+does not override an exported workspace or saved default. `sq init` also prints
+the exact next setup command. Ordinary `sq start`, `sq stop`, and `sq setup` use
+explicit selection, then environment, then saved default, then current directory.
+Never combine `--workspace` and `--instance`. `sq setup --select-workspace` offers
+only current, valid registrations and rechecks the selected identity before saving.
+Use `sq instances list --all` to inspect stale or missing registrations, then
+`sq --workspace /path/to/workspace instances register` to refresh a known folder.
+Do not edit the managed engine or launch its legacy setup script to install package jobs.
+
+With local Slack checking enabled, `sq --workspace . setup` walks through Slack OAuth (PKCE flow, no client secret needed), stores the complete rotating user-token bundle
 in macOS Keychain at `(service=slack-oauth-token-bundle, account=yaas)`, runs a connectivity check,
-and offers the triage, independent heartbeat, and dashboard launchd jobs. It can also initialize
-opt-in daily template tracking and run verification. Each user creates their own Slack app at
-https://api.slack.com/apps from the manifest printed by `setup.sh --manifest`; the manifest and
+and installs the triage, independent heartbeat, and dashboard launchd jobs after verification.
+Each user creates their own Slack app at
+https://api.slack.com/apps from the manifest printed by `sq setup --manifest`; the manifest and
 OAuth flow share `setup/yaas-app-config.json`, so their scopes cannot drift. The list
 includes `channels:write` and `channels:write.invites` alongside the private-channel
 `groups:write`, `groups:write.invites` and `groups:write.topic` scopes. The public-channel

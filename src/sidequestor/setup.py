@@ -16,7 +16,7 @@ from .onboarding import find_quest as find_onboarding_quest
 from .onboarding import run_onboard
 from .quest_terminal import QuestTerminalError
 from .resources import sync_resources
-from .workspace import Workspace, set_default_workspace
+from .workspace import Workspace, set_default_workspace, workspace_command
 from .setup_worker import setup_worker, verify_slack_helper, worker_environment
 
 
@@ -264,7 +264,7 @@ def offer_onboarding(workspace: Workspace, *, slack_ready: bool, input_fn=input,
         answer = _prompt("Start guided onboarding in [slack], [terminal], or [later]",
                          default, input_fn=input_fn).lower()
         if answer == "slack" and not slack_ready:
-            print("Slack checkers are disabled. Choose terminal or later; enable Slack with sq setup first.")
+            print(f"Slack checkers are disabled. Choose terminal or later; enable Slack with {workspace_command(workspace, 'setup')} first.")
             continue
         if answer in {"slack", "terminal", "later"}:
             break
@@ -314,7 +314,7 @@ def run_setup(workspace: Workspace, executable: Path, *, input_fn=input, interac
                              interactive=interactive):
         return 1
     if not setup_worker(workspace, executable, interactive=interactive, input_fn=input_fn):
-        print("Setup is incomplete. Rerun sq setup to continue; existing jobs and settings were preserved.")
+        print(f"Setup is incomplete. Rerun {workspace_command(workspace, 'setup')} to continue; existing jobs and settings were preserved.")
         return 1
     set_default_workspace(workspace)
     manifest = install_production(workspace, executable, replace_runtime=True)

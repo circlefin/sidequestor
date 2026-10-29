@@ -6,7 +6,9 @@ import argparse
 import importlib.util
 import json
 import os
+import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -18,7 +20,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .dashboard import read_dashboard_port, wait_for_dashboard_port
 from .launchd import LaunchdLifecycleError, production_status, stop_production
-from .workspace import Workspace, list_instances, load_workspace
+from .workspace import Workspace, list_instances, load_workspace, workspace_command
 
 
 _GITHUB_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -207,20 +209,53 @@ def _select_installer(choice: str, *, needs_extras: bool = False) -> Installer:
     return Installer(choice, prefix.name, env=env)
 
 
-def _other_running_workspaces(workspace: Workspace) -> list[Workspace]:
+def _other_running_workspaces(workspace: Workspace | None) -> list[Workspace]:
     """Running instances whose jobs execute this same shared installation."""
     python = os.path.abspath(sys.executable)
     others = []
+    seen = set()
     for row in list_instances():
         try:
             other = load_workspace(row["path"])
+            if other.instance_id != row.get("instance_id") or other.root in seen:
+                continue
             manifest = production_status(other)
         except (KeyError, TypeError, OSError, SystemExit, ValueError):
             continue
-        if (other.root != workspace.root and manifest and manifest.get("running")
+        if ((workspace is None or other.root != workspace.root) and manifest and manifest.get("running")
                 and manifest.get("python") == python):
             others.append(other)
+            seen.add(other.root)
     return others
+
+
+def _report_other_workspaces(others: list[Workspace]) -> None:
+    if not others:
+        return
+    print("These workspaces share this installation; their long-running jobs and "
+          "launchd settings were not refreshed. After any active workers finish, run:")
+    for other in others:
+        # Use this installation explicitly: a workspace's old venv can shadow sq.
+        print("  " + shlex.join([sys.executable, "-I", "-m", "sidequestor",
+                                 "--workspace", str(other.root), "start"]))
+
+
+def _jobs_need_refresh(workspace: Workspace, installed_version: str) -> bool:
+    manifest = production_status(workspace)
+    if not manifest or not manifest.get("running"):
+        return False
+    jobs = manifest.get("jobs", {})
+    if not isinstance(jobs, dict) or not jobs:
+        return True  # Missing job metadata cannot prove that the running jobs are current.
+    for job in jobs.values():
+        try:
+            values = plistlib.loads(Path(job["plist"]).read_bytes())
+            if values.get("EnvironmentVariables", {}).get("SIDEQUESTOR_VERSION") != installed_version:
+                return True
+        except Exception:
+            # Ordinary plist/parser/shape errors mean the job cannot be verified.
+            return True
+    return False
 
 
 def github_requirement(source: str, ref: str) -> str:
@@ -329,7 +364,7 @@ def _restore_after_install_failure(
     if _run(_restart_command(workspace, dashboard_port), workspace, fresh_import=True):
         print(
             "warning: Sidequestor could not be restarted; "
-            "run `sq start` after repairing the installation.",
+            f"run `{workspace_command(workspace, 'start')}` after repairing the installation.",
             file=sys.stderr,
         )
 
@@ -387,7 +422,7 @@ def run_upgrade(workspace: Workspace | None, args: list[str]) -> int:
     except ValueError as exc:
         print(f"cannot upgrade: {exc}", file=sys.stderr)
         return 1
-    others = _other_running_workspaces(workspace) if workspace else []
+    others = _other_running_workspaces(workspace)
 
     manifest = production_status(workspace) if workspace else None
     was_running = bool(manifest and manifest.get("running"))
@@ -424,7 +459,8 @@ def run_upgrade(workspace: Workspace | None, args: list[str]) -> int:
     if not os.path.exists(sys.executable):
         print(
             f"Upgrade installed, but the interpreter {sys.executable} no longer exists; "
-            "run `sq setup` from the upgraded installation to repair any affected workspace.",
+            f"run `{workspace_command(workspace, 'setup') if workspace else 'sq --workspace /path/to/workspace setup'}` "
+            "from the upgraded installation to repair the affected workspace.",
             file=sys.stderr,
         )
         return 1
@@ -438,8 +474,12 @@ def run_upgrade(workspace: Workspace | None, args: list[str]) -> int:
         )
         return 1
 
+    if not requirement and installed_version == __version__:
+        others = [other for other in others if _jobs_need_refresh(other, installed_version)]
+
     if workspace is None:
         print("No workspace selected; managed resources were not synced, validated, or restarted.")
+        _report_other_workspaces(others)
         if not requirement and installed_version == __version__:
             print(
                 f"No new Sidequestor package was installed; still {installed_version}. "
@@ -492,13 +532,7 @@ def run_upgrade(workspace: Workspace | None, args: list[str]) -> int:
     elif was_running:
         print("Upgrade complete; jobs remain stopped because --no-restart was supplied.")
 
-    if others:
-        print(
-            "These workspaces share this installation and are still running the previous "
-            "version; restart each one to pick up the upgrade:"
-        )
-        for other in others:
-            print(f"  sq --workspace {other.root} start")
+    _report_other_workspaces(others)
     if not requirement and installed_version == __version__:
         print(
             f"No new Sidequestor package was installed; still {installed_version}. "

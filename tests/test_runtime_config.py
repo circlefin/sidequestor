@@ -366,7 +366,7 @@ class RuntimeConfigTest(unittest.TestCase):
         finally:
             sys.path.pop(0)
 
-    def test_dashboard_build_info_honors_launch_environment(self) -> None:
+    def test_dashboard_build_info_uses_launch_environment_when_package_unavailable(self) -> None:
         environment = {
             "YAAS_WORKSPACE": tempfile.gettempdir(),
             "YAAS_RUNTIME_ROOT": str(RUNTIME_ROOT),
@@ -384,9 +384,10 @@ class RuntimeConfigTest(unittest.TestCase):
                 )
                 module = importlib.util.module_from_spec(spec)
                 assert spec.loader is not None
-                with patch.object(sys, "argv", ["dashboard-server.py"]):
+                with patch.object(sys, "argv", ["dashboard-server.py"]), \
+                        patch("sidequestor.build_info.build_info", side_effect=ImportError("standalone runtime")):
                     spec.loader.exec_module(module)
-                build = module.build_build_info()
+                    build = module.build_build_info()
             finally:
                 sys.path.pop(0)
         self.assertEqual(build["version"], "0.1.5")

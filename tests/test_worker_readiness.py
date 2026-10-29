@@ -77,6 +77,25 @@ class WorkerReadinessTests(unittest.TestCase):
         invoke.assert_not_called()
         self.assertNotIn("slack", readiness.read_state(self.ws))
 
+    def test_setup_printed_auth_and_model_hints_target_the_selected_workspace(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+        from sidequestor.setup_worker import setup_worker
+        from sidequestor.workspace import workspace_command
+        path = SimpleNamespace(agent="claude", agent_binary="/claude")
+        reason = "AI account needs attention. Run sq setup."
+        for auth_reason in (reason, None):
+            with self.subTest(auth_reason=auth_reason), \
+                    patch("sidequestor.setup_worker.worker_environment", return_value=(path, self.env)), \
+                    patch("sidequestor.setup_worker.invoke", return_value=subprocess.CompletedProcess([], 1, "", "failure")), \
+                    patch("sidequestor.setup_worker.auth_check", return_value=auth_reason), \
+                    patch("sidequestor.setup_worker.invocation_failure", return_value=reason), \
+                    redirect_stdout(StringIO()) as output:
+                self.assertFalse(setup_worker(self.ws, Path("/python"), interactive=False))
+            self.assertIn(workspace_command(self.ws, "setup"), output.getvalue())
+            self.assertNotIn("Run sq setup.", output.getvalue())
+
     def test_installed_claude_parses_mcp_menu_as_prompt_not_config(self):
         import shutil
         binary = shutil.which("claude")

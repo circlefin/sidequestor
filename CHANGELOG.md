@@ -4,6 +4,41 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.2.4 - 2026-10-29
+
+- Reject explicitly empty workspace/instance selectors, including a positional
+  stop ID, instead of falling back to the saved default or matching a blank name.
+  Invalid selectors also fail when combined with `--help`.
+  Add a 3,000-case three-instance targeting matrix and lifecycle
+  isolation tests covering job labels, plists, saved ports, aliases, stale IDs,
+  ambiguous names, and invalid/conflicting selectors without real launchd actions.
+- Shell-quote workspace-specific recovery commands and keep setup/start repair
+  hints targeted to the affected folder. Allow the default picker to select a
+  workspace with duplicate valid registry rows and skip malformed paths. Suppress
+  shared-workspace refresh guidance after a no-op upgrade when job definitions are
+  already current; still report stale plists left by an earlier install.
+  Capture the dashboard's package build identity at startup so a first poll after
+  an in-place upgrade cannot label old server code as the new build.
+- Reject conflicting workspace/instance selectors before any command action. Filter
+  stale and missing registrations out of the default-workspace picker and recheck
+  the selected identity before saving. Have `sq init` print an explicitly targeted,
+  shell-quoted setup command; update installation/setup recipes, CLI help, the
+  shipped environment example, dashboard repair instructions, and ops/onboarding guidance to prevent setup from
+  silently configuring an existing default instead of the newly initialized folder.
+- Prefer the running package's build identity over inherited launchd version,
+  commit, and branch labels in the dashboard and its update comparison. Retain
+  environment-based identity only when the package build helper is unavailable.
+- Report other running workspaces sharing an installation after package-only
+  upgrades as well as workspace upgrades. Ignore stale/duplicate registrations and
+  use the upgraded installation's exact Python in refresh instructions so an older
+  workspace-local `sq` cannot intercept them. Other workspaces are not stopped
+  automatically.
+- Reject stale instance IDs before lifecycle actions when the registered folder now
+  belongs to a different identity. List mismatched registrations as `STALE` with
+  `sq instances list --all`, instead of counting them as running instances.
+  Re-registering or rekeying a workspace removes old registrations for that same
+  resolved folder and preserves its default-workspace selection.
+
 ## 0.2.3 - 2026-10-29
 
 This release also includes the changes listed under the local 0.2.2 snapshot below;

@@ -9,6 +9,16 @@ Guide the owner, who may have nothing set up, from a fresh install to a workspac
 understand and trust. "The owner" is the person this Sidequestor works for. Speak to them
 in the first person ("I found…", "Shall I…?").
 
+When configuring or repairing this workspace, pass its absolute path explicitly:
+`sq --workspace /path/to/this/workspace setup`. For a new workspace, use `sq init PATH`
+and follow the exact setup command it prints. Plain `sq setup` can target an exported
+workspace or saved default even after changing directory. Setup saves its selected
+workspace as the default; initializing an additional folder alone does not replace
+an existing default. Tell the owner that setup makes this workspace their default.
+Do not separately use the default picker to switch workspaces unless requested.
+The `--select-workspace` picker excludes stale
+and missing registrations and revalidates the chosen identity.
+
 ## State
 
 The onboarding quest folder's `onboarding.json` stores progress:

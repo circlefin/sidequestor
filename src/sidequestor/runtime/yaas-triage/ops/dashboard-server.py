@@ -109,6 +109,13 @@ from tick_state import (
     load_watch_manifests,
 )
 
+# Capture the package identity before an in-place upgrade can replace files on disk.
+try:
+    from sidequestor.build_info import build_info as _package_build_info
+    PACKAGE_BUILD_INFO = _package_build_info()
+except Exception:
+    PACKAGE_BUILD_INFO = {}
+
 approval_state.configure(load_environment(REPO_ROOT))
 
 # Statuses that are genuinely finished. Everything else is shown, deliberately: the
@@ -1675,14 +1682,15 @@ def build_control() -> dict:
     attention = []
     try:
         from sidequestor.worker_readiness import current_state
-        from sidequestor.workspace import load_workspace
-        readiness = current_state(load_workspace(REPO_ROOT))
+        from sidequestor.workspace import load_workspace, workspace_command
+        workspace = load_workspace(REPO_ROOT)
+        readiness = current_state(workspace)
         for scope in ("blocked", "slack"):
             reason = readiness.get(scope)
             if reason:
                 attention.append({"id": f"worker-readiness:{scope}", "kind": "configuration",
                                   "priority": "high", "label": "Worker connection needs attention",
-                                  "detail": reason, "action": "Run sq setup in your terminal."})
+                                  "detail": reason, "action": f"Run {workspace_command(workspace, 'setup')} in your terminal."})
     except (ImportError, SystemExit, OSError, ValueError, AttributeError):
         pass
 
@@ -1761,18 +1769,16 @@ def build_reaction_emojis() -> dict:
 
 def build_build_info() -> dict:
     """Return package build identity without requiring package imports."""
-    try:
-        from sidequestor.build_info import build_info
-        info = build_info()
-    except Exception:
-        info = {}
-    commit_full = os.environ.get("SIDEQUESTOR_COMMIT") or info.get("commit_full", "")
-    version = os.environ.get("SIDEQUESTOR_VERSION") or info.get("version", "unknown")
+    info = PACKAGE_BUILD_INFO
+    # launchd retains its environment across package replacement. Prefer one
+    # coherent package identity over potentially stale version/commit/ref labels.
+    commit_full = info.get("commit_full", "") if info else os.environ.get("SIDEQUESTOR_COMMIT", "")
+    version = info.get("version", "unknown") if info else os.environ.get("SIDEQUESTOR_VERSION", "unknown")
     return {
         "version": version,
         "commit": commit_full[:7],
         "commit_full": commit_full,
-        "ref": os.environ.get("SIDEQUESTOR_REF") or info.get("ref", ""),
+        "ref": info.get("ref", "") if info else os.environ.get("SIDEQUESTOR_REF", ""),
         "source": info.get("source", "unknown"),
         "engine": info.get("engine", "unknown"),
         "update": _available_update(version),

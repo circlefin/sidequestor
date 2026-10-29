@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -104,12 +106,13 @@ class UpgradeTests(unittest.TestCase):
 
     def test_upgrade_without_workspace_runs_package_only(self) -> None:
         output = StringIO()
-        with patch("sidequestor.upgrade.production_status") as status, \
+        with patch("sidequestor.upgrade.production_status", return_value=None), \
+                patch("sidequestor.upgrade.stop_production") as stop, \
                 patch("sidequestor.upgrade.subprocess.run", side_effect=self._success) as run, \
                 redirect_stdout(output):
             self.assertEqual(run_upgrade(None, []), 0)
 
-        status.assert_not_called()
+        stop.assert_not_called()
         self.assertEqual(len(run.call_args_list), 1)
         self.assertEqual(run.call_args_list[0].args[0][-1], "sidequestor")
         self.assertIn("No workspace selected", output.getvalue())
@@ -499,4 +502,84 @@ class ManagedUpgradeTests(unittest.TestCase):
 
         self.assertEqual(run.call_args_list[0].args[0], ["/bin/uv", "tool", "upgrade", "sidequestor"])
         self.assertEqual(run.call_args_list[0].kwargs["env"]["UV_TOOL_DIR"], "/tools")
-        self.assertIn(f"sq --workspace {self.other.root} start", output.getvalue())
+        self.assertIn(f"--workspace {self.other.root} start", output.getvalue())
+        self.assertIn(f"{shlex.quote(sys.executable)} -I -m sidequestor", output.getvalue())
+
+    def test_package_only_upgrade_reports_shared_jobs_without_restarting_them(self) -> None:
+        python = os.path.abspath(sys.executable)
+        output = StringIO()
+        with patch("sidequestor.upgrade.detect_installer", return_value=Installer("pip")), \
+                patch("sidequestor.upgrade.production_status", return_value={"running": True, "python": python}), \
+                patch("sidequestor.upgrade.stop_production") as stop, \
+                patch("sidequestor.upgrade.subprocess.run",
+                      side_effect=lambda command, **_k: subprocess.CompletedProcess(command, 0)) as run, \
+                redirect_stdout(output):
+            self.assertEqual(run_upgrade(None, []), 0)
+        stop.assert_not_called()
+        self.assertEqual(run.call_count, 1)
+        self.assertIn(str(self.workspace.root), output.getvalue())
+        self.assertIn(str(self.other.root), output.getvalue())
+        self.assertIn("After any active workers finish", output.getvalue())
+
+    def test_shared_workspace_discovery_ignores_stale_ids_duplicates_and_other_installs(self) -> None:
+        from sidequestor.upgrade import _other_running_workspaces
+        rows = [dict(instance_id=ws.instance_id, path=str(ws.root))
+                for ws in (self.workspace, self.other)]
+        rows.insert(0, dict(instance_id="stale", path=str(self.other.root)))
+        rows.append(dict(rows[2]))
+        python = os.path.abspath(sys.executable)
+        def status(workspace):
+            return {"running": True, "python": python if workspace == self.other else "/other/venv/bin/python"}
+        with patch("sidequestor.upgrade.list_instances", return_value=rows), \
+                patch("sidequestor.upgrade.production_status", side_effect=status):
+            self.assertEqual(_other_running_workspaces(None), [self.other])
+            self.assertEqual(_other_running_workspaces(self.other), [])
+
+    def test_noop_upgrade_only_reports_workspaces_with_stale_job_definitions(self) -> None:
+        current = self.root / "current.plist"
+        other = self.root / "other.plist"
+        for path in (current, other):
+            path.write_bytes(plistlib.dumps({"EnvironmentVariables": {"SIDEQUESTOR_VERSION": __version__}}))
+        def status(workspace):
+            path = current if workspace == self.workspace else other
+            return {"running": True, "python": os.path.abspath(sys.executable),
+                    "jobs": {"triage": {"plist": str(path)}}}
+        with patch("sidequestor.upgrade.detect_installer", return_value=Installer("pip")), \
+                patch("sidequestor.upgrade._installed_version", return_value=__version__), \
+                patch("sidequestor.upgrade.production_status", side_effect=status), \
+                patch("sidequestor.upgrade.subprocess.run",
+                      side_effect=lambda command, **_k: subprocess.CompletedProcess(command, 0)):
+            with redirect_stdout(StringIO()) as output:
+                self.assertEqual(run_upgrade(None, []), 0)
+            self.assertNotIn("After any active workers finish", output.getvalue())
+            other.write_bytes(plistlib.dumps({"EnvironmentVariables": {"SIDEQUESTOR_VERSION": "0.0.0"}}))
+            with redirect_stdout(StringIO()) as output:
+                self.assertEqual(run_upgrade(None, []), 0)
+            self.assertIn(f"--workspace {self.other.root} start", output.getvalue())
+            self.assertNotIn(f"--workspace {self.workspace.root} start", output.getvalue())
+
+    def test_noop_upgrade_with_unverifiable_shared_jobs_still_syncs_and_restarts_selected_workspace(self) -> None:
+        broken = self.root / "broken.plist"
+        cases = [b'<?xml version="1.0"?><plist><dict>', plistlib.dumps([]),
+                 plistlib.dumps({"EnvironmentVariables": []}), None]
+        for content in cases:
+            with self.subTest(content=content):
+                if content is not None:
+                    broken.write_bytes(content)
+                def status(workspace):
+                    jobs = ["bad-shape"] if content is None else {"triage": {"plist": str(broken)}}
+                    return {"running": True, "python": os.path.abspath(sys.executable), "jobs": jobs}
+                with patch("sidequestor.upgrade.detect_installer", return_value=Installer("pip")), \
+                        patch("sidequestor.upgrade._installed_version", return_value=__version__), \
+                        patch("sidequestor.upgrade.production_status", side_effect=status), \
+                        patch("sidequestor.upgrade.stop_production", return_value=True), \
+                        patch("sidequestor.upgrade.read_dashboard_port", return_value=43123), \
+                        patch("sidequestor.upgrade.wait_for_dashboard_port", return_value=True), \
+                        patch("sidequestor.upgrade.subprocess.run",
+                              side_effect=lambda command, **_k: subprocess.CompletedProcess(command, 0)) as run, \
+                        redirect_stdout(StringIO()) as output:
+                    self.assertEqual(run_upgrade(self.workspace, []), 0)
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertEqual([command[-1] for command in commands[1:3]], ["sync-resources", "doctor"])
+                self.assertEqual(commands[-1][-3:], ["start", "--dashboard-port", "43123"])
+                self.assertIn(f"--workspace {self.other.root} start", output.getvalue())
