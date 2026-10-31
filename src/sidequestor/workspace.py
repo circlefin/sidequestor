@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import fcntl
+import tempfile
+from contextlib import contextmanager
 import os
 import secrets
+import shlex
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,11 +52,23 @@ class Workspace:
         return self.root / ".env"
 
 
+def workspace_command(workspace: Workspace, *arguments: str) -> str:
+    """Format a copyable command that keeps its workspace target explicit."""
+    return shlex.join(["sq", "--workspace", str(workspace.root), *arguments])
+
+
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(value, indent=2) + "\n")
-    os.replace(tmp, path)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
+        tmp = Path(stream.name)
+        json.dump(value, stream, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _read_json(path: Path) -> dict:
@@ -81,23 +97,95 @@ def ensure_reaction_watermark(workspace: Workspace) -> Path:
     return path
 
 
+@contextmanager
+def workspace_lock(workspace: Workspace, name: str = "lifecycle", *, blocking: bool = True):
+    """Serialize lifecycle changes without relying on stale PID files."""
+    with file_lock(workspace.yaas_dir / f"{name}.lock", blocking=blocking):
+        yield
+
+
+@contextmanager
+def file_lock(path: Path, *, blocking: bool = True):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _valid_rows(rows: list[dict]) -> list[dict]:
+    valid = []
+    for row in rows:
+        try:
+            ws = load_workspace(row["path"])
+        except (SystemExit, OSError, KeyError, TypeError, RuntimeError, ValueError):
+            continue
+        if ws.instance_id == row.get("instance_id"):
+            valid.append(row)
+    return valid
+
+
 def _register(workspace: Workspace) -> None:
-    """Keep a small advisory registry for the Stage 2 instance commands."""
     registry = _config_home() / "yaas" / "instances.json"
-    registry.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        rows = json.loads(registry.read_text()) if registry.exists() else []
-    except ValueError:
-        rows = []
-    if not isinstance(rows, list):
-        rows = []
-    rows = [row for row in rows if isinstance(row, dict) and row.get("instance_id") != workspace.instance_id]
-    rows.append({
-        "instance_id": workspace.instance_id,
-        "display_name": workspace.display_name,
-        "path": str(workspace.root),
-    })
-    _write_json(registry, rows)
+    with file_lock(registry.with_suffix(".lock")):
+        rows = list_instances()
+        old = next((r for r in rows if r.get("instance_id") == workspace.instance_id), {})
+        retained = []
+        was_default = bool(old.get("default"))
+        for row in rows:
+            try:
+                same_path = bool(row.get("path")) and Path(row["path"]).expanduser().resolve() == workspace.root
+            except (OSError, RuntimeError, TypeError, ValueError):
+                same_path = False
+            if same_path:
+                was_default = was_default or bool(row.get("default"))
+            if not same_path and row.get("instance_id") != workspace.instance_id:
+                retained.append(row)
+        rows = retained
+        if was_default:
+            old = dict(old, default=True)
+        rows.append(dict(old, instance_id=workspace.instance_id,
+                         display_name=workspace.display_name, path=str(workspace.root)))
+        valid = _valid_rows(rows)
+        if len(valid) == 1 and not any(r.get("default") for r in rows):
+            valid[0]["default"] = True
+        _write_json(registry, rows)
+
+
+def default_workspace() -> Workspace | None:
+    registry = _config_home() / "yaas" / "instances.json"
+    with file_lock(registry.with_suffix(".lock")):
+        rows = list_instances()
+        defaults = [r for r in rows if r.get("default")]
+        if len(defaults) == 1:
+            row = defaults[0]
+            try:
+                ws = load_workspace(row["path"])
+            except (SystemExit, OSError, KeyError, TypeError, RuntimeError, ValueError):
+                raise SystemExit("Default workspace is unavailable. Run sq setup --select-workspace, or sq --workspace PATH setup.")
+            if ws.instance_id != row.get("instance_id"):
+                raise SystemExit("Default workspace identity changed. Run sq setup --select-workspace, or sq --workspace PATH setup.")
+            return ws
+        valid = _valid_rows(rows)
+        if len(valid) == 1:
+            valid[0]["default"] = True
+            _write_json(registry, rows)
+            return load_workspace(valid[0]["path"])
+        if rows:
+            raise SystemExit("Choose your default workspace with sq setup --select-workspace.")
+    return None
+
+
+def set_default_workspace(workspace: Workspace) -> None:
+    _register(workspace)
+    registry = _config_home() / "yaas" / "instances.json"
+    with file_lock(registry.with_suffix(".lock")):
+        rows = list_instances()
+        for row in rows:
+            row["default"] = row.get("instance_id") == workspace.instance_id
+        _write_json(registry, rows)
 
 
 def init_workspace(path: str | Path, name: str | None = None) -> Workspace:
@@ -126,6 +214,7 @@ def init_workspace(path: str | Path, name: str | None = None) -> Workspace:
         "instance_id": instance_id,
         "display_name": display_name,
         "created_at": created_at,
+        "dashboard_port": 8877,
     })
     _write_json(ws.yaas_dir / ".yaas-version", {
         "schema_version": SCHEMA_VERSION,
@@ -181,7 +270,7 @@ def list_instances() -> list[dict]:
         value = json.loads(registry.read_text())
     except ValueError:
         return []
-    return value if isinstance(value, list) else []
+    return [r for r in value if isinstance(r, dict)] if isinstance(value, list) else []
 
 
 def register_workspace(workspace: Workspace) -> None:

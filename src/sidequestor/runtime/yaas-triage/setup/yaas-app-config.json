@@ -11,6 +11,8 @@
     "canvases:write",
     "channels:history",
     "channels:read",
+    "channels:write",
+    "channels:write.invites",
     "chat:write",
     "dnd:read",
     "emoji:read",
@@ -18,6 +20,9 @@
     "files:write",
     "groups:history",
     "groups:read",
+    "groups:write",
+    "groups:write.invites",
+    "groups:write.topic",
     "im:history",
     "im:read",
     "im:write",
@@ -40,5 +45,19 @@
     "users:read.email"
   ],
   "_reactions_read_note": "reactions:read may require workspace admin approval in some orgs. If approval is required, request it before running setup.sh; or proceed without — the reaction-monitoring path in the orchestrator will return zero results until the scope is granted, then each user re-runs setup.sh to re-authorize.",
-  "_reactions_write_note": "reactions:write is REQUIRED, not optional: the reaction lifecycle in surfaces/react-lifecycle.py calls reactions.add / reactions.remove (via client.py) to swap the loading and done emoji on a message. Without it every lifecycle transition fails with missing_scope and the user sees their trigger emoji never change."
+  "_reactions_write_note": "reactions:write is REQUIRED, not optional: the reaction lifecycle in surfaces/react-lifecycle.py calls reactions.add / reactions.remove (via client.py) to swap the loading and done emoji on a message. Without it every lifecycle transition fails with missing_scope and the user sees their trigger emoji never change.",
+  "claude_app": {
+    "app_id": "A08SF47R6P4",
+    "client_id": "1601185624273.8899143856786",
+    "app_name": "Claude",
+    "excluded_user_scopes": [
+      "channels:write.invites",
+      "dnd:read",
+      "groups:write.invites",
+      "groups:write.topic",
+      "im:write.topic",
+      "users.profile:read",
+      "users.profile:write"
+    ]
+  }
 }

@@ -21,7 +21,7 @@ quest's timeline in one atomic step.
 
 Why this exists
 ===============
-CLAUDE.md requires every outbound send to be logged to timeline.ndjson with a
+AGENTS.md requires every outbound send to be logged to timeline.ndjson with a
 `message_text` field carrying the exact text sent, because the Sidequestor
 dashboard only surfaces a message when that field is present. Relying on the LLM
 worker to remember that as a separate step is fragile (and fails outright on the
@@ -46,16 +46,16 @@ Usage
                                  (nothing is sent; logged as draft_posted)
     approval_id       (optional)  reviewed approval being executed; its reviewed_at
                                   participates in the stale-reply freshness check
-    quest_id         (optional)  quest to log under. If omitted, nothing is
-                                 logged (send-only; e.g. reactions fast path).
+    quest_id         (optional)  quest to log under. Reaction dispatches with no
+                                 quest log to Inbox, retaining send-only authorization.
     event            (optional)  timeline event name. Default "message_sent"
                                  ("draft_posted" when draft=true).
     note             (optional)  short human summary for the timeline `note`.
 
 Non-draft sends are authorized here before Slack is called. Quest sends require an
-active quest with `allow_send: true`, or a claimed `slack_message` approval whose
-reviewed target matches this channel and thread. The reactions dispatch is the sole
-quest-less send path.
+active quest with `allow_send: true`, a channel listed in the quest's
+`allow_send_channels`, or a claimed `slack_message` approval whose reviewed target
+matches this channel and thread. The reactions dispatch is the sole quest-less send path.
 
 Output (stdout): compact JSON, e.g.
     {"response_ts":"1784280637.486119","permalink":"https://...","channel_id":"C...","logged":true}
@@ -71,6 +71,7 @@ from __future__ import annotations  # PEP 604 unions below must not be
 # evaluated at def time: this file has to import on Python < 3.10.
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -85,7 +86,7 @@ def _repo_root(start):
 
     NOT counted as `parent.parent`: that is correct only while every script sits directly
     in yaas-triage/, and silently resolves to yaas-triage/ itself once a script moves into
-    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on CLAUDE.md
+    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on AGENTS.md
     (a fresh clone has only CLAUDE.example.md) and NOT on .git (two git dirs here, none in
     fixtures). Ambient $REPO_ROOT is deliberately ignored: a stale value pointing at another
     checkout would pass any marker check and silently redirect writes. Test fixtures copy
@@ -335,6 +336,11 @@ def _send_policy_reason(p):
     except Exception as exc:
         return f"cannot read quest policy for {quest_id}: {exc}"
 
+    # A per-channel grant lets a quest such as onboarding DM its owner without gaining
+    # send authority anywhere else; every other send surface still sees allow_send false.
+    channels = meta.get("allow_send_channels")
+    if isinstance(channels, list) and p.get("channel_id") in channels:
+        return None
     approved = _claimed_slack_approval(p.get("approval_id"), quest_id,
                                        p.get("channel_id"), p.get("thread_ts"))
     if not meta.get("allow_send") and not approved:
@@ -444,7 +450,7 @@ def main():
     #    worker the OLDEST unread slice first, so without this it would march forward
     #    through days of backlog answering questions that were resolved without it.
     #    Enforced here, in the only sanctioned send path, rather than as a rule in
-    #    CLAUDE.md, because a rule the model can forget is not a guard.
+    #    AGENTS.md, because a rule the model can forget is not a guard.
     if not is_draft:
         reason = _stale_reason(
             channel_id, thread_ts, approval_id=p.get("approval_id"), quest_id=quest_id,
@@ -514,6 +520,14 @@ def main():
 
     # 4. Log the verbatim body to the quest timeline (the whole point).
     logged = False
+    if not quest_id and os.environ.get("SIDEQUESTOR_DISPATCH_TARGET") == "reactions":
+        from inbox import try_log_inbox
+        digest = hashlib.sha256(message.encode()).hexdigest()[:16]
+        logged = try_log_inbox(REPO_ROOT, f"reaction-send:{resolved_channel_id}:{response_ts or thread_ts}:{event}:{digest}", {
+            "event": event, "channel_id": resolved_channel_id, "thread_ts": thread_ts,
+            "response_ts": response_ts or "", "permalink": permalink or "",
+            "message_text": message, "note": note or "Reaction action",
+        })
     if quest_id:
         qdir = quest_dir(REPO_ROOT, quest_id)
         if qdir is None:

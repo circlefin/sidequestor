@@ -139,6 +139,7 @@ class AgentTests(QuestTerminalTestCase):
         self.assertEqual(len(argv), 2)
         self.assertIn("quest-demo", argv[1])
         self.assertIn("Work only on this quest", argv[1])
+        self.assertIn("Read and follow workspace AGENTS.md if it exists.", argv[1])
         self.assertIn("My request: draft a reply", argv[1])
         self.assertEqual(env["SQ_QUEST_ID"], "quest-demo")
         self.assertEqual(Path(workdir).resolve(), self.workspace.root.resolve())
@@ -357,6 +358,7 @@ class SessionTests(QuestTerminalTestCase):
         binary, argv, workdir = calls[0]
         self.assertEqual(binary, "/bin/codex")
         self.assertIn("quest-creation skill", argv[1])
+        self.assertIn("Read and follow workspace AGENTS.md if it exists.", argv[1])
         self.assertIn("sq new-quest", argv[1])
         self.assertIn("The mission: follow up with legal", argv[1])
         self.assertEqual(Path(workdir).resolve(), self.workspace.root.resolve())
@@ -424,6 +426,46 @@ class CliTests(QuestTerminalTestCase):
             self.run_cli("ask", "quest-demo", "--claude", "draft", "a reply")
         args = run_ask.call_args.args
         self.assertEqual((args[2], args[3]), ("draft a reply", "claude"))
+
+    def test_ask_accepts_agent_flags_before_between_and_after_prompt_words(self):
+        for agent in ('codex', 'claude', 'cursor'):
+            for arguments in ((f'--{agent}', 'quest-demo', 'draft', 'a reply'),
+                              ('quest-demo', 'draft', f'--{agent}', 'a reply'),
+                              ('quest-demo', 'draft', 'a reply', f'--{agent}')):
+                with self.subTest(arguments=arguments), patch.object(qt, 'run_ask', return_value=0) as ask:
+                    self.assertEqual(self.run_cli('ask', *arguments)[0], 0)
+                    self.assertEqual(ask.call_args.args[2:], ('draft a reply', agent))
+
+    def test_create_accepts_agent_flag_between_prompt_words(self):
+        with patch.object(qt, 'run_create', return_value=0) as create:
+            self.assertEqual(self.run_cli('create', 'track', '--cursor', 'the launch')[0], 0)
+            self.assertEqual(create.call_args.args[1:], ('track the launch', 'cursor'))
+
+    def test_ask_and_create_preserve_literal_flags_after_separator(self):
+        with patch.object(qt, 'run_ask', return_value=0) as ask:
+            self.assertEqual(self.run_cli('ask', 'quest-demo', '--', '--claude', '--unknown')[0], 0)
+            self.assertEqual(ask.call_args.args[2:], ('--claude --unknown', None))
+        with patch.object(qt, 'run_create', return_value=0) as create:
+            self.assertEqual(self.run_cli('create', '--', '--cursor', '--unknown')[0], 0)
+            self.assertEqual(create.call_args.args[1:], ('--cursor --unknown', None))
+        with patch.object(qt, 'run_ask', return_value=0) as ask:
+            self.assertEqual(self.run_cli('ask', 'quest-demo', '--claude', '--', '--cursor')[0], 0)
+            self.assertEqual(ask.call_args.args[2:], ('--cursor', 'claude'))
+        with patch.object(qt, 'run_ask', return_value=0) as ask:
+            self.assertEqual(self.run_cli('ask', '--', 'quest-demo', '--claude')[0], 0)
+            self.assertEqual(ask.call_args.args[2:], ('--claude', None))
+
+    def test_agent_commands_still_reject_unknown_or_conflicting_flags(self):
+        for args in (('ask', 'quest-demo', '--unknown'),
+                     ('ask', 'quest-demo', '--claude', '--cursor'),
+                     ('create', '--unknown'), ('create', '--codex', '--claude')):
+            with self.subTest(args=args), patch.object(qt, 'run_ask') as ask, \
+                    patch.object(qt, 'run_create') as create, redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    self.run_cli(*args)
+                self.assertEqual(error.exception.code, 2)
+                ask.assert_not_called()
+                create.assert_not_called()
 
 
 class DashboardTerminalTests(unittest.TestCase):
@@ -497,16 +539,18 @@ class DashboardTerminalTests(unittest.TestCase):
         source = (TRIAGE_ROOT / "ops" / "dashboard-server.py").read_text()
         self.assertIn('if path == "/api/quests/terminal":', source)
 
-    def test_create_dialog_links_to_a_terminal_instead_of_a_copied_prompt(self) -> None:
+    def test_create_dialog_follows_app_preference_and_retains_terminal_route(self) -> None:
         html = DASHBOARD_HTML.read_text()
         self.assertIn('placeholder="Queue a precise instruction for this quest…"', html)
         self.assertIn('id="open-creation-terminal"', html)
-        self.assertIn(">Create interactively in Terminal instead</button>", html)
+        self.assertIn(">Create in Codex instead</button>", html)
+        self.assertIn("Create interactively in Terminal instead", html)
+        self.assertIn("addEventListener('click',openCreationApp)", html)
         self.assertIn("post('/api/quests/terminal')", html)
         for removed in ("questGuideSnippet", "copy-quest-guide", "quest-guide-snippet", "clipboard"):
             self.assertNotIn(removed, html)
 
-    def test_button_is_static_and_posts_to_the_terminal_route(self) -> None:
+    def test_launch_button_routes_through_preference_and_retains_terminal_route(self) -> None:
         html = DASHBOARD_HTML.read_text()
         static_html = html.split("<script>", 1)[0]
         self.assertEqual(html.count('id="open-terminal"'), 1)
@@ -515,7 +559,7 @@ class DashboardTerminalTests(unittest.TestCase):
         self.assertLess(footer.index('</form>'), footer.index('id="open-terminal"'))
         self.assertLess(footer.index('id="open-terminal"'), footer.index('</footer>'))
         self.assertIn("/api/quest/${encodeURIComponent(questId)}/terminal", html)
-        self.assertIn("if(e.target.closest('#open-terminal')){await openTerminal();return}", html)
+        self.assertIn("if(e.target.closest('#open-terminal')){await openConfiguredApp();return}", html)
 
 
 if __name__ == "__main__":

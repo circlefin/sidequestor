@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from credential_store import CredentialStore, account_name
+from native_tls import native_ssl_context
 from slack_credentials import AuthenticationError, CredentialError, TransientCredentialError
 
 
@@ -45,7 +46,7 @@ def _store(credential_id):
 
 def _request_json(request, timeout=HTTP_TIMEOUT_SECONDS):
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout, context=native_ssl_context()) as response:
             status = response.status
             raw = response.read().decode()
     except urllib.error.HTTPError as exc:

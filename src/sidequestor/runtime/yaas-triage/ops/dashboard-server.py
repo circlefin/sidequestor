@@ -27,6 +27,7 @@ Endpoints:
     GET  /                    → dashboard.html
     GET  /yaas-triage/assets/sidequestor-mark.png → dashboard logo
     GET  /api/dashboard       → live JSON snapshot of all quest state
+    GET  /api/settings        → redacted configuration overview (authenticated)
     GET  /api/briefs          → canonical Markdown briefings
     GET  /state/<path>        → raw state file
     POST /api/review/<id>     → mark item reviewed (optionally with edits)
@@ -36,6 +37,7 @@ Endpoints:
     POST /api/reclaim/<id>    → recover an expired executing lease
     POST /api/quests          → create an explicitly-marked bootstrap quest
     POST /api/workspace/open  → open this workspace in Cursor or the default app
+    POST /api/workspace/terminal → open a terminal at the workspace folder
     POST /api/quest/<id>/terminal → open the quest's terminal session (sq terminal)
     POST /api/quests/terminal → open the terminal session for creating a quest
 """
@@ -64,7 +66,7 @@ def _repo_root(start):
 
     NOT counted as `parent.parent`: that is correct only while every script sits directly
     in yaas-triage/, and silently resolves to yaas-triage/ itself once a script moves into
-    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on CLAUDE.md
+    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on AGENTS.md
     (a fresh clone has only CLAUDE.example.md) and NOT on .git (two git dirs here, none in
     fixtures). Ambient $REPO_ROOT is deliberately ignored: a stale value pointing at another
     checkout would pass any marker check and silently redirect writes. Test fixtures copy
@@ -95,13 +97,28 @@ sys.path.insert(0, str(RUNTIME_ROOT / "yaas-triage"))
 import approval_state
 import approval_store
 import tick_check
+import threading
+from types import SimpleNamespace
+from dashboard_settings import build_settings
+from dashboard_theme import read_branding, read_theme
+from surfaces.slack_read_cooldown import read_deadline as slack_read_deadline
+from dashboard_visualizer import build_visualization
+from dashboard_permissions import PermissionConflict, set_send_permission
 from tick_state import (
+    BadEnvKnob,
     Config,
     DEFAULT_CHECKER_CONNECTORS,
     NUMERIC_KNOBS,
     load_environment,
     load_watch_manifests,
 )
+
+# Capture the package identity before an in-place upgrade can replace files on disk.
+try:
+    from sidequestor.build_info import build_info as _package_build_info
+    PACKAGE_BUILD_INFO = _package_build_info()
+except Exception:
+    PACKAGE_BUILD_INFO = {}
 
 approval_state.configure(load_environment(REPO_ROOT))
 
@@ -126,6 +143,7 @@ def build_workspace_identity() -> dict:
         "display_name": str(data.get("display_name") or REPO_ROOT.name),
         "path": str(REPO_ROOT),
         "instance_id": str(data.get("instance_id") or ""),
+        "open_in": dashboard_open_in(),
     }
 
 # Workspace-specific hosts. No hardcoded defaults: they belong to whoever runs
@@ -135,6 +153,13 @@ def build_workspace_identity() -> dict:
 def _dotenv(key: str, default: str = "") -> str:
     value = load_environment(REPO_ROOT).get(key)
     return str(value).strip() if value not in (None, "") else default
+
+
+def dashboard_open_in() -> str:
+    # Independent of the worker harness; reload .env on each dashboard poll.
+    value = _dotenv("SIDEQUESTOR_OPEN_IN", "").lower()
+    return value if value in {"terminal", "codex", "claude", "cursor"} else ""
+
 
 SLACK_HOST = _dotenv("SLACK_WORKSPACE_DOMAIN")            # e.g. acme.slack.com
 JIRA_HOST  = (_dotenv("JIRA_BASE_URL").replace("https://", "")
@@ -197,6 +222,7 @@ def _csp_html(nonce: str) -> str:
         f"script-src 'nonce-{nonce}'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
+        "font-src 'self'; "
         "connect-src 'self'; "
         "object-src 'none'; base-uri 'none'; "
         "frame-ancestors 'none'; form-action 'none'"
@@ -207,6 +233,26 @@ def _csp_html(nonce: str) -> str:
 
 def _read_approvals() -> dict:
     return approval_store.read_queue()
+
+
+def _live_approval_items(data: dict) -> list:
+    """Exclude known closed quests without hiding missing or unreadable quests.
+
+    Workers move completed/cancelled quests without necessarily closing their
+    approval records. Those records remain history, not work awaiting a decision.
+    An active copy wins if a quest is being restored.
+    """
+    quests = STATE_DIR / "quests"
+    closed = set()
+    for bucket in ("completed", "archived"):
+        try:
+            closed.update(p.name for p in (quests / bucket).iterdir()
+                          if p.is_dir() and not (quests / "active" / p.name).is_dir())
+        except OSError:
+            pass  # No proof of closure: keep the approval visible.
+    return [item for item in data.get("items", [])
+            if item.get("status") not in TERMINAL_APPROVAL_STATUSES
+            and item.get("quest_id") not in closed]
 
 
 # ── Slack deeplink + outbound-message normalization ───────────────────────────
@@ -385,6 +431,11 @@ def _ext_link(e: dict) -> tuple[str | None, str | None]:
 def _watch_link(w: dict, wtype: str, ch, tts) -> tuple[str | None, str | None]:
     """A watch entry points at a surface, not a single reply: a Slack thread, a
     Jira JQL set, a repo's PRs, or a Gmail query (no stable URL)."""
+    if wtype.startswith("notion_"):
+        target = _first_str(w, ("page_id", "database_id", "data_source_id", "block_id"))
+        if re.fullmatch(r"[0-9a-fA-F-]{32,36}", target or ""):
+            return "https://www.notion.so/" + target.replace("-", ""), "notion"
+        return None, None
     if wtype == "jira":
         u = _jira_url(w)
         if u:
@@ -897,8 +948,18 @@ def _recent_runlog_events(event_name: str, window_sec: int) -> list:
 # anywhere (so the UI can show "default" vs a live override). Grouped for a readable Config tab.
 # Deterministic between state changes (it only moves when .env / env changes), so it does not
 # defeat the ETag/304 path.
+def _dashboard_config():
+    try:
+        return Config(str(RUNTIME_ROOT / "yaas-triage"))
+    except (BadEnvKnob, ValueError) as exc:
+        # Invalid dispatch settings must not hide the queue that explains them.
+        # Showing all stored watch warnings is conservative; this never runs a checker.
+        return SimpleNamespace(env=load_environment(REPO_ROOT), checker_enabled=lambda _: True,
+                               validation_error=str(exc))
+
+
 def build_config() -> dict:
-    resolved = Config(str(RUNTIME_ROOT / "yaas-triage"))
+    resolved = _dashboard_config()
 
     def knob(key, default, desc):
         raw = resolved.env.get(key)
@@ -941,7 +1002,8 @@ def build_config() -> dict:
             knob("YAAS_AGENT", "codex", "Which agent backend runs the worker dispatch (claude / codex / cursor)."),
         ]},
     ]
-    return {"orchestrator": "tick.py", "worker_timeout_sec": 1800, "groups": groups}
+    return {"orchestrator": "tick.py", "worker_timeout_sec": 1800, "groups": groups,
+            "error": getattr(resolved, "validation_error", None)}
 
 
 # ── Dashboard payload builder ─────────────────────────────────────────────────
@@ -1085,9 +1147,10 @@ def build_dashboard(include_briefs: bool = False) -> dict:
     /api/dashboard, whose payload contract still carries them, opts in.
     """
     active_dir = STATE_DIR / "quests" / "active"
-    checker_config = Config(str(RUNTIME_ROOT / "yaas-triage"))
+    checker_config = _dashboard_config()
     quests         = []
     recent_activity = []
+    live_watch_ids: dict[str, set | None] = {}
 
     for quest_dir in sorted(active_dir.iterdir()) if active_dir.exists() else []:
         if not quest_dir.is_dir():
@@ -1108,6 +1171,7 @@ def build_dashboard(include_briefs: bool = False) -> dict:
                            if isinstance(watch, dict)]
         except Exception:
             pass
+        live_watch_ids[quest_dir.name] = _live_watch_ids(quest_dir)
         timeline_path = quest_dir / "timeline.ndjson"
         if timeline_path.exists():
             lines = [l for l in timeline_path.read_text().splitlines() if l.strip()]
@@ -1187,6 +1251,8 @@ def build_dashboard(include_briefs: bool = False) -> dict:
             for key, entry in uc.items():
                 qid, _, wid = key.partition("|")
                 if not isinstance(entry, dict) or entry.get("count", 0) < promote:
+                    continue
+                if not _unacked_item_is_live(wid, live_watch_ids.get(qid)):
                     continue
                 if not checker_config.checker_enabled(entry.get("type", "")):
                     continue
@@ -1319,9 +1385,8 @@ def build_dashboard(include_briefs: bool = False) -> dict:
     if APPROVALS_FILE.exists():
         try:
             data = _read_approvals()
-            pending_review = [i for i in data.get("items", [])
-                              if i.get("status") not in TERMINAL_APPROVAL_STATUSES
-                              and i.get("action_type") != "manual_instruction"]
+            pending_review = [i for i in _live_approval_items(data)
+                              if i.get("action_type") != "manual_instruction"]
         except Exception:
             pass
 
@@ -1349,8 +1414,7 @@ def build_messages() -> dict:
 
     appr_data  = _read_approvals() if APPROVALS_FILE.exists() else {"items": []}
     appr_by_id = _approvals_index(appr_data)
-    pending = [i for i in appr_data.get("items", [])
-               if i.get("status") not in TERMINAL_APPROVAL_STATUSES]
+    pending = _live_approval_items(appr_data)
     needs_you, other_actions = [], []
     queued_items = []
     for i in pending:
@@ -1539,6 +1603,8 @@ def _watch_issue(kind: str, watch: dict, now: float | None = None) -> dict:
             action = "Check GitHub access with gh auth status, then review this watch."
         elif watch_type.startswith("slack_"):
             action = "Run sq doctor to check Slack access, then reconnect if needed."
+        elif watch_type.startswith("notion_"):
+            action = "Check the Notion API token, connection capabilities, and page access grants."
         elif watch_type == "jira":
             action = "Run sq doctor and check the Jira API token and permissions."
         else:
@@ -1553,9 +1619,15 @@ def _watch_issue(kind: str, watch: dict, now: float | None = None) -> dict:
                 "next": f"Automatic retry {retry}. Investigate if this continues."}
     reason = str(cause).lower()
     throttled = any(token in reason for token in ("429", "ratelimit", "rate limit"))
+    slack_throttled = throttled and str(issue.get("watch_type", "")).startswith("slack_")
+    retry_at = slack_read_deadline(REPO_ROOT, now) if slack_throttled else 0
     return {**issue, "severity": "transient",
-            "title": "Rate limited" if throttled else "Temporary read interruption",
-            "next": "Sidequestor will retry on the next tick."}
+            "title": "Slack checks delayed" if slack_throttled else
+                     "Checks delayed" if throttled else "Temporary read interruption",
+            "retry_at": retry_at or None,
+            "next": ("Watching continues. Slack reads resume on the first poll after "
+                     + datetime.fromtimestamp(retry_at, timezone.utc).strftime("%d %b %H:%M:%S UTC") + ".") if retry_at else
+                    "Watching continues. Sidequestor retries automatically."}
 
 
 def _quest_watch_issues(quest: dict, now: float | None = None) -> list[dict]:
@@ -1600,10 +1672,56 @@ def _quest_health_detail(quest: dict, now: float | None = None) -> str:
     return " ".join(parts)
 
 
+def _live_watch_ids(quest_dir: Path) -> set | None:
+    """Counter items that can still belong to this quest: its current watch IDs, the
+    unreadable-manifest sentinel, and the bootstrap item while bootstrap is pending. None
+    when watch.json or meta.json cannot be read or a watch has no usable ID. Mirrors
+    tick.py's _live_unacked_items, which decides what the tick prunes."""
+    try:
+        watches = json.loads((quest_dir / "watch.json").read_text())["watches"]
+        meta = json.loads((quest_dir / "meta.json").read_text())
+    except Exception:
+        return None
+    if not isinstance(watches, list) or not isinstance(meta, dict):
+        return None
+    live = {"<unreadable-manifest>"}
+    for watch in watches:
+        wid = watch.get("watch_id") if isinstance(watch, dict) else None
+        if not isinstance(wid, str) or not wid:
+            return None
+        live.add(wid)
+    if meta.get("sidequestor_bootstrap") is True:
+        live.add("sidequestor-bootstrap")
+    return live
+
+
+def _unacked_item_is_live(item: str, live_ids: set | None) -> bool:
+    """Whether a no-progress counter still belongs to a watch that exists.
+
+    Counters outlive their watch (retired, replaced, quest closed) until the tick prunes them;
+    showing one would claim a retry that will never happen. An unreadable watch.json shows
+    everything rather than hide a real problem behind a transient read error.
+    """
+    return live_ids is None or item in live_ids
+
+
 def build_control() -> dict:
     dashboard = build_dashboard()
     messages = build_messages()
     attention = []
+    try:
+        from sidequestor.worker_readiness import current_state
+        from sidequestor.workspace import load_workspace, workspace_command
+        workspace = load_workspace(REPO_ROOT)
+        readiness = current_state(workspace)
+        for scope in ("blocked", "slack"):
+            reason = readiness.get(scope)
+            if reason:
+                attention.append({"id": f"worker-readiness:{scope}", "kind": "configuration",
+                                  "priority": "high", "label": "Worker connection needs attention",
+                                  "detail": reason, "action": f"Run {workspace_command(workspace, 'setup')} in your terminal."})
+    except (ImportError, SystemExit, OSError, ValueError, AttributeError):
+        pass
 
     for card in messages["needs_you"]:
         attention.append({
@@ -1648,6 +1766,7 @@ def build_control() -> dict:
             "structured_live_progress": False,
             "activity_pagination": False,
         },
+        "slack_read_retry_at": slack_read_deadline(REPO_ROOT) or None,
         "triage": dashboard["triage"],
         "liveness": {"hard_tick_sec": _hard_tick_ceiling_s(),
                      "stall_sec": _stall_threshold_s()},
@@ -1680,20 +1799,31 @@ def build_reaction_emojis() -> dict:
 
 def build_build_info() -> dict:
     """Return package build identity without requiring package imports."""
-    try:
-        from sidequestor.build_info import build_info
-        info = build_info()
-    except Exception:
-        info = {}
-    commit_full = os.environ.get("SIDEQUESTOR_COMMIT") or info.get("commit_full", "")
+    info = PACKAGE_BUILD_INFO
+    # launchd retains its environment across package replacement. Prefer one
+    # coherent package identity over potentially stale version/commit/ref labels.
+    commit_full = info.get("commit_full", "") if info else os.environ.get("SIDEQUESTOR_COMMIT", "")
+    version = info.get("version", "unknown") if info else os.environ.get("SIDEQUESTOR_VERSION", "unknown")
     return {
-        "version": os.environ.get("SIDEQUESTOR_VERSION") or info.get("version", "unknown"),
+        "version": version,
         "commit": commit_full[:7],
         "commit_full": commit_full,
-        "ref": os.environ.get("SIDEQUESTOR_REF") or info.get("ref", ""),
+        "ref": info.get("ref", "") if info else os.environ.get("SIDEQUESTOR_REF", ""),
         "source": info.get("source", "unknown"),
         "engine": info.get("engine", "unknown"),
+        "update": _available_update(version),
     }
+
+
+def _available_update(version: str) -> dict | None:
+    """A newer release recorded by the heartbeat's daily check, or None. Never fetches."""
+    try:
+        from sidequestor.update_check import available_update, check_enabled, read_status
+        if not check_enabled(load_environment(REPO_ROOT)):
+            return None
+        return available_update(read_status(REPO_ROOT), version)
+    except Exception:
+        return None
 
 
 # ── Quest detail builder (lazy-fetched by the drawer) ────────────────────────
@@ -1701,8 +1831,26 @@ def build_build_info() -> dict:
 _TIMELINE_KEYS = ("ts", "event", "note", "reason", "permalink", "by", "channel",
                   "channel_id", "thread_ts", "response_ts", "msg_ts", "message_ts",
                   "approval_id", "draft_id", "action_type", "to", "subject",
-                  "message_text")
+                  "message_text", "linked_quest_id", "reaction_item", "status")
 _TIMELINE_CAP  = 500
+
+def _notion_coverage(entry):
+    """Read existing coverage only; rendering must never start a scan or create state."""
+    if not str(entry.get("type", "")).startswith("notion_"):
+        return None
+    try:
+        import importlib.util
+        module = globals().get("_NOTION_INSPECTOR")
+        if module is None:
+            helper = Path(__file__).resolve().parents[1] / "surfaces" / "notion-state.py"
+            spec = importlib.util.spec_from_file_location("sidequestor_notion_inspector", helper)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            globals()["_NOTION_INSPECTOR"] = module
+        return module.inspect(entry, Path(os.environ.get("NOTION_STATE_DIR", REPO_ROOT / "state" / "notion")), strict=False)["coverage"]
+    except Exception:
+        return {"status": "unavailable", "reason": "Notion scan state unavailable; coverage is unknown"}
+
 
 def build_quest_detail(quest_id: str) -> dict | None:
     open_watch_types, registry_error = _open_watch_types()
@@ -1733,6 +1881,8 @@ def build_quest_detail(quest_id: str) -> dict | None:
         w = json.loads((quest_dir / "watch.json").read_text())
         if isinstance(w, dict) and isinstance(w.get("watches"), list):
             watches = [e for e in w["watches"] if isinstance(e, dict)]
+            watches = [{**e, "notion_coverage": _notion_coverage(e)}
+                       if str(e.get("type", "")).startswith("notion_") else e for e in watches]
     except Exception:
         pass
 
@@ -1877,9 +2027,11 @@ def build_quest_detail(quest_id: str) -> dict | None:
         try:
             uc = json.loads(unacked_path.read_text())
             promote = int(_dotenv("YAAS_UNACKED_PROMOTE", "3"))
+            live_ids = _live_watch_ids(quest_dir)
             for key, entry in uc.items():
                 qid, _, wid = key.partition("|")
-                if qid == quest_id and entry.get("count", 0) >= promote:
+                if (qid == quest_id and entry.get("count", 0) >= promote
+                        and _unacked_item_is_live(wid, live_ids)):
                     if (_dotenv("YAAS_SLACK_CHECKERS_ENABLED", "1") == "0"
                             and str(entry.get("type", "")).startswith("slack_")):
                         continue
@@ -1951,7 +2103,7 @@ def build_quest_detail(quest_id: str) -> dict | None:
 
     misconfigured_watches = []
     try:
-        checker_config = Config(str(RUNTIME_ROOT / "yaas-triage"))
+        checker_config = _dashboard_config()
         triage_state = json.loads((STATE_DIR / "triage" / "last-run.json").read_text())
         if isinstance(triage_state.get("watch_issues"), list):
             current = [issue for issue in triage_state["watch_issues"]
@@ -2125,12 +2277,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
 
-    def _send_json(self, data: dict, status: int = 200):
+    def _send_json(self, data: dict, status: int = 200, *, cache_control: str = "no-cache"):
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", cache_control)
         self._sec_headers(_CSP_JSON)
         self.end_headers()
         self.wfile.write(body)
@@ -2170,6 +2322,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
         nonce = secrets.token_urlsafe(16)
+        html = html.replace("__DASHBOARD_NONCE__", nonce)
         html = html.replace("<script>", f'<script nonce="{nonce}">', 1)
         body = html.encode()
         self.send_response(200)
@@ -2194,6 +2347,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _serve_theme(self, path: str):
+        status, content_type, body = read_theme(REPO_ROOT, path)
+        # User CSS always reloads. Image/font assets may reuse browser bytes, but
+        # must revalidate so editing/deleting theme/ still takes effect on refresh.
+        cached_asset = status == 200 and path != "/theme/custom.css"
+        etag = '"' + hashlib.sha256(body).hexdigest() + '"' if cached_asset else None
+        unchanged = etag and self.headers.get("If-None-Match") == etag
+        self.send_response(304 if unchanged else status)
+        self.send_header("Content-Type", content_type)
+        if not unchanged:
+            self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "private, no-cache" if cached_asset else "no-store")
+        if etag:
+            self.send_header("ETag", etag)
+        self._sec_headers(_CSP_JSON)
+        self.end_headers()
+        if self.command != "HEAD" and not unchanged:
+            self.wfile.write(body)
+
+    def do_HEAD(self):
+        path = urllib.parse.urlparse(self.path).path
+        if not self._host_ok() or not self._authed():
+            self.send_error(403)
+        elif path.startswith("/theme/"):
+            self._serve_theme(path)
+        else:
+            self.send_error(405)
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
@@ -2227,12 +2408,47 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(403, "forbidden")
             return
 
+        if path.startswith("/theme/"):
+            self._serve_theme(path)
+            return
+
+        if path == "/api/theme":
+            self._send_json(read_branding(REPO_ROOT), cache_control="no-store")
+            return
+
+        if path in ("/dashboard-assets/theme-branding.js", "/dashboard-assets/theme-branding.css"):
+            asset = RUNTIME_ROOT / path.rsplit("/", 1)[1]
+            body = asset.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8" if path.endswith(".js") else "text/css; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self._sec_headers(_CSP_JSON)
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if path == "/api/dashboard":
             self._send_json_etag(lambda: build_dashboard(include_briefs=True))
             return
 
         if path == "/api/control":
             self._send_json_etag(build_control)
+            return
+
+        if path == "/api/settings":
+            try:
+                settings = build_settings(REPO_ROOT, RUNTIME_ROOT.parent / "package_data" / "env.example")
+            except (OSError, UnicodeError):
+                self._send_json({"error": "Could not read the packaged settings catalog. Check the Sidequestor installation."},
+                                500, cache_control="no-store")
+                return
+            self._send_json(settings, cache_control="no-store")
+            return
+
+        if path == "/api/updates/status":
+            from sidequestor.update_check import check_status
+            self._send_json(check_status(REPO_ROOT))
             return
 
         if path == "/api/briefs":
@@ -2245,6 +2461,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/history":
             self._send_json_etag(build_history)
+            return
+
+        if path in ("/dashboard-assets/dashboard-quest-visualizer.js",
+                    "/dashboard-assets/dashboard-quest-visualizer.css"):
+            enabled = _dotenv("SIDEQUESTOR_QUEST_VISUALIZER", "1") != "0"
+            name = path.rsplit("/", 1)[1]
+            content_type = "text/javascript; charset=utf-8" if name.endswith(".js") else "text/css; charset=utf-8"
+            body = (RUNTIME_ROOT / name).read_bytes() if enabled else b""
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self._sec_headers(_CSP_JSON)
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if (path.startswith("/api/quest/") and path.endswith("/visualization")
+                and len(path.strip("/").split("/")) == 4):
+            if _dotenv("SIDEQUESTOR_QUEST_VISUALIZER", "1") == "0":
+                self._send_json({"error": "quest visualization is disabled"}, 404)
+                return
+            quest_id = urllib.parse.unquote(path[len("/api/quest/"):-len("/visualization")])
+            result = build_visualization(REPO_ROOT, quest_id)
+            self._send_json(result or {"error": "quest not found"}, 200 if result else 404,
+                            cache_control="no-store")
             return
 
         if path.startswith("/api/quest/"):
@@ -2283,6 +2525,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/theme/"):
+            self.send_error(405, "theme assets are read-only")
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
         except (TypeError, ValueError):
@@ -2304,8 +2549,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json({"error": "request body must be a JSON object"}, 400)
             return
 
+        if path == "/api/workspace/terminal":
+            self._handle_workspace_terminal()
+            return
+
         if path == "/api/workspace/open":
             self._handle_open_workspace()
+            return
+
+        if path == "/api/updates/check":
+            from sidequestor.update_check import check_enabled, check_status
+            env = dict(os.environ, **load_environment(REPO_ROOT))
+            if not check_enabled(env):
+                self._send_json({"error": "Update checking is disabled in workspace configuration"}, 409)
+                return
+            status = check_status(REPO_ROOT)
+            try:
+                elapsed = time.time() - float(status.get("last_attempt_ts") or 0)
+            except (TypeError, ValueError):
+                elapsed = 60
+            if elapsed < 60:
+                self._send_json({**status, "status": "rate_limited", "retry_after": max(1, int(60 - elapsed))})
+                return
+            try:
+                process = subprocess.Popen([sys.executable, "-m", "sidequestor.update_check", "--workspace", str(REPO_ROOT), "--force"],
+                                           env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            except OSError as exc:
+                self._send_json({"error": f"Could not start update check: {exc}"}, 503)
+                return
+            threading.Thread(target=process.wait, daemon=True).start()
+            self._send_json({"status": "checking", "last_attempt_ts": status["last_attempt_ts"]}, 202)
             return
 
         if path == "/api/quests/terminal":
@@ -2316,6 +2589,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Expected: ["api", "<action>", "<id>"]
         if len(parts) == 3 and parts[0] == "api" and parts[1] in approval_state.HTTP_ACTIONS:
             self._handle_review(parts[2], parts[1], payload)
+            return
+
+        if len(parts) == 4 and parts[:2] == ["api", "quest"] and parts[3] == "send-permission":
+            try:
+                result = set_send_permission(REPO_ROOT, urllib.parse.unquote(parts[2]), payload)
+            except PermissionConflict as exc:
+                self._send_json({"error": str(exc)}, 409)
+            except ImportError:
+                self._send_json({"error": "Send-permission changes require the Sidequestor package interpreter."}, 503)
+            except FileNotFoundError:
+                self._send_json({"error": "active quest not found"}, 404)
+            except (ValueError, OSError) as exc:
+                self._send_json({"error": str(exc)}, 400)
+            else:
+                self._send_json(result)
             return
 
         # Quest terminal: ["api", "quest", "<quest_id>", "terminal"]
@@ -2344,7 +2632,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle_open_workspace(self):
         """Open the server's own workspace, never a browser-supplied path."""
-        preferred = os.environ.get("SIDEQUESTOR_IDE_APP", "Cursor").strip()
+        preferred = _dotenv('SIDEQUESTOR_IDE_APP', 'Cursor')
         attempts = []
         if preferred:
             attempts.append((preferred, ["open", "-a", preferred, str(REPO_ROOT)]))
@@ -2375,6 +2663,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "error": "could not open workspace in Cursor or the default application",
             "detail": "; ".join(errors),
         }, 500)
+
+    def _handle_workspace_terminal(self):
+        """Open only the server's workspace in the configured terminal application."""
+        app = _dotenv("SIDEQUESTOR_TERMINAL_APP", "Terminal")
+        try:
+            result = subprocess.run(
+                ["open", "-a", app, str(REPO_ROOT)], cwd=str(REPO_ROOT),
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._send_json({"error": f"could not open terminal: {exc}"}, 500)
+            return
+        if result.returncode:
+            self._send_json({"error": "could not open workspace terminal",
+                             "detail": (result.stderr or "open failed").strip()[:200]}, 500)
+            return
+        self._send_json({"ok": True, "app": app, "path": str(REPO_ROOT)})
 
     def _handle_open_terminal(self, quest_id: str):
         """Open the quest's terminal session; the browser supplies only a quest id."""
@@ -2566,5 +2871,8 @@ if __name__ == "__main__":
     # Loopback only. Off-host callers never reach the socket, regardless of any
     # host firewall state.
     with socketserver.TCPServer(("127.0.0.1", PORT), Handler) as httpd:
+        ready_file = os.environ.get("SIDEQUESTOR_DASHBOARD_READY_FILE")
+        if ready_file:
+            Path(ready_file).write_text("ready\n")
         print(f"Sidequestor dashboard -> http://localhost:{PORT} (loopback only)", flush=True)
         httpd.serve_forever()

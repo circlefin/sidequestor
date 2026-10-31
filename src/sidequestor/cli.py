@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import __version__
 from .build_info import build_info
-from .native import _environment, dry_tick, run_native, run_native_loop, run_native_tick
+from .native import _environment, _load_workspace_env, dry_tick, run_native, run_native_loop, run_native_tick
 from .dashboard import (
     read_dashboard_port,
     read_dashboard_url,
@@ -34,10 +34,12 @@ from .launchd import (
 )
 from .launchd import render, status as launchd_status, uninstall as uninstall_jobs
 from .migrations import migrate_workspace
-from . import quest_terminal
+from . import credential_setup, onboarding, quest_terminal
 from .resources import ENGINE_VERSION, current_engine_version, sync_resources
 from .setup import configured_agent, print_worker_instructions, run_setup
 from .upgrade import run_upgrade
+from .update_check import available_update, check_enabled as update_check_enabled
+from .update_check import read_status as read_update_status
 from .workspace import (
     Workspace,
     find_workspace,
@@ -46,6 +48,9 @@ from .workspace import (
     list_instances,
     load_workspace,
     register_workspace,
+    default_workspace,
+    set_default_workspace,
+    workspace_command,
     rekey_workspace,
     validate_workspace,
 )
@@ -55,22 +60,27 @@ COMMANDS = {
     "init": "create a workspace",
     "instances": "list and validate workspace instances",
     "setup": "run the interactive workspace onboarding wizard",
+    "onboard": "start or resume guided onboarding in Slack or this terminal",
     "start": "start all jobs for a workspace",
     "stop": "stop all jobs for an instance",
+    "pause": "pause a workspace now (alias for stop)",
+    "resume": "resume a workspace (alias for start)",
     "tick": "run one triage tick",
     "loop": "run the paced triage loop",
     "dashboard": "serve or inspect the dashboard",
     "doctor": "validate a workspace and its engine",
+    "status": "show the default workspace, jobs, dashboard and worker readiness",
     "migrate": "apply workspace schema migrations",
     "sync-resources": "refresh managed engine resources",
     "upgrade": "upgrade the package and refresh resources when in a workspace",
-    "credentials": "inspect or repair the stable macOS Keychain helper",
+    "credentials": "inspect or repair the Keychain helper, or store a Jira/Notion token",
     "new-quest": "scaffold a quest folder from a JSON spec",
     "watch": "manage watches",
     "ack": "acknowledge dispatched work",
     "approval": "manage approval state",
     "log": "write a timeline event",
     "slack-send": "send through the Slack surface",
+    "slack-channel": "create private Slack channels, invite members, or set channel details",
     "slack-file": "upload a file to Slack, or fetch a message's attached files",
     "telegram-send": "save a Telegram draft or explicitly send a message",
     "react": "advance reaction lifecycle",
@@ -94,6 +104,7 @@ LEGACY_COMMANDS = {
     "approval": "yaas-triage/ledger/approval-helper.py",
     "log": "yaas-triage/surfaces/log-event.py",
     "slack-file": "yaas-triage/surfaces/slack-file.py",
+    "slack-channel": "yaas-triage/surfaces/slack-channel.py",
     "telegram-send": "yaas-triage/surfaces/telegram-send.py",
     "telegram-auth": "yaas-triage/surfaces/telegram_credentials.py",
     "x-auth": "yaas-triage/surfaces/x_credentials.py",
@@ -117,7 +128,7 @@ def _workspace_from_environment() -> str | None:
 def _usage() -> str:
     lines = ["usage: sidequestor [--workspace PATH] COMMAND [ARGS...]", "", "commands:"]
     lines.extend(f"  {name:15} {description}" for name, description in COMMANDS.items())
-    lines.extend(["", "global options:", "  --workspace PATH  select an initialized workspace (default: current directory)",
+    lines.extend(["", "global options:", "  --workspace PATH  select an initialized workspace (otherwise environment, saved default, then current directory)",
                   "  --instance ID     select an instance from the advisory registry",
                   "  --version         print the engine version", "  --help            print this help"])
     return "\n".join(lines)
@@ -127,16 +138,21 @@ def _command_help(command: str) -> str:
     examples = {
         "init": "sidequestor init PATH [--name NAME]",
         "instances": "sidequestor instances list [--all]|doctor|register [PATH]|rekey [PATH]",
-        "setup": "sidequestor [--workspace PATH] setup [--instructions|--manifest|--production] [--non-interactive|--render-only|install|status|uninstall]",
+        "setup": "sidequestor [--workspace PATH] setup [--select-workspace|--instructions|--manifest|--production] [--non-interactive|--render-only|install|status|uninstall]",
+        "onboard": "sidequestor [--workspace PATH] onboard [--slack|--slack-dm|--slack-channel CHANNEL_ID|--terminal] [--codex|--claude|--cursor]",
         "start": "sidequestor [--workspace PATH] start [--dashboard-port PORT]",
         "stop": "sidequestor [--workspace PATH] stop [INSTANCE_ID]",
+        "pause": "sidequestor [--workspace PATH] pause [INSTANCE_ID]",
+        "resume": "sidequestor [--workspace PATH] resume [--dashboard-port PORT]",
         "tick": "sidequestor [--workspace PATH] tick [--dry-run|--isolated [--fake-worker]]",
         "loop": "sidequestor [--workspace PATH] loop [--max-ticks N]",
-        "dashboard": "sidequestor [--workspace PATH] dashboard serve|url",
+        "dashboard": "sidequestor [--workspace PATH] dashboard [open|serve|url]",
         "migrate": "sidequestor [--workspace PATH] migrate [NAME|--name NAME]",
         "upgrade": "sidequestor [--workspace PATH] upgrade [--source GITHUB_URL --ref REF] [--pre] [--yes] [--no-restart]",
-        "credentials": "sidequestor [--workspace PATH] credentials status|repair-keychain",
-        "watch": "sidequestor [--workspace PATH] watch QUEST_ID WATCH_JSON\n       sidequestor [--workspace PATH] watch retire QUEST_ID WATCH_ID REASON",
+        "credentials": "sidequestor [--workspace PATH] credentials status|repair-keychain\n       sidequestor [--workspace PATH] credentials set-token jira|notion",
+        "watch": "sidequestor [--workspace PATH] watch [--allow-dormant] QUEST_ID WATCH_JSON\n       sidequestor [--workspace PATH] watch retire QUEST_ID WATCH_ID REASON",
+        "new-quest": "sidequestor [--workspace PATH] new-quest [--allow-dormant] SPEC_JSON",
+        "slack-channel": "sidequestor [--workspace PATH] slack-channel create|invite|topic|purpose|approval-spec '<json>'",
         "slack-file": "sidequestor [--workspace PATH] slack-file send|approval-spec|fetch '<json>'",
         "telegram-send": "sidequestor [--workspace PATH] telegram-send --peer @name --message \"hello\" [--send] [--quest-id QUEST_ID] [--reply-to-message-id N] [--credential-id ID] [--idempotency-key KEY]",
         "telegram-auth": "sidequestor [--workspace PATH] telegram-auth authorize [API_ID] [CREDENTIAL_ID]\n       API_ID defaults to TELEGRAM_API_ID from the workspace .env\n       sidequestor [--workspace PATH] telegram-auth status [CREDENTIAL_ID]",
@@ -147,6 +163,15 @@ def _command_help(command: str) -> str:
     }
     usage = examples.get(command, f"sidequestor [--workspace PATH] {command} [ARGS...]")
     return f"usage: {usage}\n\n{COMMANDS[command]}"
+
+
+def _validate_workspace_selection(workspace_path: str | None, instance: str | None) -> None:
+    if workspace_path == "":
+        raise SystemExit("--workspace requires a non-empty path; no instance was selected")
+    if instance == "":
+        raise SystemExit("--instance requires a non-empty ID or name; no instance was selected")
+    if workspace_path is not None and instance is not None:
+        raise SystemExit("choose either --workspace or --instance, not both")
 
 
 def _extract_globals(argv: list[str]) -> tuple[str | None, str | None, list[str]]:
@@ -175,24 +200,45 @@ def _extract_globals(argv: list[str]) -> tuple[str | None, str | None, list[str]
             continue
         remaining.append(value)
         index += 1
+    _validate_workspace_selection(workspace, instance)
     return workspace, instance, remaining
 
 
+def _registered_workspace(instance: str) -> Workspace:
+    _validate_workspace_selection(None, instance)
+    matches = [row for row in list_instances()
+               if row.get("instance_id") == instance or row.get("display_name") == instance]
+    if len(matches) != 1:
+        raise SystemExit(f"instance not found or ambiguous: {instance}")
+    row = matches[0]
+    try:
+        workspace = load_workspace(row["path"])
+    except (OSError, SystemExit, KeyError, TypeError, RuntimeError, ValueError) as exc:
+        raise SystemExit(f"Registered workspace is unavailable for {instance}. Run sq --workspace PATH instances register to refresh it.") from exc
+    if workspace.instance_id != row.get("instance_id"):
+        raise SystemExit(
+            f"stale instance registration: {instance}; {workspace.root} now belongs to "
+            f"{workspace.instance_id}. Run {workspace_command(workspace, 'instances', 'register')} "
+            "to refresh its registration."
+        )
+    return workspace
+
+
 def _workspace(workspace_path: str | None, instance: str | None) -> Workspace:
-    if workspace_path and instance:
-        raise SystemExit("choose either --workspace or --instance, not both")
+    _validate_workspace_selection(workspace_path, instance)
     if workspace_path:
         return find_workspace(workspace_path)
     if instance:
-        matches = [row for row in list_instances()
-                   if row.get("instance_id") == instance or row.get("display_name") == instance]
-        if len(matches) != 1:
-            raise SystemExit(f"instance not found or ambiguous: {instance}")
-        return load_workspace(matches[0]["path"])
+        return _registered_workspace(instance)
     inherited = _workspace_from_environment()
     if inherited:
         return find_workspace(inherited)
-    return find_workspace()
+    default = default_workspace()
+    if default is not None:
+        return default
+    workspace = find_workspace()
+    register_workspace(workspace)
+    return workspace
 
 
 def _cmd_init(args: list[str]) -> int:
@@ -204,6 +250,7 @@ def _cmd_init(args: list[str]) -> int:
     sync_resources(workspace)
     print(f"initialized Sidequestor workspace: {workspace.root}")
     print(f"instance_id: {workspace.instance_id}")
+    print("Next: " + workspace_command(workspace, "setup"))
     print("Slack app manifest: run `sq setup --manifest > slack-app-manifest.yaml` to generate the ready-to-paste YAML.")
     return 0
 
@@ -222,7 +269,7 @@ def _cmd_instances(
     action = args[0] if args else "list"
     if action == "list":
         parser = argparse.ArgumentParser(prog="sidequestor instances list")
-        parser.add_argument("--all", action="store_true", help="include registered workspaces that are not running")
+        parser.add_argument("--all", action="store_true", help="include stopped, missing, and stale registrations")
         values = parser.parse_args(args[1:])
         rows = []
         for registered in list_instances():
@@ -230,12 +277,15 @@ def _cmd_instances(
             path = str(registered.get("path", ""))
             try:
                 workspace = load_workspace(path)
-            except (OSError, SystemExit):
+            except (OSError, SystemExit, RuntimeError, ValueError):
                 row["status"] = "missing"
                 row["path"] = path
             else:
                 row["path"] = str(workspace.root)
-                row["status"] = "running" if production_is_running(workspace) else "stopped"
+                if workspace.instance_id != row.get("instance_id"):
+                    row["status"] = "stale"
+                else:
+                    row["status"] = "running" if production_is_running(workspace) else "stopped"
             if values.all or row["status"] == "running":
                 rows.append(row)
         if not rows and not values.all:
@@ -299,7 +349,17 @@ def _cmd_doctor(workspace: Workspace) -> int:
         name, binary = agent
         print(f"agent: ok ({binary})" if binary else
               f"agent: warning ({name} CLI is not on the PATH recorded for background jobs)")
+    from .worker_readiness import current_state
+    worker = current_state(workspace)
+    for scope in ("blocked", "slack"):
+        if worker.get(scope):
+            print(f"worker: paused — {worker[scope]}")
     print(f"sidequestor {info['version']}{suffix}")
+    # Advisory, from the heartbeat's cached check; doctor itself never touches the network.
+    update = (available_update(read_update_status(workspace.root), info["version"])
+              if update_check_enabled(_load_workspace_env(dict(os.environ), workspace)) else None)
+    if update:
+        print(f"update: {update['latest']} available (run 'sq upgrade')")
     for error in errors:
         print(f"error: {error}", file=sys.stderr)
     return 1 if errors else 0
@@ -319,7 +379,7 @@ def _cmd_setup(workspace: Workspace, args: list[str]) -> int:
             helper_code = _ensure_keychain_helper(workspace)
             if helper_code:
                 return helper_code
-            manifest = install_production(workspace, Path(sys.executable))
+            manifest = install_production(workspace, Path(sys.executable), replace_runtime=True)
             print(f"installed production jobs for {manifest['workspace']}")
             for name, job in manifest["jobs"].items():
                 print(f"{name}: {job['label']}")
@@ -368,6 +428,27 @@ def _cmd_setup(workspace: Workspace, args: list[str]) -> int:
     raise SystemExit(f"unknown setup action: {action}")
 
 
+def _cmd_onboard(workspace: Workspace, args: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="sidequestor onboard")
+    channel = parser.add_mutually_exclusive_group()
+    channel.add_argument("--slack", dest="channel", action="store_const", const="slack")
+    channel.add_argument("--terminal", dest="channel", action="store_const", const="terminal")
+    channel.add_argument("--slack-channel", metavar="CHANNEL_ID")
+    channel.add_argument("--slack-dm", action="store_true")
+    agent = parser.add_mutually_exclusive_group()
+    for name in quest_terminal.AGENT_ORDER:
+        agent.add_argument(f"--{name}", dest="agent", action="store_const", const=name)
+    parsed = parser.parse_args(args)
+    try:
+        options = {"slack_channel_id": parsed.slack_channel}
+        if parsed.slack_dm:
+            options["slack_dm"] = True
+        return onboarding.run_onboard(workspace, parsed.channel, parsed.agent, **options)
+    except quest_terminal.QuestTerminalError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def _slack_credentials_enabled(workspace: Workspace) -> bool:
     environment = _environment(workspace)
     return environment.get("SIDEQUESTOR_SLACK_CHECKERS_ENABLED") == "1"
@@ -391,6 +472,15 @@ def _ensure_keychain_helper(workspace: Workspace) -> int:
 
 
 def _cmd_credentials(workspace: Workspace, args: list[str]) -> int:
+    if args and args[0] == "set-token":
+        # Parsed by hand: argparse echoes unrecognized arguments, which would print
+        # a token someone pasted on the command line.
+        if len(args) != 2 or args[1] not in credential_setup.INTEGRATIONS:
+            print("usage: sidequestor credentials set-token jira|notion\n"
+                  "The token is read from a hidden prompt, never from arguments.",
+                  file=sys.stderr)
+            return 2
+        return credential_setup.set_token(args[1], _environment(workspace))
     parser = argparse.ArgumentParser(prog="sidequestor credentials")
     parser.add_argument("action", choices=("status", "repair-keychain"))
     values = parser.parse_args(args)
@@ -443,12 +533,18 @@ def _cmd_start(workspace: Workspace, args: list[str] | None = None) -> int:
     values = parser.parse_args(args or [])
     if values.dashboard_port is not None and not 1 <= values.dashboard_port <= 65535:
         parser.error("--dashboard-port must be between 1 and 65535")
+    from .setup_worker import report_worker_version
+    report_worker_version(workspace, Path(sys.executable))
     helper_code = _ensure_keychain_helper(workspace)
     if helper_code:
         return helper_code
-    manifest = install_production(
-        workspace, Path(sys.executable), values.dashboard_port or 0,
-    )
+    try:
+        manifest = install_production(
+            workspace, Path(sys.executable), values.dashboard_port or 0,
+        )
+    except LaunchdLifecycleError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     print(f"started Sidequestor instance {workspace.instance_id}")
     for name, job in manifest["jobs"].items():
         print(f"{name}: {job['label']}")
@@ -502,7 +598,7 @@ def _cmd_stop(workspace: Workspace) -> int:
         stopped_foreground = stop_dashboard_process(workspace)
         if not stopped_production and not stopped_foreground:
             print(f"no production jobs installed for instance {workspace.instance_id}")
-            return 1
+            return 0
     except LaunchdLifecycleError as exc:
         print(f"could not stop Sidequestor instance {workspace.instance_id}: {exc}", file=sys.stderr)
         return 1
@@ -578,15 +674,25 @@ def _cmd_tick(workspace: Workspace, args: list[str]) -> int:
 
 
 def _cmd_dashboard(workspace: Workspace, args: list[str]) -> int:
-    # Inspection is safe by default; foreground serving is an explicit escape hatch.
-    action = args[0] if args else "url"
-    if action == "url":
+    action = args[0] if args else "open"
+    if action in {"url", "open"}:
         url = read_dashboard_url(workspace)
-        print(url or "dashboard is not running")
+        print(url or "dashboard is not running (run sq start)")
+        if action == "open" and url:
+            if read_dashboard_port(workspace) is None:
+                raise SystemExit("Dashboard URL is not a valid loopback address. Run sq setup.")
+            try:
+                if sys.platform == "darwin":
+                    return subprocess.run(["open", url], check=False).returncode
+                import webbrowser
+                return 0 if webbrowser.open(url) else 1
+            except OSError as exc:
+                print(f"Could not open the dashboard: {exc}", file=sys.stderr)
+                return 1
         return 0 if url else 1
     if action == "serve":
         parser = argparse.ArgumentParser(prog="yaas dashboard serve")
-        parser.add_argument("port", nargs="?", type=int, default=8877)
+        parser.add_argument("port", nargs="?", type=int, default=0)
         parser.add_argument("--port", dest="named_port", type=int)
         values = parser.parse_args(args[1:])
         return serve_dashboard(workspace, values.named_port if values.named_port is not None else values.port)
@@ -614,6 +720,10 @@ def _cmd_migrate(path: str | None, args: list[str]) -> int:
 
 
 def _dispatch(command: str, args: list[str], workspace_path: str | None, instance: str | None) -> int:
+    # Vacation-friendly names for the existing lifecycle, not a second scheduler
+    # or a new state machine. Preserve all targeting, safety checks and failures.
+    command = {"pause": "stop", "resume": "start"}.get(command, command)
+    _validate_workspace_selection(workspace_path, instance)
     if command == "init":
         return _cmd_init(args)
     if command == "instances":
@@ -630,15 +740,69 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
         raise SystemExit("choose one of INSTANCE_ID, --workspace, or --instance")
     if command == "stop" and (args or instance):
         target = args[0] if args else instance
-        matches = [row for row in list_instances()
-                   if row.get("instance_id") == target or row.get("display_name") == target]
-        if len(matches) != 1:
-            raise SystemExit(f"instance not found or ambiguous: {target}")
-        return _cmd_stop(load_workspace(matches[0]["path"]))
+        return _cmd_stop(_registered_workspace(target))
     if (command == "upgrade" and not (workspace_path or instance or _workspace_from_environment())
             and find_workspace_root() is None):
         return run_upgrade(None, args)
+    if command == "setup" and args == ["--select-workspace"]:
+        choices = []
+        for row in list_instances():
+            try:
+                candidate = load_workspace(row["path"])
+            except (OSError, SystemExit, KeyError, TypeError, RuntimeError, ValueError):
+                continue
+            if candidate.instance_id == row.get("instance_id") and candidate not in choices:
+                choices.append(candidate)
+        if not choices:
+            raise SystemExit("No valid registered workspaces. Run sq --workspace PATH instances register, then retry.")
+        for index, candidate in enumerate(choices, 1):
+            print(f"{index}. {candidate.display_name} ({candidate.root}) [{candidate.instance_id}]")
+        try:
+            choice = int(input("Default workspace number: "))
+            if not 1 <= choice <= len(choices):
+                raise ValueError()
+        except (ValueError, EOFError):
+            raise SystemExit("No default selected.")
+        chosen = choices[choice - 1]
+        selected = load_workspace(chosen.root)
+        if selected.instance_id != chosen.instance_id:
+            raise SystemExit("stale instance registration: workspace identity changed while selecting; retry sq setup --select-workspace.")
+        set_default_workspace(selected)
+        print(f"Default workspace: {selected.root}")
+        return 0
     workspace = _workspace(workspace_path, instance)
+    register_workspace(workspace)
+    if command in {"start", "stop", "setup", "doctor", "status", "dashboard"}:
+        print(f"Workspace: {workspace.display_name} ({workspace.root})",
+              file=sys.stderr if command == "dashboard" else sys.stdout)
+    if command in {"start", "upgrade"} or (command == "setup" and args in ([], ["--non-interactive"])):
+        from .launchd import start_executable, runtime_environment
+        try:
+            registered = start_executable(workspace, Path(sys.executable))
+        except LaunchdLifecycleError as exc:
+            if command != "setup":
+                print(str(exc), file=sys.stderr)
+                return 1
+            print("Setup will repair this workspace's unavailable runtime using the current installation.")
+            registered = Path(os.path.abspath(sys.executable))
+        forwarded_key = workspace.instance_id + ":" + str(registered)
+        # Interpreter launchers may report a different sys.executable spelling.
+        # Do not collapse symlinks across distinct venvs; forward at most once.
+        if (str(registered) != os.path.abspath(sys.executable) and
+                os.environ.get("SIDEQUESTOR_RUNTIME_FORWARDED") != forwarded_key):
+            from .dashboard import saved_dashboard_port
+            forwarded = list(args)
+            if command == "start" and not any(arg == "--dashboard-port" or arg.startswith("--dashboard-port=") for arg in forwarded):
+                forwarded.extend(["--dashboard-port", str(saved_dashboard_port(workspace))])
+            environment = runtime_environment()
+            environment["SIDEQUESTOR_RUNTIME_FORWARDED"] = forwarded_key
+            return subprocess.run([str(registered), "-P", "-m", "sidequestor", "--workspace", str(workspace.root),
+                                   command, *forwarded], env=environment, check=False).returncode
+    if command == "status":
+        print("Jobs: running" if production_is_running(workspace) else "Jobs: stopped")
+        from .dashboard import saved_dashboard_port
+        print(f"Dashboard: http://localhost:{saved_dashboard_port(workspace)}")
+        return _cmd_doctor(workspace)
     if command == "doctor":
         return _cmd_doctor(workspace)
     if command == "sync-resources":
@@ -650,6 +814,8 @@ def _dispatch(command: str, args: list[str], workspace_path: str | None, instanc
         return _cmd_credentials(workspace, args)
     if command == "setup":
         return _cmd_setup(workspace, args)
+    if command == "onboard":
+        return _cmd_onboard(workspace, args)
     if command in {"start", "tick", "loop"}:
         _sync_resources_if_version_drifted(workspace, command)
     if command == "start":

@@ -67,6 +67,29 @@ internal channel message
 
 
 class SlackMessageParserTest(unittest.TestCase):
+    def test_blank_workflow_parent_is_skipped_but_counts_coverage(self):
+        text = THREAD.replace('From: Guangmian Kung <g@example.com> (U1)', 'From: ', 1)
+        got = slack_utils._parse_thread_page(text, 100.5)
+        self.assertEqual(got, (2, 'second reply', 102.0, True, 3))
+        parent = text.split('=== THREAD REPLIES', 1)[0]
+        self.assertEqual(slack_utils._parse_thread_page(parent, 0), (0, '', 0.0, False, 1))
+
+    def test_blank_author_remains_invalid_for_replies_and_included_parent(self):
+        text = THREAD.replace('From: Guangmian Kung <g@example.com> (U1)', 'From: ')
+        with self.assertRaisesRegex(ValueError, 'incomplete slack thread response record'):
+            slack_utils._parse_thread_page(text, 100.5)
+        with self.assertRaisesRegex(ValueError, 'incomplete slack thread response record'):
+            slack_utils._parse_thread_page(text, 100.5, until=100.75)
+        with self.assertRaisesRegex(ValueError, 'incomplete slack thread response record'):
+            slack_utils._parse_thread_page(text, 0, include_parent=True)
+
+    def test_excluded_parent_still_requires_exactly_one_timestamp(self):
+        parent = THREAD.split('=== THREAD REPLIES', 1)[0]
+        for text in (parent.replace('Message TS: 100.000000', 'Message TS: broken'),
+                     parent + '\nMessage TS: 101.000000\n'):
+            with self.assertRaises(ValueError):
+                slack_utils._parse_thread_page(text, 0)
+
     def test_external_channel_author_is_counted_and_filterable(self):
         got = slack_utils.parse_slack_messages(MIXED_CHANNEL, 100.0, ["UEXT3"])
         self.assertEqual(got, (1, "external channel message"))

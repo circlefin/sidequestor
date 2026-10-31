@@ -308,7 +308,14 @@ def main():
             "message_id": args.message_id, "cc": _mailboxes(args.cc),
             "remove": _mailboxes(args.remove), "attachments": attachments, "html": args.html,
         }
-        if args.approval_spec or args.approval_id:
+        if args.send and not args.approval_id:
+            # Refuse missing/foreign/draft-only quest authorization before any
+            # metadata read. Then resolve the actual audience before sending.
+            reason = gmail_policy.send_policy_reason(args.quest_id, '', target, reply_body)
+            if reason:
+                print(f"ERROR: send denied: {reason}", file=sys.stderr)
+                raise SystemExit(1)
+        if args.approval_spec or args.approval_id or args.send:
             target["recipients"], resolved_sender = _reviewed_recipients(
                 args.message_id, args.reply_all, args.cc, args.remove)
             if resolved_sender:

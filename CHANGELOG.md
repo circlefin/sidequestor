@@ -4,6 +4,347 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.2.8 - 2026-10-31
+
+- Add workspace-owned dashboard themes using `theme/custom.css`, local assets and
+  optional `branding.json` for a custom logo and GIF/static-image activity train.
+  Empty or delete `theme/` and refresh to restore defaults; upgrades preserve it.
+  Bundle the `yaas-dashboard-theme` skill and offer optional styling in onboarding.
+- Refine dashboard review controls with Execute and Close issue labels, desktop app
+  naming, a single-row launch toolbar and discreet update indicators. Ask for the
+  preferred dashboard app during setup independently of the worker backend.
+- Add an explicit per-quest Draft only / Send allowed control with confirmation,
+  compare-and-set protection, triage locking and an atomic audit record. Existing
+  approvals and channel exceptions retain their normal behavior.
+- Add technical-review troubleshooting links to the selected Codex or Claude app
+  using existing local logs and a contextual prompt, without extra context files
+  or a separate resolution-check workflow.
+- Add an optional, read-only animated quest replay with Watches and Resources,
+  category colours/icons, Story/Calendar time, zoom/pan, details, resource links
+  and a private presentation mode. Include retained timeline archives, historical
+  watch snapshots, dispatch selections and receipts, with bounded grouping and
+  coverage details. Recognize all registered watch categories and identifiers for
+  email, Slack, Notion, Telegram, X, GitHub, Jira and Google resources where recorded.
+- Honor Slack MCP read `Retry-After` deadlines with a shared per-workspace cooldown.
+  Recognize rate-limit tool errors wrapped in HTTP 200 responses as well as HTTP
+  429. Preserve watermarks and pending work until the next eligible poll; leave sends
+  and non-Slack work unaffected. Show temporary read delays under Watching.
+- Let Claude workers inherit their configured MCP servers while also loading the
+  bundled worker configuration, by removing `--strict-mcp-config`.
+
+Known replay limitations: missing historical identities or monitoring intervals are
+shown as unknown, and bounded evidence may omit older activity. A Watch glow can
+represent a firing, dispatch selection or receipt; simultaneous glows alone do not
+prove causality. The replay does not reconstruct tool calls absent from quest logs.
+
+## 0.2.7 - 2026-10-31
+
+- Offer Claude's existing Slack app in interactive setup when both app identifier
+  answers are left blank. Request its reduced 29-scope set; retain the full
+  36-scope flow for custom apps and preserve configured identifiers. Recommend a
+  workspace-owned app for full functionality, and explain Claude's core-feature
+  alternative, workspace approval, and provider-controlled permissions.
+- Start fresh Slack OAuth on each interactive setup with Slack checking enabled.
+  Bind the callback listener before opening the browser, report port conflicts,
+  clean up listeners on cancellation, and serve UTF-8 callback pages. Replace
+  credentials only after successful authorization; stop setup if OAuth fails.
+- Improve setup readability with numbered sections, spacing, indentation, wrapped
+  guidance, copyable commands, and terminal-aware bold headings and prompts.
+- Use user-owned `AGENTS.md` instructions for all agents, including Claude, in
+  setup guidance, managed skills, onboarding, and dispatch/terminal prompts.
+  Preserve existing instruction files and legacy migration backups.
+  Claude users should copy relevant Sidequestor instructions from `CLAUDE.md`
+  into `AGENTS.md`; setup does not migrate their contents.
+- Reject invalid schedule `next_fire_ts` values in both watch-creation helpers
+  before writing state. Require finite positive Unix seconds as a number or
+  numeric string, retain fractional-second and recurring-schedule support, and
+  clarify the format in onboarding and watch-creation documentation. Existing
+  watches, polling, token storage, and refresh logic remain unchanged.
+
+## 0.2.7.dev4 - 2026-10-31
+
+- Validate supplied schedule `next_fire_ts` values in both `sq watch` and
+  `sq new-quest` before writing state. Require finite positive Unix seconds as a
+  number or numeric string, retaining fractional-second support. Reject ISO dates,
+  booleans, and non-finite values. Clarify the format in onboarding and creation
+  instructions; existing watches and the schedule checker are unchanged.
+
+- Recommend a workspace-owned Sidequestor Slack app for full functionality and
+  explain Claude's app as an alternative for core checking, messages and reactions.
+  Improve setup spacing and indentation, and use terminal-aware bold headings
+  and prompts while preserving plain redirected output.
+
+- Use `AGENTS.md` for every agent's workspace instructions, including Claude.
+  Update setup guidance, managed instructions, onboarding, and dispatch/terminal
+  prompts. Preserve existing user-owned files and legacy migration backups.
+
+## 0.2.7.dev3 - 2026-10-31
+
+Development release for testing Claude Slack app authorization.
+
+- Let Claude users choose the existing Claude Slack app by leaving both App ID
+  and Client ID answers blank in interactive `sq setup`. Keep both prompts visible,
+  reject partially entered identities, and preserve existing configured values.
+  Non-interactive setup and direct OAuth-script runs still require configured IDs.
+- Request 29 user scopes for Claude's Slack client, excluding the seven scopes
+  rejected in testing. Keep the full 36-scope manifest and OAuth request for custom
+  apps. Preserve Slack checkers, reaction watches/lifecycle, messaging, files, and
+  channel helpers; direct profile/status operations retain scope errors with a
+  clearer explanation that this feature is optional.
+- Guide users through Slack setup without editing `.env`: show app choices and
+  custom-app creation instructions, prompt for workspace name/domain with examples,
+  and save their answers. Document workspace approval and provider-controlled app
+  configuration limitations.
+- Always start fresh Slack OAuth during interactive setup when Slack checking is
+  enabled, including when a previous token works. Stop before worker checks and
+  job installation if OAuth fails. Keep non-interactive setup free of browser OAuth.
+- Group setup into numbered sections with wrapped descriptions, indented prompts,
+  and copyable commands on separate lines. Simplify the Slack OAuth banner.
+- Confirm the Slack OAuth callback listener has bound its port before opening the
+  browser. Abort immediately on a port conflict and stop the listener on setup
+  cancellation or browser-launch failure, preventing overlapping setup attempts.
+  Serve callback pages as UTF-8 and avoid claiming the token was saved before exchange.
+- Leave token storage, refresh logic, and polling behavior unchanged.
+
+## 0.2.6 - 2026-10-30
+
+- Default uv upgrades to the system certificate trust store, including when run
+  from the dashboard, while preserving explicit uv trust settings and custom CA
+  configuration. Support both current and older uv releases.
+
+## 0.2.5 - 2026-10-29
+
+- Exclude approvals for completed or archived quests from the dashboard's live
+  review and queued-action lists, fixing invisible items counted as needing a
+  decision. Retain the original approval records, keep approvals visible when a
+  quest's location is unknown, and prefer an active copy when a quest is restored.
+
+## 0.2.4 - 2026-10-29
+
+- Reject explicitly empty workspace/instance selectors, including a positional
+  stop ID, instead of falling back to the saved default or matching a blank name.
+  Invalid selectors also fail when combined with `--help`.
+  Add a 3,000-case three-instance targeting matrix and lifecycle
+  isolation tests covering job labels, plists, saved ports, aliases, stale IDs,
+  ambiguous names, and invalid/conflicting selectors without real launchd actions.
+- Shell-quote workspace-specific recovery commands and keep setup/start repair
+  hints targeted to the affected folder. Allow the default picker to select a
+  workspace with duplicate valid registry rows and skip malformed paths. Suppress
+  shared-workspace refresh guidance after a no-op upgrade when job definitions are
+  already current; still report stale plists left by an earlier install.
+  Capture the dashboard's package build identity at startup so a first poll after
+  an in-place upgrade cannot label old server code as the new build.
+- Reject conflicting workspace/instance selectors before any command action. Filter
+  stale and missing registrations out of the default-workspace picker and recheck
+  the selected identity before saving. Have `sq init` print an explicitly targeted,
+  shell-quoted setup command; update installation/setup recipes, CLI help, the
+  shipped environment example, dashboard repair instructions, and ops/onboarding guidance to prevent setup from
+  silently configuring an existing default instead of the newly initialized folder.
+- Prefer the running package's build identity over inherited launchd version,
+  commit, and branch labels in the dashboard and its update comparison. Retain
+  environment-based identity only when the package build helper is unavailable.
+- Report other running workspaces sharing an installation after package-only
+  upgrades as well as workspace upgrades. Ignore stale/duplicate registrations and
+  use the upgraded installation's exact Python in refresh instructions so an older
+  workspace-local `sq` cannot intercept them. Other workspaces are not stopped
+  automatically.
+- Reject stale instance IDs before lifecycle actions when the registered folder now
+  belongs to a different identity. List mismatched registrations as `STALE` with
+  `sq instances list --all`, instead of counting them as running instances.
+  Re-registering or rekeying a workspace removes old registrations for that same
+  resolved folder and preserves its default-workspace selection.
+
+## 0.2.3 - 2026-10-29
+
+This release also includes the changes listed under the local 0.2.2 snapshot below;
+0.2.2 was not published to PyPI.
+
+- Use the operating system's certificate trust for update checks and Jira, Notion,
+  and X HTTPS calls through `truststore`, including trusted corporate certificates.
+  Keep TLS verification enabled without recording a certificate-bundle path in
+  workspace settings. Slack and Telegram transports are unchanged.
+- Fix false Claude Slack reconnection warnings by checking the supported Slack
+  helper rather than treating an unrelated MCP connection failure as conclusive.
+  Refresh worker readiness during normal triage, recover after verified successful
+  access, and require actual helper read evidence before clearing Slack blocks.
+- Add a configurable dashboard launch app, independent of the worker harness:
+  `SIDEQUESTOR_OPEN_IN` supports Codex (default), Claude Desktop, Cursor, or Terminal.
+  Workspace, quest, New Quest, and configuration-edit buttons follow the selection.
+  Codex and Claude prepare short editable prompts; Cursor opens the folder.
+  Terminal retains the existing quest sessions. Refine launch-button styling and sizing.
+- Add a searchable, read-only dashboard configuration dialog showing `.env` entries
+  first, then documented defaults, with process overrides identified. Mask credentials
+  and unknown custom values before sending them to the browser; do not cache the
+  settings response. Document the accepted duplication of runtime/display defaults
+  and the maintenance checklist for adding settings.
+- Ask for the dashboard app preference early in onboarding, separately from the
+  background worker choice. Offer optional personalized Slack reaction practice
+  based on the owner's work, with resumable progress and duplicate-send protection.
+- Use `hourglass_flowing_sand` for reaction work in progress and `clock3` for work
+  retained for retry or input. Preserve configured markers and resolve default
+  collisions without replaying completed work.
+- Allow the Google Doc anchored-comment capability preflight to read shared-drive
+  files by sending `supportsAllDrives=true`; comment approval and write guards are
+  unchanged.
+- Fix `sq ask` and `sq create` parsing of agent flags mixed with prompt words on
+  Python 3.11, retaining literal arguments after `--` and invalid-flag checks.
+- Show Cursor's actual `default` permission fallback in the dashboard, separately
+  from setup's explicit `bypassPermissions` value.
+- Use generic Slack labels in the shared bootstrap installer while preserving the
+  private Circle wrapper's optional preconfiguration and publication exclusions.
+- Apply the configured permission mode to Cursor workers. Setup defaults Cursor to
+  `bypassPermissions`; `default` leaves command approval and sandbox behavior to the
+  user's Cursor CLI configuration. Cursor workers now always pass `--trust`, fixing
+  headless runs that exited on Cursor's workspace trust prompt.
+
+## 0.2.2 - 2026-10-29
+
+- Make `sq start`, `sq stop`, `sq dashboard`, and `sq status` use a saved default
+  workspace from any terminal directory. Adopt a sole registered workspace on first
+  use; require an explicit choice when several exist. Keep existing dashboard ports,
+  default new workspaces to 8877, and report port conflicts without silently moving
+  to 8878 or 8879. `sq dashboard` opens the running dashboard in a browser.
+- Extend `sq setup` to check the selected Claude Code or Codex login and model, guide
+  CLI updates, and verify Slack access. Claude users can reconnect its separate
+  worker Slack MCP in the setup flow. Confirmed credential failures pause affected
+  dispatches without adding no-progress backoff; startup only advises about newer
+  worker CLI releases.
+- Let onboarding skip optional private-channel creation when the current Sidequestor
+  Slack grant lacks `groups:write`, continuing in the existing DM or terminal.
+- Add a `magic_wand` reaction that expands the owner's Slack message in place
+  and runs its requested work with the existing reaction lifecycle. Make the reaction
+  triggers configurable while keeping their roles and completion markers separate.
+- Make runtime failure reviews name the affected worker or checker and give a direct
+  recovery step. Retire generic failure reviews when a known setup block is detected.
+- Add a macOS source bootstrap script and a separate Circle installer template that
+  inserts non-secret Slack app identifiers without requiring a pasted `.env` heredoc.
+  Existing workspace settings are preserved.
+
+## 0.2.1 - 2026-10-27
+
+- Add `sq credentials set-token jira|notion` to store a Jira or Notion token at a
+  hidden terminal prompt. It updates the Keychain item the checkers already read
+  (Jira `jira-api-token`/`yaas`; Notion honours `NOTION_KEYCHAIN_*` and the
+  `sidequestor-notion-test` fallback), never takes tokens as arguments and leaves the
+  existing token unchanged on cancel or Keychain failure (#16).
+- Report a reaction sweep whose Slack adapter hits the 30-second deadline as
+  `REACTIONS_TRANSIENT_ERROR` (exit 4) instead of crashing with a traceback; pending
+  reactions are retried on the next sweep (#18).
+- No `.env` setting names, Keychain records or workspace migrations change; existing
+  setups need no action.
+
+## 0.2.0 - 2026-10-26
+
+- Include `channels:write` and `channels:write.invites` in the shared Slack manifest
+  and OAuth scope list. Clarify their purpose and existing-app reauthorization steps;
+  onboarding channel creation remains private-only.
+
+- Offer an owner-approved private Slack interface during onboarding, with a separate
+  ongoing interface quest that remains available after onboarding ends. Support a
+  protected Slack channel hand-off, explicit DM recovery (`--slack-dm`), and
+  plain-language harness control.
+- Add resumable Slack/terminal guided onboarding with one quest per workspace,
+  protected channel preferences, daily check-ins and setup integration.
+- Support explicit per-conversation Slack text permissions while retaining draft-only
+  defaults for other sends; show scoped permissions in quest views.
+- Default new setups to Claude Opus 5.5 or Codex GPT-6.1 Sol at high effort,
+  preserving existing configured models.
+- Add opt-in Notion page, data-source and recursive comment watches with a read-only
+  API bridge, scoped Keychain/environment credentials, automatic block/database-item
+  enrollment, archive queries and dashboard coverage.
+- Bound Notion polling with resumable traversal, configurable subpage depth, private
+  workspace state/shared cache and acknowledgement-safe local delivery cursors.
+  Idle scanning uses no LLM tokens and requires no webhooks.
+
+## 0.1.56 - 2026-10-26
+
+### Added
+- `sq slack-channel` creates private Slack channels, invites members, and sets topics
+  and descriptions using the rotating Slack user token. Quest actions require send
+  permission or an exact claimed approval and write their result to the timeline.
+- OAuth setup and the generated manifest request private-channel creation, invitation,
+  and topic scopes. Existing installations must reinstall the app and rerun `sq setup`.
+- Packaged Slack channel instructions explain authorization, separate operations, and
+  how to reconcile uncertain write outcomes before retrying.
+
+## 0.1.55 - 2026-10-23
+
+### Added
+- `sq pause` and `sq resume` are immediate aliases for the existing stop/start lifecycle,
+  preserving workspace selection and error handling without adding scheduled resumption.
+- The empty Briefings archive explains how to create briefs and offers editable morning
+  and one-off briefing quest examples through the existing creation dialog.
+
+### Fixed
+- Independent upgrade jobs return startup failures to review, stop installer
+  descendants on interruption, and prevent reclaim while an upgrade can still run.
+- Maintainer email approval guards cover resolved reply audiences and plus aliases;
+  unsent drafts remain ungated.
+- Markdown link labels and URL query strings escape exactly once, including
+  apostrophes, ampersands, and quotes in Briefings; URL validation remains enforced.
+- Long-running services let each tick/request reload workspace `.env` rather than
+  freezing its values into inherited environment variables. Explicit exports still win.
+- Watch creation rejects disabled connectors unless `--allow-dormant` is requested;
+  dispatches include active connector settings and respect local feed routing.
+- Retired and disabled watches no longer produce stale checker-health warnings;
+  retirement and housekeeping clear their checker backoff records.
+- Reaction pickup queues its processing emoji before harness launch. Durable status
+  delivery retries Slack failures independently of completed actions; blocked work
+  receives a blocked marker and exhausted retries create an Inbox review.
+- Review context, concerns, and action previews render bare URLs as safe clickable links.
+  Issue-number references also link when the review supplies an explicit repository;
+  inline code and unscoped issue references remain plain text.
+
+## 0.1.54 - 2026-10-22
+
+### Added
+- Inbox upgrade reviews can be approved for execution by an independent macOS launchd job,
+  which waits for triage, runs the upgrade lifecycle, and records a verified result or returns
+  failures to review. Separate terminal instructions remain a fallback.
+- Suspected package defects produce review-gated, sanitized bug-report emails to the
+  maintainer rather than instructions to modify installed package files or watch state.
+  Diagnosis prompts and report validation use the actual running package version.
+- Gmail sends to the maintainer, including reply/CC audiences and aliases, require an
+  exact claimed approval even in send-enabled quests; replies resolve their audience first.
+
+### Fixed
+- Slack thread watches can skip workflow-generated parents with a blank author while
+  preserving timestamp coverage and strict author validation for replies and included parents.
+- The dashboard update check now reports completion, available/current releases, rate limiting,
+  and network failure instead of only acknowledging that a background check was launched.
+
+## 0.1.53 - 2026-10-22
+
+### Added
+- Runtime health failures trigger scoped, read-only agent diagnosis and a repair proposal
+  for manual review. Shared failures use Inbox; quest-specific failures use their quest.
+  Missing harnesses and invalid startup configuration create reviews without an agent.
+  Proposals distinguish headless repairs, interactive steps, and further investigation.
+- New stable releases create dismissible Inbox upgrade notices, using the existing daily
+  PyPI cache. The dashboard build control can request an immediate update check.
+
+### Fixed
+- Inbox is restored after deletion, retirement, or archiving, preserving surviving history
+  and rearming outstanding review watches. Reaction actions and outcomes now appear there.
+- Resolved health notices close only after observed recovery. Persistent issue identities
+  prevent repeated proposals and preserve dismissal after review-ledger cleanup.
+- Invalid runtime settings no longer prevent the dashboard from displaying repair reviews.
+
+## 0.1.52 - 2026-10-22
+
+### Added
+- The heartbeat job checks PyPI once a day for a newer release. The dashboard header and
+  `sq doctor` show it, with one desktop notification per version. Nothing upgrades on its
+  own; `SIDEQUESTOR_UPDATE_CHECK=0` turns the check off.
+
+### Fixed
+- A watch that was retired or replaced, or whose quest was closed, no longer stays on the
+  dashboard as "backing off" forever. Each tick removes no-progress counters for watches
+  that no longer exist, including ones left by earlier versions, and the dashboard ignores
+  them in the meantime.
+- A quest's "unreadable manifest" retry record clears once a later dispatch writes a
+  readable manifest.
+
 ## 0.1.51 - 2026-10-17
 
 ### Fixed

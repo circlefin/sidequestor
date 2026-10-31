@@ -154,6 +154,26 @@ class SlackSendAuthorizationTest(unittest.TestCase):
                 result = int(exc.code)
         return int(result or 0), stdout.getvalue(), stderr.getvalue(), call
 
+    def test_send_channel_grant_authorizes_only_the_listed_channel(self) -> None:
+        quest_id = self._quest(allow_send=False)
+        meta_path = self.root / "state" / "quests" / "active" / quest_id / "meta.json"
+        meta = json.loads(meta_path.read_text())
+        meta["allow_send_channels"] = ["D0OWNER"]
+        meta_path.write_text(json.dumps(meta))
+
+        code, _, error, call = self._run({
+            "quest_id": quest_id, "channel_id": "D0OWNER", "message": "hello",
+        }, target=quest_id, response_channel_id="D0OWNER")
+        self.assertEqual(code, 0, error)
+        call.assert_called_once()
+
+        code, _, error, call = self._run({
+            "quest_id": quest_id, "channel_id": "C0ELSEWHERE", "message": "hello",
+        }, target=quest_id)
+        self.assertNotEqual(code, 0)
+        self.assertIn("allow_send false", error)
+        call.assert_not_called()
+
     def test_stale_held_draft_preserves_the_original_message_body(self) -> None:
         quest_id = self._quest(allow_send=True)
         code, output, error, call = self._run({
@@ -489,12 +509,25 @@ class SlackSendAuthorizationTest(unittest.TestCase):
         call.assert_not_called()
 
     def test_reactions_dispatch_preserves_unscoped_send(self) -> None:
-        code, _, error, call = self._run({
+        code, output, error, call = self._run({
             "channel_id": "C123",
             "thread_ts": "1.000001",
             "message": "reaction response",
         }, target="reactions")
         self.assertEqual(code, 0, error)
+        call.assert_called_once()
+        self.assertTrue(json.loads(output)["logged"])
+        timeline = self.root / "state/quests/active/quest-inbox/timeline.ndjson"
+        self.assertEqual(json.loads(timeline.read_text())["message_text"], "reaction response")
+
+    def test_reaction_history_failure_does_not_fail_or_repeat_a_successful_send(self) -> None:
+        with patch("inbox.log_inbox", side_effect=OSError("disk unavailable")):
+            code, output, error, call = self._run({
+                "channel_id": "C123", "thread_ts": "1.000001", "message": "reaction response",
+            }, target="reactions")
+        self.assertEqual(code, 0, error)
+        self.assertFalse(json.loads(output)["logged"])
+        self.assertIn("do not repeat", error)
         call.assert_called_once()
 
     def test_draft_cannot_escape_its_dispatch_quest(self) -> None:

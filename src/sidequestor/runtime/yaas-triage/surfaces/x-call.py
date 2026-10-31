@@ -9,6 +9,7 @@ import urllib.request
 
 from slack_credentials import CredentialError, TransientCredentialError
 from x_credentials import get_access_token
+from native_tls import native_ssl_context
 
 
 OK, AUTH, ERROR, BAD_ARGS, TRANSIENT = 0, 1, 2, 3, 4
@@ -42,7 +43,7 @@ def call(method, path, query=None, body=None, credential_id="default"):
         data = json.dumps(body, separators=(",", ":")).encode()
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(request, timeout=30, context=native_ssl_context()) as response:
         raw = response.read().decode()
     return json.loads(raw) if raw else {}
 

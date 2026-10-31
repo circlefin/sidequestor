@@ -34,6 +34,7 @@ modules.
 """
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -88,7 +89,7 @@ def _repo_root(start):
 
     NOT counted as `parent.parent`: that is correct only while every script sits directly
     in yaas-triage/, and silently resolves to yaas-triage/ itself once a script moves into
-    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on CLAUDE.md
+    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on AGENTS.md
     (a fresh clone has only CLAUDE.example.md) and NOT on .git (two git dirs here, none in
     fixtures). Ambient $REPO_ROOT is deliberately ignored: a stale value pointing at another
     checkout would pass any marker check and silently redirect writes. Test fixtures copy
@@ -144,7 +145,7 @@ BOOLEAN_KNOBS = {
 }
 
 DEFAULT_CHECKER_CONNECTORS = ("slack", "email", "github", "jira")
-KNOWN_CHECKER_CONNECTORS = frozenset((*DEFAULT_CHECKER_CONNECTORS, "telegram", "x"))
+KNOWN_CHECKER_CONNECTORS = frozenset((*DEFAULT_CHECKER_CONNECTORS, "telegram", "x", "notion"))
 UPSTREAM_CONNECTOR_ALIASES = {"gmail": "email"}
 
 
@@ -281,6 +282,19 @@ def validate_knobs(env):
         raise BadEnvKnob(" ".join(offenders))
 
 
+def initial_watch_watermark(watch_type, now_ts):
+    """Replay the creation minute for Notion's rounded edit timestamps.
+
+    A watch created at :30 must still see an edit at :45 whose API timestamp is
+    :00. Other surfaces retain their existing exact creation-time semantics.
+    Explicit add-watch cursors are preserved by the caller.
+    """
+    if watch_type in {"notion_page", "notion_data_source", "notion_comments"}:
+        boundary = (int(float(now_ts)) // 60) * 60
+        return f"{max(0, boundary - 0.001):.6f}"
+    return now_ts
+
+
 def load_checker_connectors(env):
     """Return the explicitly enabled external checker connectors.
 
@@ -339,6 +353,22 @@ def _validate_string_list(path, field_name, value):
 
 def _entry_satisfies_required(entry, required):
     return any(all(entry.get(field) for field in alt) for alt in required)
+
+
+def schedule_timestamp_problem(watch_type, entry):
+    """Validate supplied one-shot timestamps for both watch-creation paths."""
+    if watch_type != "schedule" or "next_fire_ts" not in entry:
+        return None
+    value = entry["next_fire_ts"]
+    message = ("next_fire_ts must be a finite positive Unix timestamp in seconds "
+               "(a number or numeric string), not an ISO date")
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return message
+    try:
+        timestamp = float(value)
+    except (ValueError, OverflowError):
+        return message
+    return None if math.isfinite(timestamp) and timestamp > 0 else message
 
 
 def slack_id_problem(watch_type, entry):
@@ -450,10 +480,10 @@ def gather_quests(quests_dir):
 class Config:
     """Everything the tick reads before deciding. A plain data holder; no behaviour."""
 
-    def __init__(self, triage_dir, environ=None):
+    def __init__(self, triage_dir, environ=None, *, repo_root=None):
         environ = os.environ if environ is None else environ
         self.triage_dir = Path(triage_dir).resolve()
-        self.repo_root = _repo_root(self.triage_dir)
+        self.repo_root = Path(repo_root).resolve() if repo_root is not None else _repo_root(self.triage_dir)
         self.env = load_environment(self.repo_root, environ)
         validate_knobs(self.env)
 
@@ -490,6 +520,45 @@ class Config:
         if connector not in self.checker_connectors:
             return False
         return connector != "slack" or self.enabled("YAAS_SLACK_CHECKERS_ENABLED")
+
+    def require_checker_enabled(self, watch_type, *, allow_dormant=False):
+        if not allow_dormant and not self.checker_enabled(watch_type):
+            upstream = self.watch_manifests.get(watch_type, {}).get('upstream', watch_type)
+            connector = UPSTREAM_CONNECTOR_ALIASES.get(upstream, upstream)
+            raise BadEnvKnob(f"connector_disabled:{connector}: watch type {watch_type!r} is disabled; "
+                "check SIDEQUESTOR_CHECKER_CONNECTORS and SIDEQUESTOR_SLACK_CHECKERS_ENABLED, "
+                "or pass --allow-dormant to intentionally create an inactive watch")
+
+    def active_checker_ids(self):
+        """Enabled live watches, or None when unreadable state prevents safe cleanup."""
+        live = set()
+        try:
+            directories = list(self.quests_dir.iterdir())
+        except FileNotFoundError:
+            return live
+        except OSError:
+            return None
+        try:
+            for directory in directories:
+                if not directory.is_dir():
+                    continue
+                try:
+                    data = json.loads((directory / 'watch.json').read_text())
+                except FileNotFoundError:
+                    continue
+                watches = data['watches']
+                if not isinstance(watches, list):
+                    return None
+                for watch in watches:
+                    if not isinstance(watch, dict) or not watch.get('watch_id'):
+                        continue
+                    # An identifiable malformed watch may still need diagnosis;
+                    # retain its record without reviving other disabled watches.
+                    if not watch.get('type') or self.checker_enabled(watch['type']):
+                        live.add(watch['watch_id'])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        return live
 
 
 def main():

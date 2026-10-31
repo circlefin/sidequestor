@@ -92,7 +92,7 @@ def _repo_root(start):
 
     NOT counted as `parent.parent`: that is correct only while every script sits directly
     in yaas-triage/, and silently resolves to yaas-triage/ itself once a script moves into
-    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on CLAUDE.md
+    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on AGENTS.md
     (a fresh clone has only CLAUDE.example.md) and NOT on .git (two git dirs here, none in
     fixtures). Ambient $REPO_ROOT is deliberately ignored: a stale value pointing at another
     checkout would pass any marker check and silently redirect writes. Test fixtures copy
@@ -413,6 +413,15 @@ def cmd_send(p):
 
 
 def _log_sent(job, result):
+    if not job["quest_id"] and os.environ.get("SIDEQUESTOR_DISPATCH_TARGET") == "reactions":
+        from inbox import try_log_inbox
+        return try_log_inbox(REPO_ROOT, f"reaction-file:{result['file_id']}:{job['channel_id']}", {
+            "event": "message_sent", "channel_id": job["channel_id"],
+            "thread_ts": job["thread_ts"], "response_ts": result["response_ts"],
+            "permalink": result["permalink"], "message_text": job["comment"],
+            "note": job["note"] or f"Reaction file upload: {job['filename']}",
+            "files": [_file_record(job, result["file_id"])],
+        })
     if job["quest_id"]:
         qdir = quest_dir(REPO_ROOT, job["quest_id"])
         if qdir is None:

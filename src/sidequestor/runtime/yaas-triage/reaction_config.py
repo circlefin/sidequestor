@@ -30,6 +30,8 @@ EMOJI_SETTINGS = {
     "adopt": ("YAAS_REACTION_ADOPT_EMOJI", "incoming_envelope"),
     "loading": ("YAAS_REACTION_LOADING_EMOJI", "hourglass_flowing_sand"),
     "done": ("YAAS_REACTION_DONE_EMOJI", "white_check_mark"),
+    "blocked": ("YAAS_REACTION_BLOCKED_EMOJI", "clock3"),
+    "expand": ("YAAS_REACTION_EXPAND_EMOJI", "magic_wand"),
 }
 EMOJI_NAME = re.compile(r"^[A-Za-z0-9_+-]+$")
 
@@ -40,6 +42,15 @@ def load_reaction_emojis(env=None):
     result = {}
     for role, (var, default) in EMOJI_SETTINGS.items():
         canonical = var.replace("YAAS_", "SIDEQUESTOR_", 1)
+        if role == "blocked" and canonical not in env and var not in env:
+            # Preserve custom mappings that already use the retry marker for
+            # another role. Keep the default visibly distinct from active work.
+            default = next(name for name in ("clock3", "clock1", "clock4", "clock2",
+                                             "hourglass", "repeat", "arrows_counterclockwise")
+                           if name not in result.values())
+        if role == "expand" and canonical not in env and var not in env:
+            default = next(name for name in ("magic_wand", "sparkles", "pencil2", "memo", "crystal_ball", "writing_hand", "bulb", "rocket", "star")
+                           if name not in result.values())
         value = str(env.get(canonical, env.get(var, default)) or "").strip()
         if value.startswith(":") and value.endswith(":") and len(value) > 2:
             value = value[1:-1]

@@ -63,6 +63,9 @@ SURFACES_DIR = str(Path(__file__).resolve().parent)
 if SURFACES_DIR not in sys.path:
     sys.path.insert(0, SURFACES_DIR)
 
+from native_tls import native_ssl_context
+import slack_read_cooldown as read_cooldown
+
 from slack_credentials import (  # noqa: E402
     AuthenticationError as SlackAuthenticationError,
     CredentialError as SlackCredentialError,
@@ -92,7 +95,7 @@ def _repo_root(start):
 
     NOT counted as `parent.parent`: that is correct only while every script sits directly
     in yaas-triage/, and silently resolves to yaas-triage/ itself once a script moves into
-    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on CLAUDE.md
+    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on AGENTS.md
     (a fresh clone has only CLAUDE.example.md) and NOT on .git (two git dirs here, none in
     fixtures). Ambient $REPO_ROOT is deliberately ignored: a stale value pointing at another
     checkout would pass any marker check and silently redirect writes. Test fixtures copy
@@ -201,6 +204,26 @@ def mcp_error(body):
     return str(err.get("message", err)) if isinstance(err, dict) else str(err)
 
 
+def mcp_read_error(body):
+    """Recognize tool-level failures without scanning successful message content."""
+    try:
+        envelope = json.loads(body)
+        result = envelope.get("result") if isinstance(envelope, dict) else None
+        if not isinstance(result, dict):
+            return None
+        text = extract_mcp_text(body)
+        if not isinstance(text, str):
+            return "Slack MCP read returned a malformed tool error" if result.get("isError") is True else None
+        if result.get("isError") is True:
+            return text or "Slack MCP read reported a tool error"
+        payload = json.loads(text)
+        if isinstance(payload, dict) and (payload.get("ok") is False or (payload.get("ok") is not True and payload.get("error"))):
+            return text
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
 def check_jira_path(path):
     """Return an error string if this path is not safe to send a token to.
 
@@ -224,20 +247,30 @@ def keychain(service, account="yaas"):
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
-def request(url, method="GET", headers=None, body=None, timeout=TIMEOUT):
+def request(url, method="GET", headers=None, body=None, timeout=TIMEOUT, *, context=None):
     """Returns (status, text). Raises only for transport failures."""
+    options = {"context": context} if context is not None else {}
+    status, text, _ = request_with_headers(url, method, headers, body, timeout, **options)
+    return status, text
+
+
+def request_with_headers(url, method="GET", headers=None, body=None, timeout=TIMEOUT, *, context=None):
+    """Return response headers for capability checks without exposing bearer tokens."""
     data = body.encode() if isinstance(body, str) else body
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode("utf-8", "replace")
+        options = {"context": context} if context is not None else {}
+        with urllib.request.urlopen(req, timeout=timeout, **options) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace"), dict(resp.headers)
     except urllib.error.HTTPError as e:
         # An HTTP error is a real response; its body usually says what went wrong.
-        return e.code, e.read().decode("utf-8", "replace")
+        return e.code, e.read().decode("utf-8", "replace"), dict(e.headers)
 
 
 def slack_auth_rejected(status, body):
     """True only when Slack proves the bearer token was rejected before the operation."""
+    if status == 429:
+        return False  # Rate limiting is never a reason to refresh and retry.
     if status == 401:
         return True
     try:
@@ -277,6 +310,20 @@ def slack_request(url, method="GET", headers=None, body=None, timeout=TIMEOUT):
     replacement = get_slack_access_token(rejected_token=token)
     request_headers["Authorization"] = f"Bearer {replacement}"
     return request(url, method, request_headers, body, timeout)
+
+
+def slack_request_with_headers(url, method="GET", headers=None, body=None, timeout=TIMEOUT):
+    """Like slack_request, retaining only the response headers needed by callers."""
+    token = get_slack_access_token()
+    request_headers = dict(headers or {})
+    request_headers["Authorization"] = f"Bearer {token}"
+    status, text, response_headers = request_with_headers(url, method, request_headers, body, timeout)
+    if not slack_auth_rejected(status, text):
+        return status, text, response_headers
+
+    replacement = get_slack_access_token(rejected_token=token)
+    request_headers["Authorization"] = f"Bearer {replacement}"
+    return request_with_headers(url, method, request_headers, body, timeout)
 
 
 def classify_credential_exception(exc):
@@ -324,14 +371,26 @@ def cmd_mcp(argv):
     except Exception as exc:
         return fail(f"arguments_json is not valid JSON: {exc}", BAD_ARGS)
 
+    cooldown_root = read_cooldown.workspace_root() if tool in read_cooldown.READ_TOOLS else None
+    if tool in read_cooldown.READ_TOOLS:
+        deadline = read_cooldown.read_deadline(cooldown_root)
+        if deadline:
+            return fail(read_cooldown.detail(deadline), TRANSIENT)
+
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                           "params": {"name": tool, "arguments": args}})
     try:
-        status, raw = slack_request(SLACK_MCP_URL, "POST", {
+        headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
             "MCP-Protocol-Version": "2025-06-18",
-        }, payload)
+        }
+        if tool in read_cooldown.READ_TOOLS:
+            status, raw, response_headers = slack_request_with_headers(
+                SLACK_MCP_URL, "POST", headers, payload)
+        else:
+            status, raw = slack_request(SLACK_MCP_URL, "POST", headers, payload)
+            response_headers = {}
     except SlackCredentialError as exc:
         return fail(str(exc), classify_credential_exception(exc))
     except Exception as exc:
@@ -339,10 +398,20 @@ def cmd_mcp(argv):
 
     body = unwrap_sse(raw)
     verdict = classify_status(status)
+    tool_error = mcp_read_error(body) if tool in read_cooldown.READ_TOOLS else None
     if verdict == OK:
         verdict = classify_body(body)
+        if verdict == OK and tool_error:
+            verdict = classify_body(tool_error) or ERROR
     if verdict != OK:
-        detail = mcp_error(body) or body[:200]
+        # Only actual throttling starts a cooldown: timeouts, server errors and
+        # authentication failures retain their existing independent behavior.
+        limited = status == 429 or any(marker in body.lower()
+            for marker in ("ratelimited", "rate_limited", "rate limit"))
+        if limited and tool in read_cooldown.READ_TOOLS and verdict == TRANSIENT:
+            deadline = read_cooldown.record_cooldown(cooldown_root, response_headers)
+            return fail(read_cooldown.detail(deadline), TRANSIENT)
+        detail = mcp_error(body) or (tool_error[:200] if tool_error else body[:200])
         return fail(f"slack mcp {tool} (HTTP {status}): {detail}", verdict)
 
     err = mcp_error(body)
@@ -377,7 +446,7 @@ def cmd_jira(argv):
             "Accept": "application/json",
             "Content-Type": "application/json",
             "Authorization": f"Basic {auth}",
-        }, body)
+        }, body, context=native_ssl_context())
     except Exception as exc:
         return fail(f"{type(exc).__name__}: {exc}", classify_exception(exc))
 
@@ -484,7 +553,9 @@ def cmd_slack_profile(argv):
             body = {}
         if body.get("error") == "missing_scope":
             return fail(f"slack users.profile.{action}: missing_scope "
-                        f"needed={body.get('needed')} provided={body.get('provided')}", verdict)
+                        f"needed={body.get('needed')} provided={body.get('provided')}. "
+                        "Profile/status access is optional; skip it with this token. "
+                        "A custom app with users.profile:read/write is needed for this helper.", verdict)
         return fail(f"slack users.profile.{action}: {text[:200]}", verdict)
 
     try:
@@ -497,8 +568,33 @@ def cmd_slack_profile(argv):
     return OK
 
 
+def cmd_slack_identity(argv):
+    """Return non-secret account identity and current user-token grants."""
+    if argv:
+        return BAD_ARGS
+    try:
+        status, text, headers = slack_request_with_headers(f"{SLACK_WEB_URL}/auth.test")
+        verdict = classify_status(status)
+        if verdict == OK:
+            verdict = classify_body(text)
+        if verdict != OK:
+            return fail("Slack identity verification failed", verdict)
+        result = json.loads(text)
+        raw_scopes = next((value for key, value in headers.items()
+                           if key.lower() == "x-oauth-scopes"), None)
+        scopes = (sorted({scope.strip() for scope in raw_scopes.split(",") if scope.strip()})
+                  if isinstance(raw_scopes, str) else None)
+        print(json.dumps({"user_id": result.get("user_id"), "team_id": result.get("team_id"),
+                          "scopes": scopes}))
+        return OK
+    except SlackCredentialError as exc:
+        return fail(str(exc), classify_credential_exception(exc))
+    except Exception as exc:
+        return fail(type(exc).__name__, classify_exception(exc))
+
+
 SURFACES = {"mcp": cmd_mcp, "jira": cmd_jira, "slack-react": cmd_slack_react,
-            "slack-profile": cmd_slack_profile}
+            "slack-profile": cmd_slack_profile, "slack-identity": cmd_slack_identity}
 
 
 def main():

@@ -37,10 +37,11 @@
 #   REPO_ROOT                    repo working dir (default: parent of script dir)
 #   YAAS_CLAUDE_PERMISSION_MODE  claude --permission-mode (default: acceptEdits)
 #   YAAS_CODEX_PERMISSION_MODE   workspace-write (default) or bypassPermissions
+#   YAAS_CURSOR_PERMISSION_MODE  default (default) or bypassPermissions
 #   YAAS_WORKER_PERMISSION_MODE  deprecated Claude fallback
 #   YAAS_CLAUDE_MODEL            default: opus
 #   YAAS_CLAUDE_EFFORT           claude --effort (low|medium|high|...); unset → omit flag
-#   YAAS_CODEX_MODEL             sq setup fills blank Codex values with gpt-5.6-luna;
+#   YAAS_CODEX_MODEL             sq setup fills blank Codex values with gpt-6.1-sol;
 #                                otherwise codex uses ~/.codex/config.toml model
 #   YAAS_CODEX_EFFORT            reasoning effort (none|low|medium|high|xhigh|max); sq setup fills
 #                                a blank value with high; unset → config default
@@ -100,7 +101,6 @@ case "$BACKEND" in
       --permission-mode "$PERMISSION_MODE" \
       --add-dir "$RUNTIME_DIR" \
       --mcp-config "$SCRIPT_DIR/worker.mcp.json" \
-      --strict-mcp-config \
       --tools "Read,Edit,Write,Bash,Glob,Grep,WebFetch,WebSearch" \
       --output-format stream-json --verbose \
       ${DBG[@]+"${DBG[@]}"} \
@@ -150,11 +150,24 @@ case "$BACKEND" in
     exec "$@" "$PROMPT"
     ;;
   cursor)
-    # --print headless, stream-json; --approve-mcps auto-approves MCP calls (no
-    # per-call prompt exists headless). Default agent mode already permits the
-    # shell tool used to run mcp-call.sh.
-    set -- cursor-agent -p --output-format stream-json --approve-mcps \
-      --workspace "$REPO_ROOT"
+    # --trust is required in every mode: headless runs on an untrusted workspace
+    # exit at Cursor's trust prompt. --approve-mcps only approves MCP servers.
+    # default leaves command approval and the sandbox to the user's
+    # ~/.cursor/cli-config.json; bypassPermissions disables both.
+    PERMISSION_MODE="${YAAS_CURSOR_PERMISSION_MODE:-default}"
+    set -- cursor-agent -p --output-format stream-json --approve-mcps --trust
+    case "$PERMISSION_MODE" in
+      default)
+        ;;
+      bypassPermissions)
+        set -- "$@" --force --sandbox disabled
+        ;;
+      *)
+        echo "dispatch-agent.sh: invalid YAAS_CURSOR_PERMISSION_MODE='$PERMISSION_MODE' (expected default or bypassPermissions)" >&2
+        exit 2
+        ;;
+    esac
+    set -- "$@" --workspace "$REPO_ROOT"
     [ -n "${YAAS_CURSOR_MODEL:-}" ] && set -- "$@" --model "$YAAS_CURSOR_MODEL"
     exec "$@" "$PROMPT"
     ;;

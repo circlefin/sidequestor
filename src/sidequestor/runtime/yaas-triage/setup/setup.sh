@@ -34,7 +34,17 @@ OAUTH_ONLY=0
 CONFIG="$SCRIPT_DIR/yaas-app-config.json"
 PORT=3118
 STATE_SERVER_LOG=$(mktemp)
-trap 'rm -f "$STATE_SERVER_LOG"' EXIT
+SERVER_PID=""
+cleanup_oauth() {
+  if [ -n "$SERVER_PID" ]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  rm -f "$STATE_SERVER_LOG"
+}
+trap cleanup_oauth EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ── Preflight ───────────────────────────────────────────────────────────────
 for cmd in jq python3; do
@@ -142,6 +152,10 @@ for cmd in curl openssl security open; do
     exit 1
   fi
 done
+# The wizard records the user's chosen app identity, including an explicit
+# choice of Claude's defaults. Do not infer that choice from a blank .env.
+CLAUDE_CLIENT_ID=$(jq -r '.claude_app.client_id' "$CONFIG")
+CLAUDE_APP_ID=$(jq -r '.claude_app.app_id' "$CONFIG")
 MISSING=""
 for var in SLACK_APP_ID SLACK_CLIENT_ID SLACK_WORKSPACE_NAME SLACK_WORKSPACE_DOMAIN; do
   [ -z "${!var:-}" ] && MISSING="$MISSING $var"
@@ -179,31 +193,47 @@ fi
 APP_NAME=$(jq -r '.slack_app.app_name' "$CONFIG")
 REDIRECT=$(jq -r '.slack_app.redirect_uri' "$CONFIG")
 SCOPES=$(jq -r '.user_scopes | join(",")' "$CONFIG")
+if [ "$SLACK_CLIENT_ID" = "$CLAUDE_CLIENT_ID" ]; then
+  if [ "$SLACK_APP_ID" != "$CLAUDE_APP_ID" ]; then
+    echo "ERROR: Claude Slack client ID requires SLACK_APP_ID=$CLAUDE_APP_ID" >&2
+    exit 1
+  fi
+  APP_NAME=$(jq -r '.claude_app.app_name' "$CONFIG")
+  SCOPES=$(jq -r '.claude_app.excluded_user_scopes as $excluded |
+    [.user_scopes[] | select(. as $scope | $excluded | index($scope) | not)] | join(",")' "$CONFIG")
+fi
 
 # Per-install values from .env
 CLIENT_ID="$SLACK_CLIENT_ID"
 APP_URL="https://api.slack.com/apps/$SLACK_APP_ID"
 
 cat <<EOF
-╔════════════════════════════════════════════════════════════════════╗
-║  Sidequestor — Slack onboarding                                    ║
-╠════════════════════════════════════════════════════════════════════╣
-║  App:         $APP_NAME ($APP_URL)
-║  Client ID:   $CLIENT_ID
-║  Redirect:    $REDIRECT
-║  Scopes:      $(echo "$SCOPES" | tr ',' '\n' | head -3 | tr '\n' ',' | sed 's/,$//'), ... ($(echo "$SCOPES" | tr ',' '\n' | wc -l | tr -d ' ') total)
-╚════════════════════════════════════════════════════════════════════╝
 
-Confirm that Agents → "Slack Model Context Protocol (MCP) Server" is enabled. The manifest
-requests it; if Slack did not apply that setting, enable it here:
-  $APP_URL/app-assistant
+  Slack authorization
+  -------------------
+    App:        $APP_NAME
+    App ID:     $SLACK_APP_ID
+    Client ID:  $CLIENT_ID
+    Redirect:   $REDIRECT
+    Scopes:     $(echo "$SCOPES" | tr ',' '\n' | wc -l | tr -d ' ') user scopes ($(echo "$SCOPES" | tr ',' '\n' | wc -l | tr -d ' ') total)
 
-You'll be redirected to Slack in your browser to authorize this app for
-your user account. Review the permissions, click "Allow", then return here.
+  Your browser will open Slack. Review the permissions, choose Allow,
+  then return to this terminal.
 
 EOF
 
-read -p "Press Enter to start the OAuth flow, or Ctrl-C to abort..."
+if [ "$SLACK_CLIENT_ID" = "$CLAUDE_CLIENT_ID" ]; then
+  echo "  Workspace approval may be required for Claude's Slack app."
+  echo "  Profile/status operations and DND lookup are unavailable."
+  echo "  Sidequestor manages its own token; Claude Code's connection is separate."
+  echo "  The provider controls Claude's app configuration and may change it."
+else
+  echo '  Confirm Agents → "Slack Model Context Protocol (MCP) Server" is enabled.'
+  echo "    $APP_URL/app-assistant"
+fi
+
+echo
+read -p "  Press Enter to open Slack authorization, or Ctrl-C to cancel..."
 
 # ── PKCE ────────────────────────────────────────────────────────────────────
 # RFC 7636 Proof Key for Code Exchange
@@ -234,17 +264,17 @@ LOG_PATH = sys.argv[2]
 EXPECTED_STATE = sys.argv[3]
 
 RESPONSE_OK = b"""<!DOCTYPE html>
-<html><head><title>Sidequestor installed</title>
-<style>body{font-family:-apple-system,sans-serif;max-width:600px;margin:80px auto;padding:0 24px;color:#111;}
+<html><head><meta charset="utf-8"><title>Sidequestor authorization received</title>
+<style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;max-width:600px;margin:80px auto;padding:0 24px;color:#111;}
 h1{color:#2eb67d;}code{background:#f4f4f4;padding:2px 6px;border-radius:3px;}</style>
 </head><body>
 <h1>Sidequestor authorized</h1>
-<p>The token has been issued and stored in your Mac Keychain.</p>
+<p>Return to your terminal to finish exchanging and saving the token.</p>
 <p>You can close this tab and return to your terminal.</p>
 </body></html>"""
 
 RESPONSE_ERR = lambda msg: f"""<!DOCTYPE html>
-<html><body style="font-family:-apple-system;max-width:600px;margin:80px auto;padding:0 24px;">
+<html><head><meta charset="utf-8"></head><body style="font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;max-width:600px;margin:80px auto;padding:0 24px;">
 <h1 style="color:#e01e5a;">Sidequestor install failed</h1>
 <p>{msg}</p>
 <p>Check your terminal for details.</p>
@@ -263,16 +293,16 @@ class H(http.server.BaseHTTPRequestHandler):
         if err:
             msg = "error=" + html.escape(err)  # escape: err is reflected into HTML
             with open(LOG_PATH, "w") as f: f.write(f"ERROR {msg}\n")
-            self.send_response(400); self.send_header("Content-Type","text/html"); self.end_headers()
+            self.send_response(400); self.send_header("Content-Type","text/html; charset=utf-8"); self.end_headers()
             self.wfile.write(RESPONSE_ERR(msg))
             return
         if state != EXPECTED_STATE:
             with open(LOG_PATH, "w") as f: f.write("ERROR state mismatch\n")
-            self.send_response(400); self.send_header("Content-Type","text/html"); self.end_headers()
+            self.send_response(400); self.send_header("Content-Type","text/html; charset=utf-8"); self.end_headers()
             self.wfile.write(RESPONSE_ERR("State mismatch — possible CSRF. Re-run setup.sh."))
             return
         with open(LOG_PATH, "w") as f: f.write(f"CODE {code}\n")
-        self.send_response(200); self.send_header("Content-Type","text/html"); self.end_headers()
+        self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.end_headers()
         self.wfile.write(RESPONSE_OK)
 
 # Bind with SO_REUSEADDR
@@ -286,11 +316,29 @@ except OSError as e:
     sys.exit(1)
 
 srv.timeout = 300  # 5 min total window
-srv.handle_request()  # serve exactly one request then exit
+with open(LOG_PATH, "w") as f:
+    f.write("READY\n")
+try:
+    srv.handle_request()  # serve exactly one request then exit
+finally:
+    srv.server_close()
 PY
 
 SERVER_PID=$!
-sleep 0.5  # let server bind
+# The browser must never open until THIS listener has bound the callback port.
+for attempt in {1..100}; do
+  [ -s "$STATE_SERVER_LOG" ] && break
+  kill -0 "$SERVER_PID" 2>/dev/null || break
+  sleep 0.05
+done
+if [ "$(cat "$STATE_SERVER_LOG")" != "READY" ]; then
+  echo "ERROR: Slack callback listener could not start." >&2
+  if [ -s "$STATE_SERVER_LOG" ]; then
+    cat "$STATE_SERVER_LOG" >&2
+  fi
+  echo "Close the other setup attempt using port $PORT, then run sq setup again." >&2
+  exit 1
+fi
 
 echo "Opening browser to Slack authorize page..."
 echo "If it doesn't open automatically, visit:"
@@ -300,9 +348,10 @@ open "$AUTH_URL"
 
 # Wait for the server to finish (max ~5 min via its own timeout)
 wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
 
 # ── Inspect server log ──────────────────────────────────────────────────────
-if [ ! -s "$STATE_SERVER_LOG" ]; then
+if [ ! -s "$STATE_SERVER_LOG" ] || [ "$(cat "$STATE_SERVER_LOG")" = "READY" ]; then
   echo "ERROR: no callback received. The server timed out or the browser flow was interrupted." >&2
   exit 1
 fi

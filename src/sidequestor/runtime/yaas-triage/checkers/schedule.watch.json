@@ -1,5 +1,5 @@
 {
-  "_comment": "checker_example is a minimal checker input, not an add-watch or new-quest creation template; it intentionally includes last_checked_ts.",
+  "_comment": "checker_example is a minimal checker input, not an add-watch or new-quest creation template; it intentionally includes last_checked_ts. One-shot next_fire_ts must be a finite positive Unix timestamp in seconds (number or numeric string), not an ISO date.",
   "schema_version": 1,
   "required": [["cron", "tz"], ["next_fire_ts"]],
   "identity": ["id", "cron", "next_fire_ts"],

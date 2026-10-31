@@ -478,8 +478,21 @@ class SendPolicyTest(TransportTestCase):
     def test_reactions_dispatch_may_upload_without_a_quest(self) -> None:
         payload = self._payload()
         del payload["quest_id"]
-        code, _, error, upload = self._run("send", payload, target="reactions")
+        code, output, error, upload = self._run("send", payload, target="reactions")
         self.assertEqual(code, 0, error)
+        upload.assert_called_once()
+        self.assertTrue(json.loads(output)["logged"])
+        event = json.loads((self.root / "state/quests/active/quest-inbox/timeline.ndjson").read_text())
+        self.assertEqual(event["permalink"], "https://x/F1")
+
+    def test_reaction_file_audit_failure_preserves_successful_upload_result(self) -> None:
+        payload = self._payload()
+        del payload["quest_id"]
+        with patch("inbox.log_inbox", side_effect=OSError("disk unavailable")):
+            code, output, error, upload = self._run("send", payload, target="reactions")
+        self.assertEqual(code, 0, error)
+        self.assertFalse(json.loads(output)["logged"])
+        self.assertIn("do not repeat", error)
         upload.assert_called_once()
 
     def test_explicit_interactive_upload_needs_no_quest(self) -> None:

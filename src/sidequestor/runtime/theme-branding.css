@@ -1,0 +1,6 @@
+.mark img.sq-custom-logo{object-fit:contain;image-rendering:auto}
+/* Theme artwork is decorative; operational status remains in the adjacent text. */
+.motion-stream.sq-activity-train{height:var(--sq-activity-height,28px);min-height:var(--sq-activity-height,28px);margin-top:5px;width:100%;overflow:hidden;position:relative;contain:layout paint}
+.motion-stream.sq-activity-train>img{position:absolute;left:0;top:0;height:var(--sq-activity-height,28px);max-width:none;object-fit:contain;pointer-events:none;user-select:none;will-change:transform}
+/* JS stops only translation for reduced motion. Animated image playback is unchanged. */
+@media(prefers-reduced-motion:reduce){.motion-stream.sq-activity-train>img{will-change:auto}}

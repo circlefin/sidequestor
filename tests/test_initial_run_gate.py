@@ -68,6 +68,13 @@ class BootstrapStateTest(unittest.TestCase):
         (folder / "watch.json").write_text(json.dumps({"watches": watches}))
         return folder
 
+    def test_confirmed_dependency_failure_preserves_existing_no_progress_counts(self):
+        original = {"quest|watch": {"count": 2, "next_retry_ts": "1234"}}
+        self.t.unacked_file.write_text(json.dumps(original))
+        self.t.dispatch_dependency_blocked = True
+        self.tick._record_progress(self.t, "quest", [])
+        self.assertEqual(json.loads(self.t.unacked_file.read_text()), original)
+
     def test_explicit_empty_bootstrap_quest_gets_synthetic_dispatch(self):
         folder = self._quest({"status": "active", "sidequestor_bootstrap": True}, [])
         pending = self.tick.prepare_bootstrap_quests(self.t, [folder])
