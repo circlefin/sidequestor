@@ -371,12 +371,8 @@ def cmd_mcp(argv):
     except Exception as exc:
         return fail(f"arguments_json is not valid JSON: {exc}", BAD_ARGS)
 
-    cooldown_root = read_cooldown.workspace_root() if tool in read_cooldown.READ_TOOLS else None
-    if tool in read_cooldown.READ_TOOLS:
-        deadline = read_cooldown.read_deadline(cooldown_root)
-        if deadline:
-            return fail(read_cooldown.detail(deadline), TRANSIENT)
-
+    # No shared cooldown: one rate-limited request must not pause other quests.
+    # Existing per-watch transient handling owns subsequent polling retries.
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                           "params": {"name": tool, "arguments": args}})
     try:
@@ -386,11 +382,10 @@ def cmd_mcp(argv):
             "MCP-Protocol-Version": "2025-06-18",
         }
         if tool in read_cooldown.READ_TOOLS:
-            status, raw, response_headers = slack_request_with_headers(
+            status, raw, _response_headers = slack_request_with_headers(
                 SLACK_MCP_URL, "POST", headers, payload)
         else:
             status, raw = slack_request(SLACK_MCP_URL, "POST", headers, payload)
-            response_headers = {}
     except SlackCredentialError as exc:
         return fail(str(exc), classify_credential_exception(exc))
     except Exception as exc:
@@ -404,13 +399,6 @@ def cmd_mcp(argv):
         if verdict == OK and tool_error:
             verdict = classify_body(tool_error) or ERROR
     if verdict != OK:
-        # Only actual throttling starts a cooldown: timeouts, server errors and
-        # authentication failures retain their existing independent behavior.
-        limited = status == 429 or any(marker in body.lower()
-            for marker in ("ratelimited", "rate_limited", "rate limit"))
-        if limited and tool in read_cooldown.READ_TOOLS and verdict == TRANSIENT:
-            deadline = read_cooldown.record_cooldown(cooldown_root, response_headers)
-            return fail(read_cooldown.detail(deadline), TRANSIENT)
         detail = mcp_error(body) or (tool_error[:200] if tool_error else body[:200])
         return fail(f"slack mcp {tool} (HTTP {status}): {detail}", verdict)
 

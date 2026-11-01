@@ -52,24 +52,29 @@ class SlackReadCooldownTests(unittest.TestCase):
         # A legitimate long Retry-After must not be shortened into an early retry.
         self.assertEqual(self.cooldown.retry_seconds({'Retry-After':'7200'},1000),7200)
 
-    def test_429_is_one_transport_call_and_holds_all_read_tools_until_expiry(self):
-        with patch.object(self.cooldown.time, 'time', return_value=1000), \
-                patch.object(self.client,'slack_request_with_headers', return_value=(429,'ratelimited',{'Retry-After':'30'})) as request:
-            code, detail = self.invoke()
-            self.assertEqual(code,4)
-            self.assertIn('"retry_at": 1030.0',detail)
-            self.assertEqual(request.call_count,1)
-        with patch.object(self.cooldown.time, 'time', return_value=1029), \
-                patch.object(self.client,'slack_request_with_headers') as request, \
-                patch.object(self.client,'get_slack_access_token') as auth:
-            self.assertEqual(self.invoke('slack_read_channel')[0],4)
-            request.assert_not_called();auth.assert_not_called()
-        with patch.object(self.cooldown.time, 'time', return_value=1030), \
-                patch.object(self.client,'slack_request_with_headers',return_value=(200,'{"result":{"content":[{"text":"ok"}]}}',{})) as request:
-            self.assertEqual(self.invoke()[0],0)
-            self.assertEqual(request.call_count,1)
+    def test_429_is_one_transport_call_without_holding_other_reads(self):
+        with patch.object(self.client, 'slack_request_with_headers', return_value=(429, 'ratelimited', {'Retry-After': '30'})) as request:
+            self.assertEqual(self.invoke()[0], self.client.TRANSIENT)
+            request.assert_called_once()
+        self.assertFalse((self.root / 'state/triage/slack-read-cooldown.json').exists())
+        for tool in self.cooldown.READ_TOOLS:
+            with self.subTest(tool=tool), patch.object(self.client, 'slack_request_with_headers', return_value=(200, '{"result":{"content":[{"text":"ok"}]}}', {})) as request:
+                self.assertEqual(self.invoke(tool)[0], self.client.OK)
+                request.assert_called_once()
 
-    def test_http_200_tool_rate_limits_also_record_retry_after(self):
+    def test_saved_legacy_deadline_cannot_suppress_requests(self):
+        self.cooldown.record_cooldown(self.root, {'Retry-After': '7200'})
+        path = self.root / 'state/triage/slack-read-cooldown.json'
+        before = path.read_bytes()
+        with patch.object(self.cooldown, 'read_deadline', side_effect=AssertionError('disabled cooldown read')), \
+                patch.object(self.cooldown, 'record_cooldown', side_effect=AssertionError('disabled cooldown write')):
+            for tool in self.cooldown.READ_TOOLS:
+                with self.subTest(tool=tool), patch.object(self.client, 'slack_request_with_headers', return_value=(200, '{"result":{"content":[{"text":"ok"}]}}', {})) as request:
+                    self.assertEqual(self.invoke(tool)[0], self.client.OK)
+                    request.assert_called_once()
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_http_200_tool_rate_limits_remain_transient_without_shared_deadline(self):
         results = [
             {'isError': True, 'content': [{'type': 'text', 'text': 'ratelimited'}]},
             {'content': [{'type': 'text', 'text': json.dumps({'ok': False, 'error': 'rate_limited'})}]},
@@ -80,7 +85,7 @@ class SlackReadCooldownTests(unittest.TestCase):
                 path = self.root / 'state/triage/slack-read-cooldown.json'
                 path.unlink(missing_ok=True)
                 self.assertEqual(self.invoke()[0], self.client.TRANSIENT)
-                self.assertEqual(self.cooldown.read_deadline(self.root, 1000), 1030)
+                self.assertFalse(path.exists())
                 request.assert_called_once()
 
     def test_tool_error_handling_does_not_throttle_success_or_unrelated_failures(self):
@@ -104,12 +109,12 @@ class SlackReadCooldownTests(unittest.TestCase):
             self.assertEqual(transport.call_count,1)
             self.assertEqual(auth.call_count,1)
 
-    def test_body_limit_fallback_and_other_transients_do_not_hold(self):
+    def test_rate_limits_and_other_transients_do_not_create_shared_deadlines(self):
         with patch.object(self.cooldown.time,'time',return_value=1000), \
                 patch.object(self.client,'slack_request_with_headers',return_value=(200,'{"error":{"message":"ratelimited"}}',{})):
             self.assertEqual(self.invoke()[0],4)
-            self.assertEqual(self.cooldown.read_deadline(self.root,1000),1060)
-        path=self.root/'state/triage/slack-read-cooldown.json';path.unlink()
+            self.assertFalse((self.root/'state/triage/slack-read-cooldown.json').exists())
+        path=self.root/'state/triage/slack-read-cooldown.json'
         for reply in [(503,'service unavailable',{}),(401,'invalid_auth',{}),(200,'{"ok":false,"error":"missing_scope"}',{})]:
             with patch.object(self.client,'slack_request_with_headers',return_value=reply):
                 self.invoke()
@@ -137,11 +142,11 @@ class SlackReadCooldownTests(unittest.TestCase):
             with self.assertLogs('slack_read_cooldown',level='WARNING'):
                 self.assertEqual(self.cooldown.read_deadline(self.root,1000),0)
 
-    def test_held_read_uses_existing_skip_classification(self):
+    def test_ratelimited_read_uses_existing_skip_classification(self):
         with patch.object(sys, 'path', [str(SURFACES.parent), *sys.path]):
             check=load('cooldown_tick_check_test',SURFACES.parent/'tick_check.py')
         watch={'type':'slack_thread','watch_id':'watch-abcdef'}
-        verdict=check.classify({'outcome':'ratelimited','preview':'slack ratelimited; read queue held','complete':False},watch)
+        verdict=check.classify({'outcome':'ratelimited','preview':'slack ratelimited','complete':False},watch)
         self.assertEqual(verdict['verdict'],'skip')
         self.assertNotIn('advance_to',verdict)
 

@@ -4,6 +4,22 @@ All notable changes to Sidequestor (YaaS). The package version is declared in `p
 
 Versions are dated by the day the snapshot was published.
 
+## 0.2.9 - 2026-11-01
+
+- Disable the shared Slack MCP read cooldown introduced in 0.2.8: one rate-limited
+  read no longer pauses reads across other quests or later polling ticks. Ignore
+  saved shared deadlines without deleting them, and stop showing those deadlines
+  as an active pause in the dashboard.
+- Include stderr and stdout diagnostics when `slack_read_thread` fails, including
+  exit-code-2 errors previously reduced to the exit code. Prioritize stderr and
+  retain diagnostic tails within the existing 300-character checker reason limit
+  so the final traceback exception remains visible.
+- Keep unknown command failures classified as errors without guessing whether
+  Slack, the MCP adapter or a local helper caused them. Preserve auth, transient,
+  legacy rate-limit and watermark behavior, HTTP-200-wrapped MCP error handling,
+  and the rule that HTTP 429 does not refresh credentials. Slack sends and non-Slack
+  work retain their existing behavior.
+
 ## 0.2.8 - 2026-10-31
 
 - Add workspace-owned dashboard themes using `theme/custom.css`, local assets and

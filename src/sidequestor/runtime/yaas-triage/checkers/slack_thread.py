@@ -44,6 +44,33 @@ import result
 from slack_utils import PAGE_LIMIT, drain, _parse_thread_page, thread_page_has_ts
 
 
+def command_failure_reason(completed):
+    """Preserve both output streams within result.reason's 300-character limit.
+
+    stderr takes priority. Keep diagnostic tails so traceback headers cannot hide
+    the final exception. The command's exit code does not identify its root cause.
+    """
+    prefix = f"slack_read_thread command failed (exit {completed.returncode})"
+    streams = [(name, " | ".join((value or "").strip().splitlines()))
+               for name, value in (("stderr", completed.stderr), ("stdout", completed.stdout))
+               if (value or "").strip()]
+    if not streams:
+        return prefix + "; no stdout or stderr"
+    remaining = 300 - len(prefix)
+    parts = []
+    for index, (name, text) in enumerate(streams):
+        label = f"; {name}: "
+        # Reserve one third for stdout when stderr is also available.
+        allowance = (remaining * 2 // 3) if index == 0 and len(streams) == 2 else remaining
+        limit = max(0, allowance - len(label))
+        if len(text) > limit:
+            text = "..." + text[-max(0, limit - 3):] if limit > 3 else text[:limit]
+        part = label + text
+        parts.append(part)
+        remaining -= len(part)
+    return prefix + "".join(parts)
+
+
 def main():
     entry = json.loads(sys.argv[1])
     channel_id = entry["channel_id"]
@@ -76,6 +103,7 @@ def main():
             capture_output=True, text=True, timeout=30,
         )
         body = (r.stdout or "").strip()
+        failure = command_failure_reason(r) if r.returncode != 0 or not body else None
         # client.py gives every surface ONE exit taxonomy:
         #   0 ok  1 auth  2 error  3 bad args  4 transient
         # Acting on it is the entire point of unifying them. Before this, a rate limit
@@ -92,9 +120,9 @@ def main():
         # backoff landed) dispatched a paid worker. ~1,380 lifetime occurrences of
         # exactly that were visible in triage.log.
         if "ratelimited" in body.lower():
-            return "", None, "TRANSIENT: slack ratelimited; watermark held"
+            return "", None, "TRANSIENT: slack ratelimited; watermark held" + ("; " + failure if failure else "")
         if r.returncode != 0 or not body:
-            return "", None, f"mcp slack_read_thread failed (exit {r.returncode}) {body[:60]}"
+            return "", None, failure
         try:
             d = json.loads(body)
         except Exception:

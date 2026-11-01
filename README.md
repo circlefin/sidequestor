@@ -107,10 +107,10 @@ Commands use your saved default workspace. Explicit `--workspace PATH`, `--insta
 To install this release explicitly:
 
 ```bash
-uv tool install --force 'sidequestor==0.2.7'
+uv tool install --force 'sidequestor==0.2.9'
 ```
 
-Use `sidequestor[telegram]==0.2.7` instead if you need Telegram support.
+Use `sidequestor[telegram]==0.2.9` instead if you need Telegram support.
 Development builds must be upgraded explicitly; built-in update notices compare
 stable version numbers only. Restart a running dashboard to display the new version.
 
@@ -825,14 +825,24 @@ Ask your agent to use `yaas-dashboard-theme` to design a theme. Its maintained
 covers variables, CSS examples, assets, limits and reset. Installed workspaces
 receive this reference alongside the skill through existing resource sync.
 
-### Slack read cooldowns
+### Slack rate-limit handling
 
-Slack MCP reads share a small per-workspace cooldown after a rate limit. A valid
-`Retry-After` (seconds or HTTP date) sets the deadline; missing or unusable values
-fall back to 60 seconds. Checks resume on the first normal poll at or after that
-deadline. During the wait no new Slack read request or credential lookup is made;
-watch watermarks and pending work are held. Send tools and non-Slack work are not
-paused by this read cooldown. The dashboard keeps temporary delays under Watching.
+Starting with `0.2.9`, Slack MCP reads do not share a persisted cooldown. A
+rate-limited request is reported as a transient failure for the affected watch;
+its watermark is held and existing per-watch polling handles the retry. Other
+quests and read tools continue to make their own requests. HTTP-200-wrapped tool
+errors remain classified as failures, and HTTP 429 does not trigger credential
+refresh. Slack sends and non-Slack work retain their existing behavior.
+
+Saved `state/triage/slack-read-cooldown.json` deadlines from 0.2.8 are ignored by
+both the read client and dashboard; deleting that file is unnecessary. The shared
+`Retry-After` pause introduced in 0.2.8 is disabled.
+
+From `0.2.9`, failed Slack thread reads report the command's exit status and
+bounded stderr/stdout diagnostics. Stderr takes priority and long diagnostic tails
+retain the final exception. An exit-code-2 failure alone is not evidence that Slack
+caused it; inspect the underlying diagnostic before attributing the failure.
+
 ### Quest visualization
 
 Open a quest and choose **Visualise quest** for a read-only animated replay. The

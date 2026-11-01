@@ -36,16 +36,19 @@ class WatcherStatusDashboardTest(unittest.TestCase):
         with patch.object(sys, "argv", ["dashboard-server.py"]):
             spec.loader.exec_module(self.server)
 
-    def test_only_slack_throttles_use_the_slack_cooldown(self):
-        with patch.object(self.server, "slack_read_deadline", return_value=2000) as deadline:
-            issue = self.server._watch_issue("transient", {"type": "github_pr", "reason": "HTTP 429"}, 1000)
-            self.assertIsNone(issue["retry_at"])
-            self.assertNotIn("Slack", issue["next"])
-            deadline.assert_not_called()
-            issue = self.server._watch_issue("transient", {"type": "slack_thread", "reason": "ratelimited"}, 1000)
-            self.assertEqual(issue["retry_at"], 2000)
-            self.assertIn("Slack reads resume", issue["next"])
-            self.assertIn("Jan", issue["next"])
+    def test_rate_limit_display_ignores_legacy_shared_deadline(self):
+        path = self.workspace / 'state/triage/slack-read-cooldown.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"retry_at": 9999999999}')
+        before = path.read_bytes()
+        for kind in ['github_pr', 'slack_thread']:
+            with self.subTest(kind=kind):
+                issue = self.server._watch_issue('transient', {'type': kind, 'reason': 'HTTP 429 ratelimited'}, 1000)
+                self.assertIsNone(issue['retry_at'])
+                self.assertNotIn('Slack reads resume', issue['next'])
+                self.assertIn('retries automatically', issue['next'])
+        self.assertIsNone(self.server.build_control()['slack_read_retry_at'])
+        self.assertEqual(path.read_bytes(), before)
 
     def test_closed_quest_approvals_do_not_count_as_live_work(self) -> None:
         quests = self.workspace / "state/quests"

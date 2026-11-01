@@ -101,7 +101,6 @@ import threading
 from types import SimpleNamespace
 from dashboard_settings import build_settings
 from dashboard_theme import read_branding, read_theme
-from surfaces.slack_read_cooldown import read_deadline as slack_read_deadline
 from dashboard_visualizer import build_visualization
 from dashboard_permissions import PermissionConflict, set_send_permission
 from tick_state import (
@@ -1620,14 +1619,11 @@ def _watch_issue(kind: str, watch: dict, now: float | None = None) -> dict:
     reason = str(cause).lower()
     throttled = any(token in reason for token in ("429", "ratelimit", "rate limit"))
     slack_throttled = throttled and str(issue.get("watch_type", "")).startswith("slack_")
-    retry_at = slack_read_deadline(REPO_ROOT, now) if slack_throttled else 0
     return {**issue, "severity": "transient",
             "title": "Slack checks delayed" if slack_throttled else
                      "Checks delayed" if throttled else "Temporary read interruption",
-            "retry_at": retry_at or None,
-            "next": ("Watching continues. Slack reads resume on the first poll after "
-                     + datetime.fromtimestamp(retry_at, timezone.utc).strftime("%d %b %H:%M:%S UTC") + ".") if retry_at else
-                    "Watching continues. Sidequestor retries automatically."}
+            "retry_at": None,
+            "next": "Watching continues. Sidequestor retries automatically."}
 
 
 def _quest_watch_issues(quest: dict, now: float | None = None) -> list[dict]:
@@ -1766,7 +1762,7 @@ def build_control() -> dict:
             "structured_live_progress": False,
             "activity_pagination": False,
         },
-        "slack_read_retry_at": slack_read_deadline(REPO_ROOT) or None,
+        "slack_read_retry_at": None,
         "triage": dashboard["triage"],
         "liveness": {"hard_tick_sec": _hard_tick_ceiling_s(),
                      "stall_sec": _stall_threshold_s()},
