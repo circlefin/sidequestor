@@ -90,6 +90,8 @@ Never read all four as a reflex. Each file read costs a model round-trip. After 
 
 **Slack mention watch type** (`slack_mention`): fires on any new message that @mentions the entry's `user_id`, anywhere Slack search can see (global, not channel-scoped). The entry has no channel, so read `watch.json` for the entry's `last_checked_ts`, re-run `slack_search_public_and_private` with query `<@USER_ID> after:<date>`, keep only results newer than the watermark (skipping `[BOT]` authors and the watched user's own posts), then `slack_read_thread` on each hit before acting.
 
+**Slack text-search watch type** (`slack_search`): use the dispatched item's `last_checked_ts` and `advance_to` as the exact lower and upper bounds; if either is missing, ack `blocked` rather than running an open-ended search. Re-run `slack_search_public_and_private` with the watch's `query`, sort by timestamp ascending, and add date-granular `after:` and `before:` bounds broad enough to cover both timestamps (at least one day before `last_checked_ts` and one day after `advance_to`). Paginate until results exceed `advance_to`, then stop; keep only results with `Message_ts > last_checked_ts` and `Message_ts <= advance_to`. Skip `[BOT]` authors. This handles the index delay without processing results that belong to a later checker prefix. Inspect each matching message and its thread as needed before acting. Search can include private channels and DMs visible to the connected account, so do not copy message contents into a broader destination unless the quest's audience and authorization allow it. A query matching your own messages can add `-from:<@USER_ID>`.
+
 **Telegram watch types** (`telegram_chat`, `telegram_search`): re-run the packaged
 `surfaces/telegram-call.py` with the watch's `credential_id`, `peer`, a current `before_ts`, and a
 bounded `limit`; include `query`/`from_user` for `telegram_search`. Post-filter returned messages
@@ -122,6 +124,29 @@ shared lower bound, not the dormant Slack entries' frozen watermarks. Ack the sc
 `handled|nothing_to_do` only after every required Slack target was read successfully. If any read
 fails, ack the schedule `blocked`, which holds the sweep window for retry. The Slack entries are
 coordinates in this interim mode; never edit or ack them because they were not dispatched.
+
+**Notion watch types** (`notion_page`, `notion_data_source`, `notion_comments`): these are durable page/block-tree collectors, with one configured watch per selected page/source. Nested blocks and their comments are included automatically; subpages stop at `subpage_depth` (default zero), with independent `include_subpage_content` and `include_subpage_comments` flags. New data-source items enroll automatically. `notion_comments` triggers only on discussion changes. No webhooks or interactive connector are needed.
+
+Read the exact watch entry (including `watch_id`, target, depth/settings and `last_checked_ts`) from this quest's `watch.json`, then inspect its pending changes:
+
+```bash
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/notion-state.py" '<EXACT_WATCH_JSON>'
+```
+
+The inspector exits nonzero if the database, watch identity or credential scope does not match. Treat that as blocked; never infer nothing_to_do from missing state.
+
+`last_checked_ts` is now a **local delivery cursor**, not a Notion edit timestamp. Do not convert it to ISO time or use it in Notion API filters. The inspector returns `coverage` and pending `changes` with kind, resource `id`, `page_id` where known, and `container_id` for comments. For a comment event, query comments on that container, find the comment ID and its discussion, then read the complete relevant discussion and block/page context. A comment-only block watch may have an unknown containing page; walk its parent chain only as needed for context. Read-only commands:
+
+```bash
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/notion-call.py" GET '/v1/pages/PAGE_UUID'
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/notion-call.py" GET '/v1/blocks/BLOCK_UUID'
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/notion-call.py" GET '/v1/blocks/PAGE_OR_BLOCK_UUID/children?page_size=100'
+python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/notion-call.py" GET '/v1/comments?block_id=CONTAINER_UUID&page_size=100'
+```
+
+Follow `next_cursor` as `start_cursor` when reading full content/discussions. Scope reads/actions to the pending IDs and the quest objective. The durable inbox is safe to deliver before an entire large tree scan finishes; `coverage.status=scanning` means other branches remain, not that the listed pending changes are unproven. Ack handled/nothing_to_do only after every pending change through the dispatched cursor is reconciled; if any required read cannot finish, ack blocked. Do not erase collector state, edit watch cursors or run the checker manually to acknowledge work. For `coverage_gap` events, the event itself reports an unavailable/unsupported descendant. Record the gap and uncertainty, then acknowledge that availability report as handled; do not repeatedly re-read an impossible target or call it deleted. Other pending content/comment events still need their normal reads and reconciliation. Coverage remains partial until a later scan succeeds.
+
+Related edits may coalesce; this is not an audit log of every intermediate state. Apply conversational-turn and own-write guards: a dirty result does not itself require another comment. Source queries cannot enumerate trashed rows, resolved/deleted comments may disappear between polls, and a 404 does not prove deletion. Do not broaden depth or follow child databases/links without explicit scope. Notion writes require separately authorized tooling; these bridges only read content/state.
 
 **Jira watch type** (`jira`): fires when an issue in the entry's `jql` set changed (status transition, new comment, any field edit — Jira bumps `updated` on all of them). An interactive Atlassian MCP is typically NOT exposed in headless dispatch, so do not reach for `searchJiraIssues`; it returns `tool_not_found` there. Use the REST bridge:
 1. `bash "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/jira-call.sh" GET '/rest/api/3/search/jql?jql=<url-encoded>&fields=status,summary,updated&maxResults=100'` — re-read the set and diff it against what the quest last recorded.
@@ -213,6 +238,17 @@ sq watch <quest_id> '{"type":"slack_thread","channel_id":"C...","thread_ts":"<pa
 
 **Pass `last_checked_ts` explicitly, as the `response_ts` of your own reply.** This is the one thing the script cannot decide for you, and the default is wrong for your case: your reply's ts is the correct boundary, whereas "now" silently swallows any reply posted between your send and this call. With no send ts (a draft), omit it and the script falls back to the parent `thread_ts`; triage then re-surfaces your own draft next tick, which you ignore as self-authored.
 
+**An uncertain send is not a draft or a confirmed message.** If `slack-send.py` exits 3
+with `delivery_uncertain: true`, do not add follow-up watches, mark the approval done,
+or automatically resend it. Read Slack to establish whether the original write landed.
+The timeline records `message_delivery_uncertain` or `draft_delivery_uncertain` with
+the attempted body so a later dispatch can reconcile that same attempt. If confirmed,
+use the real message coordinates; if still uncertain, keep the item blocked and surface
+it for review. Do not treat missing confirmation as proof that nothing was sent.
+When logging that `blocked` event, include `"blocker_kind":"delivery_uncertain"`
+and `"delivery_status":"uncertain"`. Preserve those markers until delivery is
+reconciled; a later successful Slack read only proves that access works again.
+
 **DMs need a second watch, and it MUST be marked `ephemeral: true`.** When you initiate a top-level DM (not a reply inside an existing thread), append BOTH a `slack_thread` watch on your outbound `message_ts` AND a `slack_channel` watch on the DM channel itself, the latter with `"ephemeral": true`. In a 1-1 DM, the recipient's natural reply is a new top-level message in the channel, not a threaded reply, so a `slack_thread` watch alone will miss it. The `slack_channel` watch covers the top-level case. Set `last_checked_ts` to your outbound `response_ts` on both. This dual-watch rule applies only to DM channels (IM type); for public/private channels and existing threads, a single `slack_thread` watch is enough because the threading convention holds.
 
 The `ephemeral` flag is not optional and is not decoration: it is what lets `housekeep.py` retire the watch after `SIDEQUESTOR_RETIRE_EPHEMERAL_HOURS` (default 168, one week). You are opening an *unbounded* watch to catch a *bounded* reply, and without the flag nothing ever closes it. On 2026-08-08 two such watches were still firing 3 and 12 days after their question was answered, one of them acted on a completely unrelated message, and the same content was posted to Slack twice. Mark it, or you are creating that bug again. Conversely, do NOT mark a watch that is meant to persist (a quest whose job is monitoring a bot's DMs or a channel) — unmarked is permanent, and that is the safe default.
@@ -235,16 +271,22 @@ If the commitment genuinely needs to wait (e.g., "after my call with X tomorrow"
 
 ### 3c. Manual review queue (general rule — all quests)
 
+For `health_issue` watches, approvals whose `target.action` is `health_repair` or
+`sidequestor_upgrade`, and approvals whose `target.report_kind` is `package_bug`,
+follow OPERATING.md's health/system review protocol first. Repairs and upgrades are
+maintenance actions; bug reports are approval-gated emails. Never add a Slack
+follow-up watch merely because a system approval was reviewed or a report was sent.
+
 Use this queue when you cannot or should not act immediately and the action needs the user's review first. The live dashboard (`$SIDEQUESTOR_RUNTIME_ROOT/dashboard.html` / `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/ops/dashboard-server.py`) surfaces pending items; once reviewed, triage re-dispatches you to execute with the user's instructions applied.
 
 **When to use it:**
-1. `allow_send: false` in `meta.json` — any outbound action, regardless of channel.
+1. `allow_send: false` in `meta.json` — outbound actions require review, except Slack text messages to conversation IDs explicitly granted in `allow_send_channels`. That grant applies only through `slack-send.py`; it does not authorize file uploads, channel management, or other send surfaces. Never widen a grant without the owner's authorization.
 2. A watch entry's `reason` contains `DRAFT ONLY` (case-insensitive) — any message to that target.
 3. Your judgment: first message to an external party, file edits requested by a third party, messages in external shared channels, anything you are not confident enough to send unilaterally.
 
 **Writing a review item:**
 
-Use `sq approval write '<json>'` — it routes to the packaged approval helper and handles dedup, flock, and ID generation atomically. Pass a JSON object with: `quest_id`, `quest_title`, `action_type` (`slack_message` / `file_edit` / `remote_request`), `target` (destination coordinates, such as `{channel_id, thread_ts}` for Slack or `{doc_id}` for Google Docs), `message_text`, `context` (concise explanation of what triggered this, who is involved, and why review is needed), `risk_reason`. The command prints the new approval ID on success, or nothing if an equivalent pending entry already exists. Slack messages deduplicate by quest and thread; requests without a channel ID deduplicate only when the full target and message match.
+Use `sq approval write '<json>'` — it routes to the packaged approval helper and handles dedup, flock, and ID generation atomically. Pass a JSON object with: `quest_id`, `quest_title`, `action_type` (`slack_message` / `file_edit` / `remote_request`), `target` (destination coordinates, such as `{channel_id, thread_ts}` for Slack or `{doc_id}` for Google Docs), `message_text`, `context` (concise explanation of what triggered this, who is involved, and why review is needed), `risk_reason`. Include `source_url` with the verified permalink of the triggering message, email, or document, separately from the destination coordinates in `target`. This is displayed as Open Source beside prior context; never substitute the outbound destination for the source. For a Slack destination include `channel_name` or a human-readable audience label when known, alongside the exact IDs. The command prints the new approval ID on success, or nothing if an equivalent pending entry already exists. Slack messages deduplicate by quest and thread; requests without a channel ID deduplicate only when the full target and message match.
 
 The dashboard presents review content as a formatted preview with source editing. For longer `context` explanations and action plans in `file_edit` or `remote_request` `message_text`, use basic Markdown: short headings, paragraphs, and flat bullet or numbered lists. Put the decision or proposed action first. Keep short items short; avoid tables and nested lists, which the preview does not support. Code-fenced content is displayed as literal source. For outbound message drafts, `message_text` must remain the exact proposed body using the destination's formatting syntax (for example, Slack mrkdwn); do not add review-only headings or convert it to dashboard Markdown. Apply the same guidance to revised drafts and worker replies in the review conversation.
 
@@ -269,6 +311,16 @@ outcome cannot be determined, log `blocked` and do not execute. For a `manual_in
 arbitrary effects cannot be proven from one target, use `approval-helper.py abandon <id>
 "<reason>"` rather than running it again. `done` clears `needs_reconcile` only after the outcome
 has been resolved.
+
+**Quest setup reviews.** A `remote_request` with `target.action: quest_setup` is an
+agent-proposed setup plan, not an instruction authored by the owner. For `needs_reply`,
+read the owner's `review_note`, resolve the uncertainties, and use `sq approval answer`
+to return a concrete revised setup plan for approval. Do not claim or close a `needs_reply`
+item. For `reviewed`, claim it, live-verify the approved external identifiers, install the
+exact watches through `sq watch`, verify them, then call `sq approval done` and ack handled.
+If details remain unresolved, answer or fail it back to review with specific questions.
+Keep sending disabled unless separately authorized. Close issue intentionally stops setup;
+it does not install monitoring. Do not silently replace a cancelled setup review.
 
 **Manual instructions.** An item with `action_type: "manual_instruction"` came directly from
 the operator through the quest dashboard. Its `message_text` is the instruction to carry out,
@@ -295,12 +347,12 @@ submit a fresh instruction after checking the outcome.
 2. Read `review_note` first, then `message_text`. **`review_note` is the governing instruction and `message_text` is only a draft.** The dashboard's Approve and Request change buttons are both prompts to you; Approve differs only in that the item closes when you are done. So a note that countermands the draft wins over the draft: "send this to the other reviewer instead" means queue the retargeted action for a fresh review because the send helper binds approval to the original channel and thread, and "show me the updated draft first" means do NOT send at all, revise the text, and report back. `message_text` is what to send only when no note was given. Use your full LLM judgment.
 
    A single note can require several actions (a send, a file edit, an issue filed, a second message to someone else). Do all actions covered by the reviewed targets; queue any send to a new target for fresh review. Then report **one line per action** in your reply, each naming the surface and the target, so the review conversation shows everything the prompt caused rather than just the headline action. If the note told you not to send, say plainly that nothing was sent.
-3. Execute the action through the destination helper. For Slack, use `slack-send.py`, passing the current `approval_id` in the JSON payload. For a reviewed Slack file upload (`action_type: remote_request`, `target.action: file_upload`), run `slack-file.py send` with the same `channel_id`, `file`, `filename`, `title`, `initial_comment` and `thread_ts` that produced the approval, plus `approval_id`; any difference (including different file bytes) is refused, and the fix is a fresh `approval-spec` and review, never editing the item. Exit 3 means the file may already be posted: read the thread before doing anything else, as for an expired lease below. **If the Slack send fails because the channel is restricted (e.g., `mcp_externally_shared_channel_restricted`):** retry through `slack-send.py` with `"draft": true`, saving the draft to the actual target thread with `channel_id` + `thread_ts`; then DM the user only the permalink to that thread. Do not paste the draft text in the DM — they can open the thread, find the draft in the compose box, and send it themselves. For Telegram, use `telegram-send.py`; it always uses `SaveDraftRequest` to create a native cloud draft and never delivers a message to the recipient. `allow_send` cannot turn this draft-only surface into a send.
+3. Execute the action through the destination helper. For a `remote_request` approval with `target.action` of `channel_create`, `channel_invite`, `channel_topic`, or `channel_purpose`, read `yaas-slack-channel/SKILL.md` and run the corresponding `sq slack-channel` operation with the exact approved fields, current `quest_id`, and claimed `approval_id`. Exit 3 requires inspecting Slack before any retry. For Slack, use `slack-send.py`, passing the current `approval_id` in the JSON payload. For a reviewed Slack file upload (`action_type: remote_request`, `target.action: file_upload`), run `slack-file.py send` with the same `channel_id`, `file`, `filename`, `title`, `initial_comment` and `thread_ts` that produced the approval, plus `approval_id`; any difference (including different file bytes) is refused, and the fix is a fresh `approval-spec` and review, never editing the item. Exit 3 means the file may already be posted: read the thread before doing anything else, as for an expired lease below. **If the Slack send fails because the channel is restricted (e.g., `mcp_externally_shared_channel_restricted`):** retry through `slack-send.py` with `"draft": true`, saving the draft to the actual target thread with `channel_id` + `thread_ts`; then DM the user only the permalink to that thread. Do not paste the draft text in the DM — they can open the thread, find the draft in the compose box, and send it themselves. For Telegram, use `telegram-send.py`; it always uses `SaveDraftRequest` to create a native cloud draft and never delivers a message to the recipient. `allow_send` cannot turn this draft-only surface into a send.
 4. Mark done: `sq approval done <id> <response_ts> "<report>"`. The third argument is your per-action report (one line per action) and lands in the review conversation, so pass it whenever the instruction produced anything beyond the obvious single send. An Approve is terminal, so this closes the item even when the instruction told you not to send.
-5. Append a `slack_thread` watch to `watch.json` with `last_checked_ts = response_ts` (per §3a).
-6. Log `executed` with `log-event.py`, including `approval_id`, the exact final `message_text`, the destination response identifier or URL, and a note listing every action the instruction produced. If `review_note` suppressed the send, log `executed` with an explicit "no send: <reason>" note rather than silently closing.
+5. Channel-management actions send no message: skip this watch step and use the returned `channel_id` as the approval response identifier. Otherwise, append a `slack_thread` watch to `watch.json` with `last_checked_ts = response_ts` (per §3a).
+6. Successful `sq slack-channel` operations already log `executed` with `approval_id`; do not duplicate their event. For other actions, log `executed` with `log-event.py`, including `approval_id`, the exact final `message_text`, the destination response identifier or URL, and a note listing every action the instruction produced. If `review_note` suppressed the send, log `executed` with an explicit "no send: <reason>" note rather than silently closing.
 
-**Executing item whose lease expired.** A previous dispatch claimed this item and never closed it, so the send may or may not have landed. Do NOT resend blind. Read the target thread and look for the message. Present → close it with `approval-helper.py done <id> <response_ts>` and log `executed`. Absent → execute normally. Can't tell → log `blocked` and surface under Attention needed.
+**Executing item whose lease expired.** A previous dispatch claimed this item and never closed it, so the send may or may not have landed. Do NOT retry blindly. For channel-management approvals, inspect the channel, its privacy, membership, and topic/description as appropriate; use `yaas-slack-channel` to reconcile the exact approved operation. If uncertain, log `blocked` and surface it for review. For message sends, read the target thread and look for the message. Present → close it with `approval-helper.py done <id> <response_ts>` and log `executed`. Absent → execute normally. Can't tell → log `blocked` and surface under Attention needed.
 
 **Cancellation edge case:** `start` returns `skip:cancelled` if the user cancelled between triage's check and your dispatch — log a `note`, exit 0.
 
@@ -340,6 +392,22 @@ sq log '{"quest_id":"<qid>","event":"note","note":"<what happened>"}'
 `thread_ts`, `message_text`, `link_url`, `reason`, …) is written through unchanged,
 so record whatever the event needs. A `ts` you pass is ignored.
 
+When catching up on historical messages, copy the message's actual timestamp from
+the source into `source_event_ts` on `info_received`, `info_logged`,
+`message_received`, or `email_received`. It accepts Unix seconds (including a
+Slack message timestamp) or an ISO timestamp with an explicit timezone. For example:
+
+```bash
+sq log '{"quest_id":"<qid>","event":"info_received","source_event_ts":"2026-10-01T08:30:00+08:00","message_text":"<verbatim historical message>"}'
+```
+
+`ts` still records when Sidequestor logged it; message history and replay use the
+explicit source time for chronology. Never invent a time, use the thread parent's
+time for a later reply, or use a polling watermark as a message timestamp. Invalid
+or future source times are ignored without losing the log. Records without this
+field retain their existing chronology. Actions such as sending, drafting,
+execution, failures and dispatches continue to display at their recording time.
+
 **Send through the surface helpers so the body is logged automatically.** For any quest action, use the matching helper instead of calling the underlying client directly and then logging separately:
 
 ```bash
@@ -361,7 +429,7 @@ python3 "$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/slack-file.py" fetch '{"
 # so you can open them. Read-only. Add "any_type":true for other types; never pass an out_dir under state/.
 ```
 
-The helper sends or drafts, then appends a timeline entry carrying the exact `message_text` in one step. Slack prints `{"response_ts":...,"permalink":...}` for the follow-up `watch.json` entry (§3a); Telegram drafts print `{"draft_saved":true}`, while sends print `{"delivered":true,"message_id":"..."}`. If the operation fails nothing is logged. This makes body-capture structural rather than something you have to remember.
+The helper sends or drafts, then appends a timeline entry carrying the exact `message_text` in one step. Slack prints `{"response_ts":...,"permalink":...}` for the follow-up `watch.json` entry (§3a); Telegram drafts print `{"draft_saved":true}`, while sends print `{"delivered":true,"message_id":"..."}`. A rejected operation has no success log. Slack exit 3 records an uncertain attempt instead of `message_sent`/`draft_posted`; inspect Slack before retrying and do not create a follow-up watch until the result is confirmed. This makes body-capture structural rather than something you have to remember.
 
 **The underlying rule (why the helper matters):** the dashboard surfaces a message only when its timeline event carries a `message_text` field. A `note` summary alone shows in the full timeline but not in the Messages stream or the quest Conversation. Every outbound draft and reply event MUST therefore carry the exact body in `message_text` alongside its approval and destination identifiers. For approval-backed work, `draft_posted.message_text` preserves the exact pre-review body and the execution event preserves the exact final body. The mutable approval record is not evidence of the original draft. This applies to Reactions Fast Path replies too.
 

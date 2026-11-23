@@ -140,9 +140,13 @@ def _read_text(path: Path) -> str:
 
 def _status_line(quest: Quest) -> str:
     meta = quest.meta
+    channels = meta.get("allow_send_channels")
+    scoped = [str(c) for c in channels if isinstance(c, str)] if isinstance(channels, list) else []
+    permission = "send enabled" if meta.get("allow_send") is True else (
+        "Slack text allowed: " + ", ".join(clean(c, single_line=True) for c in scoped)
+        if scoped else "draft only")
     parts = [clean(meta.get("status") or "active", single_line=True),
-             clean(meta.get("priority") or "normal", single_line=True) + " priority",
-             "send enabled" if meta.get("allow_send") is True else "draft only"]
+             clean(meta.get("priority") or "normal", single_line=True) + " priority", permission]
     return " · ".join(parts)
 
 
@@ -302,8 +306,9 @@ def _exec_agent(workspace: Workspace, prompt: str, requested: str | None,
     if not binary:
         return 1
     environment.update(extra_env)
-    # The agent works from the workspace root, where its AGENTS.md/CLAUDE.md and `sq` live.
+    # The agent works from the workspace root, where its AGENTS.md and `sq` live.
     os.chdir(workspace.root)
+    prompt = "Read and follow workspace AGENTS.md if it exists.\n\n" + prompt
     execve(binary, [binary, prompt], environment)
     return 0  # only reached when execve is replaced in tests
 
@@ -656,7 +661,14 @@ def run_command(workspace: Workspace, command: str, args: list[str]) -> int:
         parser.add_argument("prompt", nargs="*")
     elif command == "queue":
         parser.add_argument("instruction", nargs="*")
-    values = parser.parse_args(args)
+    if command in {"ask", "create"}:
+        # Preserve normal parsing, including literal flags after --. On Python
+        # 3.11, interleaved agent flags can leave valid prompt words unconsumed.
+        values, remaining = parser.parse_known_args(args)
+        if remaining:
+            values = parser.parse_intermixed_args(args)
+    else:
+        values = parser.parse_args(args)
     if command == "terminal" and bool(values.quest_id) == values.new_quest:
         parser.error("give either QUEST_ID or --new-quest")
     as_json = command == "terminal" and values.json

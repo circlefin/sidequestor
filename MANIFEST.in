@@ -1,1 +1,7 @@
 include tests/dashboard_review_preview.cjs
+exclude install-circle.sh.in
+exclude install-circle.sh
+exclude .circle-installer.env
+
+include tests/dashboard_quest_visualizer.cjs
+include tests/dashboard_theme_branding.cjs

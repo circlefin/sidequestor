@@ -39,8 +39,31 @@ class SetupTests(unittest.TestCase):
 
             self.assertIn("SIDEQUESTOR_AGENT=claude", content)
             self.assertIn("CUSTOM_VALUE=keep-me", content)
-            self.assertIn("SIDEQUESTOR_CLAUDE_MODEL=claude-opus-4-6", content)
+            self.assertIn("SIDEQUESTOR_CLAUDE_MODEL=claude-opus-5-5", content)
             self.assertIn("SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0", content)
+
+    def test_dashboard_app_choice_is_independent_and_preserved(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            workspace.env_file.write_text(
+                "SIDEQUESTOR_AGENT=claude\nSIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+                "SIDEQUESTOR_CLAUDE_MODEL=opus\nSIDEQUESTOR_CLAUDE_EFFORT=high\n"
+                "SIDEQUESTOR_CLAUDE_PERMISSION_MODE=acceptEdits\n")
+            prompts = []
+            def choose(prompt):
+                prompts.append(prompt)
+                self.assertIn("Dashboard app", prompt)
+                return "codex"
+            provision_env(workspace, input_fn=choose, interactive=True)
+            self.assertEqual(len(prompts), 1)
+            self.assertIn("SIDEQUESTOR_OPEN_IN=codex", workspace.env_file.read_text())
+            self.assertIn("SIDEQUESTOR_AGENT=claude", workspace.env_file.read_text())
+            provision_env(workspace, input_fn=lambda prompt: self.fail("saved app was re-prompted"), interactive=True)
+            workspace.env_file.write_text(workspace.env_file.read_text().replace(
+                "SIDEQUESTOR_OPEN_IN=codex", "SIDEQUESTOR_OPEN_IN="))
+            provision_env(workspace, input_fn=choose, interactive=True)
+            self.assertEqual(len(prompts), 2)
+            self.assertIn("SIDEQUESTOR_OPEN_IN=codex", workspace.env_file.read_text())
 
     def test_init_does_not_create_backend_instruction_files(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -60,7 +83,7 @@ class SetupTests(unittest.TestCase):
             provision_env(workspace, interactive=False)
 
             content = workspace.env_file.read_text()
-            self.assertIn("SIDEQUESTOR_CODEX_MODEL=gpt-5.6-luna", content)
+            self.assertIn("SIDEQUESTOR_CODEX_MODEL=gpt-6.1-sol", content)
             self.assertIn("SIDEQUESTOR_CODEX_EFFORT=high", content)
             self.assertIn("SIDEQUESTOR_CODEX_PERMISSION_MODE=bypassPermissions", content)
 
@@ -73,7 +96,7 @@ class SetupTests(unittest.TestCase):
             )
             answers = iter(["", "", ""])
 
-            provision_env(workspace, input_fn=lambda _prompt: next(answers), interactive=True)
+            provision_env(workspace, input_fn=lambda _prompt: "" if "Dashboard app" in _prompt else next(answers), interactive=True)
 
             self.assertIn("SIDEQUESTOR_CLAUDE_PERMISSION_MODE=bypassPermissions",
                           workspace.env_file.read_text())
@@ -91,7 +114,7 @@ class SetupTests(unittest.TestCase):
                 answers = iter(["", "", ""])
                 output = StringIO()
                 with redirect_stdout(output):
-                    provision_env(workspace, input_fn=lambda _prompt: next(answers),
+                    provision_env(workspace, input_fn=lambda _prompt: "" if "Dashboard app" in _prompt else next(answers),
                                   interactive=interactive)
                 self.assertIn("without approval", output.getvalue())
                 self.assertIn("untrusted", output.getvalue())
@@ -168,7 +191,7 @@ class SetupTests(unittest.TestCase):
                  patch("sidequestor.setup.subprocess.run", side_effect=run), \
                  redirect_stdout(StringIO()) as output:
                 ready = check_worker_clis(workspace, Path("/usr/bin/python3"), agent="codex",
-                                          input_fn=lambda _prompt: next(answers))
+                                          input_fn=lambda _prompt: "" if "Dashboard app" in _prompt else next(answers))
 
             self.assertFalse(ready)
             self.assertIn("/opt/node/bin is not on", output.getvalue())
@@ -184,7 +207,7 @@ class SetupTests(unittest.TestCase):
                  patch("sidequestor.setup.subprocess.run") as run, \
                  redirect_stdout(StringIO()) as output:
                 ready = check_worker_clis(workspace, Path("/usr/bin/python3"), agent="codex",
-                                          input_fn=lambda _prompt: next(answers))
+                                          input_fn=lambda _prompt: "" if "Dashboard app" in _prompt else next(answers))
             self.assertFalse(ready)
             run.assert_not_called()
             self.assertIn("npm is unavailable", output.getvalue())
@@ -200,7 +223,7 @@ class SetupTests(unittest.TestCase):
             self.assertFalse(ready)
             self.assertIn("Cursor CLI: missing", output.getvalue())
 
-    def test_setup_checks_clis_after_slack_prompt_before_starting_jobs(self):
+    def test_setup_reauthorizes_slack_before_checking_clis_even_with_healthy_token(self):
         with tempfile.TemporaryDirectory() as raw:
             workspace = init_workspace(raw)
             workspace.env_file.write_text(
@@ -217,15 +240,53 @@ class SetupTests(unittest.TestCase):
             with patch("sidequestor.setup.sync_resources"), \
                  patch("sidequestor.setup.provision_env"), \
                  patch("sidequestor.setup.check_worker_clis", return_value=False) as check, \
+                 patch("sidequestor.setup.subprocess.run", return_value=SimpleNamespace(returncode=0)) as oauth, \
                  patch("sidequestor.setup.install_production") as install, \
                  redirect_stdout(StringIO()):
                 result = run_setup(workspace, Path("/usr/bin/python3"), input_fn=decline)
             self.assertEqual(result, 1)
-            self.assertTrue(any("Slack OAuth" in prompt for prompt in prompts))
+            self.assertFalse(any("Connect Sidequestor to Slack" in prompt for prompt in prompts))
+            oauth.assert_called_once()
+            self.assertIn("--oauth-only", oauth.call_args.args[0])
             check.assert_called_once()
             install.assert_not_called()
 
-    def test_cursor_provisioning_uses_cursor_defaults_without_foreign_knobs(self):
+    def test_setup_oauth_failure_stops_before_worker_checks_or_job_changes(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            workspace.env_file.write_text(
+                "SIDEQUESTOR_AGENT=claude\n"
+                "SIDEQUESTOR_CHECKER_CONNECTORS=slack\n"
+                "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=1\n")
+            with patch("sidequestor.setup.sync_resources"), \
+                 patch("sidequestor.setup.provision_env"), \
+                 patch("sidequestor.setup.subprocess.run", return_value=SimpleNamespace(returncode=7)) as oauth, \
+                 patch("sidequestor.setup.check_worker_clis") as check, \
+                 patch("sidequestor.setup.install_production") as install, \
+                 redirect_stdout(StringIO()):
+                result = run_setup(workspace, Path("/usr/bin/python3"))
+            self.assertEqual(result, 7)
+            oauth.assert_called_once()
+            check.assert_not_called()
+            install.assert_not_called()
+
+    def test_setup_skips_oauth_only_when_noninteractive_or_slack_disabled(self):
+        for interactive, enabled in ((False, "1"), (True, "0")):
+            with self.subTest(interactive=interactive), tempfile.TemporaryDirectory() as raw:
+                workspace = init_workspace(raw)
+                workspace.env_file.write_text(
+                    "SIDEQUESTOR_AGENT=claude\n"
+                    "SIDEQUESTOR_CHECKER_CONNECTORS=slack\n"
+                    f"SIDEQUESTOR_SLACK_CHECKERS_ENABLED={enabled}\n")
+                with patch("sidequestor.setup.sync_resources"), \
+                     patch("sidequestor.setup.provision_env"), \
+                     patch("sidequestor.setup.subprocess.run") as oauth, \
+                     patch("sidequestor.setup.check_worker_clis", return_value=False), \
+                     redirect_stdout(StringIO()):
+                    run_setup(workspace, Path("/usr/bin/python3"), interactive=interactive)
+                oauth.assert_not_called()
+
+    def test_cursor_provisioning_uses_cursor_defaults_and_permission_mode(self):
         with tempfile.TemporaryDirectory() as raw:
             workspace = init_workspace(raw)
             sync_resources(workspace)
@@ -239,28 +300,41 @@ class SetupTests(unittest.TestCase):
             content = workspace.env_file.read_text()
             self.assertNotIn("SIDEQUESTOR_CURSOR_MODEL=", content)
             self.assertNotIn("SIDEQUESTOR_CURSOR_EFFORT", content)
-            self.assertNotIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE", content)
+            self.assertIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE=bypassPermissions", content)
 
     def test_interactive_setup_accepts_cursor(self):
         with tempfile.TemporaryDirectory() as raw:
             workspace = init_workspace(raw)
             sync_resources(workspace)
             workspace.env_file.write_text("SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n")
-            answers = iter(["cursor", "sonnet-4-thinking"])
+            answers = iter(["cursor", "sonnet-4-thinking", ""])
 
-            provision_env(workspace, input_fn=lambda _prompt: next(answers), interactive=True)
+            provision_env(workspace, input_fn=lambda _prompt: "" if "Dashboard app" in _prompt else next(answers), interactive=True)
 
             content = workspace.env_file.read_text()
             self.assertIn("SIDEQUESTOR_AGENT=cursor", content)
             self.assertIn("SIDEQUESTOR_CURSOR_MODEL=sonnet-4-thinking", content)
             self.assertNotIn("SIDEQUESTOR_CURSOR_EFFORT", content)
-            self.assertNotIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE", content)
+            self.assertIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE=bypassPermissions", content)
+
+    def test_cursor_provisioning_preserves_existing_permission_mode(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = init_workspace(raw)
+            workspace.env_file.write_text(
+                "SIDEQUESTOR_AGENT=cursor\n"
+                "SIDEQUESTOR_SLACK_CHECKERS_ENABLED=0\n"
+                "SIDEQUESTOR_CURSOR_PERMISSION_MODE=default\n"
+            )
+
+            provision_env(workspace, interactive=False)
+
+            self.assertIn("SIDEQUESTOR_CURSOR_PERMISSION_MODE=default", workspace.env_file.read_text())
 
     def test_interactive_instructions_target_selected_backend_without_writing(self):
         from contextlib import redirect_stdout
         from io import StringIO
 
-        for agent, filename in (("codex", "AGENTS.md"), ("claude", "CLAUDE.md"), ("cursor", "AGENTS.md")):
+        for agent, filename in (("codex", "AGENTS.md"), ("claude", "AGENTS.md"), ("cursor", "AGENTS.md")):
             with self.subTest(agent=agent), tempfile.TemporaryDirectory() as raw:
                 workspace = init_workspace(raw)
                 output = StringIO()
@@ -268,6 +342,7 @@ class SetupTests(unittest.TestCase):
                     print_worker_instructions(agent)
 
                 self.assertIn(filename, output.getvalue())
+                self.assertNotIn("CLAUDE.md", output.getvalue())
                 self.assertIn("Before acting on a triage dispatch", output.getvalue())
                 self.assertIn("Engine-managed skills are installed", output.getvalue())
                 self.assertFalse((workspace.root / "AGENTS.md").exists())
@@ -320,9 +395,10 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(current_engine_version(workspace), ENGINE_VERSION)
             self.assertTrue((destination / "skills" / "yaas-ops" / "SKILL.md").is_file())
             for parent in ("skills", ".agents/skills", ".claude/skills"):
-                link = workspace.root / parent / "yaas-slack-file"
-                self.assertTrue(link.is_symlink())
-                self.assertTrue((link / "SKILL.md").is_file())
+                for name in ("yaas-slack-file", "yaas-slack-channel"):
+                    link = workspace.root / parent / name
+                    self.assertTrue(link.is_symlink())
+                    self.assertTrue((link / "SKILL.md").is_file())
 
     def test_sync_resources_is_idempotent_and_prunes_stale_skill_symlinks(self):
         with tempfile.TemporaryDirectory() as raw:

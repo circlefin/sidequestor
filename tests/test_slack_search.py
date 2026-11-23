@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -13,6 +14,16 @@ CHECKERS = Path(__file__).parents[1] / "src" / "sidequestor" / "runtime" / "yaas
 spec = importlib.util.spec_from_file_location("slack_utils_search", CHECKERS / "slack_utils.py")
 slack_utils = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(slack_utils)
+checker_spec = importlib.util.spec_from_file_location(
+    "slack_search_checker", CHECKERS / "slack_search.py"
+)
+slack_search = importlib.util.module_from_spec(checker_spec)
+checker_spec.loader.exec_module(slack_search)
+tick_state_spec = importlib.util.spec_from_file_location(
+    "slack_search_tick_state", CHECKERS.parent / "tick_state.py"
+)
+tick_state = importlib.util.module_from_spec(tick_state_spec)
+tick_state_spec.loader.exec_module(tick_state)
 
 
 def page(*records):
@@ -59,6 +70,107 @@ def dm_page(*records):
 
 
 class SlackSearchDrainTest(unittest.TestCase):
+    def test_checker_and_manifest_are_registered_for_user_watches(self):
+        manifest = tick_state.load_watch_manifests(CHECKERS.parent)["slack_search"]
+
+        self.assertTrue(os.access(CHECKERS / "slack_search.py", os.X_OK))
+        self.assertEqual(manifest["required"], [["query"]])
+        self.assertEqual(manifest["identity"], ["query"])
+        self.assertTrue(manifest["user_creatable"])
+        self.assertEqual(manifest["upstream"], "slack")
+
+    def run_checker(self, entry):
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", ["slack_search.py", json.dumps(entry)]):
+            with contextlib.redirect_stdout(output):
+                slack_search.main()
+        return json.loads(output.getvalue())
+
+    def test_checker_adds_a_safe_date_boundary_and_keeps_the_exact_watermark(self):
+        entry = {
+            "type": "slack_search",
+            "query": '"docs.google.com"',
+            "last_checked_ts": "1725883200.000000",
+        }
+        with mock.patch.object(
+            slack_search.slack_utils,
+            "search_messages",
+            return_value=(2, "A matching document", 1725883300, True),
+        ) as search:
+            outcome = self.run_checker(entry)
+
+        self.assertEqual(
+            search.call_args.args[1],
+            '"docs.google.com" after:2024-09-08',
+        )
+        self.assertEqual(search.call_args.args[2], 1725883200.0)
+        self.assertEqual(search.call_args.kwargs, {"content_label": "Text"})
+        self.assertEqual(outcome["outcome"], "dirty")
+        self.assertEqual(outcome["count"], 2)
+        self.assertEqual(outcome["advance_to"], "1725883300.000000")
+
+    def test_checker_allows_date_like_words_inside_quoted_phrases(self):
+        entry = {
+            "type": "slack_search",
+            "query": '"after: the launch"',
+            "last_checked_ts": "100",
+        }
+        with mock.patch.object(
+            slack_search.slack_utils,
+            "search_messages",
+            return_value=(0, "", 200, True),
+        ) as search:
+            outcome = self.run_checker(entry)
+
+        self.assertEqual(search.call_args.args[1], '"after: the launch" after:1970-01-01')
+        self.assertEqual(outcome["outcome"], "clean")
+
+    def test_checker_rejects_user_date_modifiers_without_searching(self):
+        for modifier in ("after:2026-11-10", "before:2026-11-10", "on:2026-11-10",
+                         "during:november", 'after:"2026-11-10"', 'launch "after:2020',
+                         '"x"after:2020', "launch(after:2020", "x)after:2020",
+                         "foo,after:2020", "+on:2026-11-10"):
+            with self.subTest(modifier=modifier), mock.patch.object(
+                slack_search.slack_utils, "search_messages"
+            ) as search:
+                outcome = self.run_checker({
+                    "type": "slack_search",
+                    "query": f"launch {modifier}",
+                    "last_checked_ts": "100",
+                })
+            self.assertEqual(outcome["outcome"], "misconfig")
+            search.assert_not_called()
+
+    def test_checker_rejects_empty_query(self):
+        for query in ("", "  ", None):
+            with self.subTest(query=query), mock.patch.object(
+                slack_search.slack_utils, "search_messages"
+            ) as search:
+                outcome = self.run_checker({
+                    "type": "slack_search",
+                    "query": query,
+                    "last_checked_ts": "100",
+                })
+            self.assertEqual(outcome["outcome"], "misconfig")
+            search.assert_not_called()
+
+    def test_checker_classifies_auth_and_transient_search_failures(self):
+        cases = (
+            (slack_search.slack_utils.SlackSearchAuth("missing search access"), "misconfig"),
+            (slack_search.slack_utils.SlackSearchTransient("HTTP 429"), "ratelimited"),
+        )
+        for failure, expected in cases:
+            with self.subTest(expected=expected), mock.patch.object(
+                slack_search.slack_utils, "search_messages", side_effect=failure
+            ):
+                outcome = self.run_checker({
+                    "type": "slack_search",
+                    "query": "budget",
+                    "last_checked_ts": "100",
+                })
+            self.assertEqual(outcome["outcome"], expected)
+            self.assertFalse(outcome["complete"])
+
     def test_dm_checker_passes_its_channel_id_to_search(self):
         sys.path.insert(0, str(CHECKERS))
         try:

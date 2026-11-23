@@ -3,6 +3,9 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -126,10 +129,12 @@ class SlackSendAuthorizationTest(unittest.TestCase):
              approvals: list[dict] | None = None,
              response_channel_id: str = "C123",
              response_body: str | None = None,
+             response_error: Exception | None = None,
              stale_reason: str | None = None,
              queue_for_review=None) -> tuple[int, str, str, MagicMock]:
         stdout, stderr = io.StringIO(), io.StringIO()
-        call = MagicMock(return_value=response_body or json.dumps({
+        call = MagicMock(side_effect=response_error,
+                         return_value=response_body if response_body is not None else json.dumps({
             "message_context": {
                 "message_ts": "2.000001",
                 "channel_id": response_channel_id,
@@ -153,6 +158,26 @@ class SlackSendAuthorizationTest(unittest.TestCase):
             except SystemExit as exc:
                 result = int(exc.code)
         return int(result or 0), stdout.getvalue(), stderr.getvalue(), call
+
+    def test_send_channel_grant_authorizes_only_the_listed_channel(self) -> None:
+        quest_id = self._quest(allow_send=False)
+        meta_path = self.root / "state" / "quests" / "active" / quest_id / "meta.json"
+        meta = json.loads(meta_path.read_text())
+        meta["allow_send_channels"] = ["D0OWNER"]
+        meta_path.write_text(json.dumps(meta))
+
+        code, _, error, call = self._run({
+            "quest_id": quest_id, "channel_id": "D0OWNER", "message": "hello",
+        }, target=quest_id, response_channel_id="D0OWNER")
+        self.assertEqual(code, 0, error)
+        call.assert_called_once()
+
+        code, _, error, call = self._run({
+            "quest_id": quest_id, "channel_id": "C0ELSEWHERE", "message": "hello",
+        }, target=quest_id)
+        self.assertNotEqual(code, 0)
+        self.assertIn("allow_send false", error)
+        call.assert_not_called()
 
     def test_stale_held_draft_preserves_the_original_message_body(self) -> None:
         quest_id = self._quest(allow_send=True)
@@ -265,10 +290,8 @@ class SlackSendAuthorizationTest(unittest.TestCase):
         self.assertEqual(code, 0, error)
         self.assertEqual(json.loads(output)["channel_id"], "C0123456789")
 
-    def test_malformed_response_fields_do_not_strand_a_delivered_message(self) -> None:
-        """The parse runs AFTER Slack has the message. A non-string field must not raise
-        past the JSONDecodeError handler, or the send lands with nothing logged and a
-        retry duplicates it."""
+    def test_malformed_receipt_records_an_uncertain_attempt_without_success(self) -> None:
+        """A write may have landed, so preserve its body but never claim delivery."""
         quest_id = self._quest(allow_send=True)
         code, output, error, _ = self._run({
             "quest_id": quest_id,
@@ -279,11 +302,17 @@ class SlackSendAuthorizationTest(unittest.TestCase):
             "message_link": None,
         }))
 
-        self.assertEqual(code, 0, error)
+        self.assertEqual(code, 3, error)
+        self.assertTrue(json.loads(output)["delivery_uncertain"])
         self.assertEqual(json.loads(output)["channel_id"], "C0123456789")
         timeline = (self.root / "state" / "quests" / "active" / quest_id
                     / "timeline.ndjson")
-        self.assertEqual(json.loads(timeline.read_text())["message_text"], "hello")
+        entry = json.loads(timeline.read_text())
+        self.assertEqual(entry["message_text"], "hello")
+        self.assertEqual(entry["event"], "message_delivery_uncertain")
+        self.assertEqual(entry["blocker_kind"], "delivery_uncertain")
+        self.assertFalse(entry["succeeded"])
+        self.assertNotIn("response_ts", entry)
 
     def test_a_non_object_json_response_is_survivable(self) -> None:
         """Valid JSON that is not an object (a bare list or string) must not raise past the
@@ -295,12 +324,224 @@ class SlackSendAuthorizationTest(unittest.TestCase):
             "message": "hello",
         }, target=quest_id, response_body=json.dumps(["unexpected", "shape"]))
 
-        self.assertEqual(code, 0, error)
+        self.assertEqual(code, 3, error)
+        self.assertTrue(json.loads(output)["delivery_uncertain"])
         self.assertEqual(json.loads(output)["channel_id"], "C0123456789")
         self.assertEqual(json.loads(output)["response_ts"], "")
         timeline = (self.root / "state" / "quests" / "active" / quest_id
                     / "timeline.ndjson")
-        self.assertEqual(json.loads(timeline.read_text())["message_text"], "hello")
+        entry = json.loads(timeline.read_text())
+        self.assertEqual(entry["message_text"], "hello")
+        self.assertEqual(entry["event"], "message_delivery_uncertain")
+
+    def test_unconfirmed_receipts_never_return_follow_up_coordinates(self) -> None:
+        quest_id = self._quest(allow_send=True)
+        timeline = self.root / "state/quests/active" / quest_id / "timeline.ndjson"
+        for body in ("{}", "", "not JSON", "null", json.dumps({
+                "message_context": {"message_ts": "not-a-timestamp", "channel_id": "D456"},
+                "message_link": "https://example.test/message"})):
+            with self.subTest(body=body):
+                timeline.write_text("")
+                code, output, error, call = self._run({
+                    "quest_id": quest_id, "channel_id": "C123", "message": "attempted body",
+                }, target=quest_id, response_body=body)
+                self.assertEqual(code, 3, error)
+                self.assertIn("inspect Slack before retrying", error)
+                result = json.loads(output)
+                self.assertTrue(result["delivery_uncertain"])
+                self.assertEqual(result["response_ts"], "")
+                self.assertEqual(result["permalink"], "")
+                entry = json.loads(timeline.read_text())
+                self.assertEqual(entry["event"], "message_delivery_uncertain")
+                self.assertEqual(entry["message_text"], "attempted body")
+                self.assertNotIn("response_ts", entry)
+                self.assertNotIn("permalink", entry)
+                call.assert_called_once()
+
+    def test_explicit_rejections_do_not_log_a_sent_message_or_draft(self) -> None:
+        quest_id = self._quest(allow_send=True)
+        timeline = self.root / "state/quests/active" / quest_id / "timeline.ndjson"
+        for draft in (False, True):
+            for response in ({"delivered": False}, {"ok": False},
+                             {"isError": True}, {"error": "not_authed"},
+                             {"adapter": "isolated"}):
+                if draft and response == {"delivered": False}:
+                    continue  # A saved draft intentionally has not been delivered.
+                with self.subTest(draft=draft, response=response):
+                    code, output, error, call = self._run({
+                        "quest_id": quest_id, "channel_id": "C123", "message": "hello",
+                        "draft": draft,
+                    }, target=quest_id, response_body=json.dumps(response))
+                    self.assertEqual(code, 2, error)
+                    self.assertEqual(output, "")
+                    self.assertEqual(timeline.read_text(), "")
+                    if isinstance(response.get("error"), str):
+                        self.assertIn(response["error"], error)
+                    call.assert_called_once()
+
+    def test_sent_timestamp_confirms_delivery_without_optional_permalink(self) -> None:
+        quest_id = self._quest(allow_send=True)
+        code, output, error, call = self._run({
+            "quest_id": quest_id, "channel_id": "C123", "message": "hello",
+        }, target=quest_id, response_body=json.dumps({
+            "message_context": {"message_ts": "2.000001", "channel_id": "C123"},
+        }))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(json.loads(output)["response_ts"], "2.000001")
+        self.assertNotIn("delivery_uncertain", json.loads(output))
+        entry = json.loads((self.root / "state/quests/active" / quest_id / "timeline.ndjson").read_text())
+        self.assertEqual(entry["event"], "message_sent")
+        call.assert_called_once()
+
+    def test_saved_draft_need_not_claim_delivery(self) -> None:
+        quest_id = self._quest(allow_send=False)
+        code, output, error, call = self._run({
+            "quest_id": quest_id, "channel_id": "C123", "message": "draft body",
+            "draft": True,
+        }, target=quest_id, response_body=json.dumps({
+            "delivered": False, "channel_link": "https://example.test/channel",
+        }))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(json.loads(output)["response_ts"], "")
+        entry = json.loads((self.root / "state/quests/active" / quest_id / "timeline.ndjson").read_text())
+        self.assertEqual(entry["event"], "draft_posted")
+        call.assert_called_once()
+
+    def test_missing_receipts_after_timeout_are_uncertain_without_resending(self) -> None:
+        quest_id = self._quest(allow_send=True)
+        timeline = self.root / "state/quests/active" / quest_id / "timeline.ndjson"
+        for error in (self.mod.ReceiptUnavailable("no receipt"),
+                      subprocess.TimeoutExpired("mcp-call", 60)):
+            with self.subTest(error=type(error).__name__):
+                timeline.write_text("")
+                code, output, stderr, call = self._run({
+                    "quest_id": quest_id, "channel_id": "C123", "message": "hello",
+                    "thread_ts": "1.000001",
+                }, target=quest_id, response_error=error)
+                self.assertEqual(code, 3, stderr)
+                self.assertTrue(json.loads(output)["delivery_uncertain"])
+                entry = json.loads(timeline.read_text())
+                self.assertEqual(entry["event"], "message_delivery_uncertain")
+                self.assertEqual(entry["thread_ts"], "1.000001")
+                self.assertNotIn("response_ts", entry)
+                call.assert_called_once()
+
+    def test_unconfirmed_draft_is_not_logged_as_posted(self) -> None:
+        quest_id = self._quest(allow_send=False)
+        code, output, error, call = self._run({
+            "quest_id": quest_id, "channel_id": "C123", "message": "draft body",
+            "draft": True,
+        }, target=quest_id, response_body="{}")
+        self.assertEqual(code, 3, error)
+        self.assertTrue(json.loads(output)["delivery_uncertain"])
+        entry = json.loads((self.root / "state/quests/active" / quest_id / "timeline.ndjson").read_text())
+        self.assertEqual(entry["event"], "draft_delivery_uncertain")
+        self.assertNotIn("response_ts", entry)
+        call.assert_called_once()
+
+    def test_uncertainty_audit_failure_does_not_turn_into_a_retryable_send(self) -> None:
+        quest_id = self._quest(allow_send=True)
+        with patch.object(self.mod, "append_timeline", side_effect=OSError("read only")):
+            code, output, error, call = self._run({
+                "quest_id": quest_id, "channel_id": "C123", "message": "hello",
+            }, target=quest_id, response_body="{}")
+        self.assertEqual(code, 3, error)
+        self.assertTrue(json.loads(output)["delivery_uncertain"])
+        self.assertFalse(json.loads(output)["logged"])
+        self.assertIn("could not record uncertain delivery", error)
+        call.assert_called_once()
+
+    def test_reaction_uncertainty_is_recorded_without_message_coordinates(self) -> None:
+        with patch("inbox.try_log_inbox", return_value=True) as audit:
+            code, output, error, call = self._run({
+                "channel_id": "C123", "message": "reaction reply", "thread_ts": "1.000001",
+            }, target="reactions", response_body="{}")
+        self.assertEqual(code, 3, error)
+        self.assertTrue(json.loads(output)["logged"])
+        audit.assert_called_once()
+        entry = audit.call_args.args[2]
+        self.assertEqual(entry["event"], "message_delivery_uncertain")
+        self.assertFalse(entry["succeeded"])
+        self.assertNotIn("response_ts", entry)
+        self.assertNotIn("permalink", entry)
+        call.assert_called_once()
+
+    def test_uncertainty_diagnostics_redact_credentials_before_auditing(self) -> None:
+        quest_id = self._quest(allow_send=True)
+        code, output, error, call = self._run({
+            "quest_id": quest_id, "channel_id": "C123", "message": "attempted body",
+        }, target=quest_id, response_body="unexpected receipt Bearer private-value token=private-token")
+        self.assertEqual(code, 3, error)
+        entry = json.loads((self.root / "state/quests/active" / quest_id / "timeline.ndjson").read_text())
+        for rendered in (output, error, entry["note"]):
+            self.assertNotIn("private-value", rendered)
+            self.assertNotIn("private-token", rendered)
+            self.assertIn("[redacted]", rendered)
+        self.assertEqual(entry["message_text"], "attempted body")
+        call.assert_called_once()
+
+    def test_real_cli_exits_and_receipts_preserve_failure_and_uncertainty(self) -> None:
+        """Exercise the entrypoint and adapter return codes, not only main()."""
+        quest_id = self._quest(allow_send=True)
+        timeline = self.root / "state/quests/active" / quest_id / "timeline.ndjson"
+        stub = self.root / "mcp-stub.py"
+        stub.write_text(f"#!{sys.executable}\n"
+                        "import os, sys\n"
+                        "sys.stdout.write(os.environ.get('TEST_MCP_BODY', ''))\n"
+                        "sys.stderr.write(os.environ.get('TEST_MCP_ERROR', ''))\n"
+                        "raise SystemExit(int(os.environ.get('TEST_MCP_EXIT', '0')))\n")
+        stub.chmod(0o700)
+        success = json.dumps({"message_context": {"message_ts": "2.000001", "channel_id": "C123"}})
+        cases = [
+            ("{}", 0, "", 3, "message_delivery_uncertain"),
+            ('{"ok":false}', 0, "", 2, None),
+            ("Error: mcp_externally_shared_channel_restricted", 0, "", 2, None),
+            ("Error: restricted_action_read_only_channel", 0, "", 2, None),
+            ("Error: restricted_action_thread_only_channel", 0, "", 2, None),
+            ("Error: restricted_action_non_threadable_channel", 0, "", 2, None),
+            ("not_authed", 0, "", 2, None),
+            ("unrecognized receipt", 0, "", 3, "message_delivery_uncertain"),
+            ("", 0, "", 3, "message_delivery_uncertain"),
+            ("", 4, "TimeoutError: timed out", 3, "message_delivery_uncertain"),
+            ("", 4, "slack mcp (HTTP 503): service_unavailable", 3, "message_delivery_uncertain"),
+            ("", 4, "slack mcp (HTTP 429): ratelimited", 2, None),
+            ("", 4, "ERROR: macOS Keychain is locked during Slack credential read", 2, None),
+            ("", 4, "ERROR: macOS Keychain timed out during Slack credential write", 2, None),
+            ("", 4, "ERROR: Slack credential refresh failed in transport", 2, None),
+            ("", 4, "ERROR: Slack credential refresh returned HTTP 503", 2, None),
+            ("", 1, "missing_scope", 2, None),
+            ("", 3, "invalid arguments", 2, None),
+            (success, 0, "", 0, "message_sent"),
+        ]
+        for body, adapter_exit, adapter_error, expected_exit, event in cases:
+            with self.subTest(body=body, adapter_exit=adapter_exit, adapter_error=adapter_error):
+                timeline.write_text("")
+                environment = dict(os.environ, HOME=str(self.root),
+                                   SIDEQUESTOR_WORKSPACE=str(self.root), MCP_CALL=str(stub),
+                                   SIDEQUESTOR_CONFIG_HOME=str(self.root / "config"),
+                                   YAAS_CONFIG_HOME=str(self.root / "config"),
+                                   SIDEQUESTOR_DISPATCH_TARGET=quest_id,
+                                   TEST_MCP_BODY=body, TEST_MCP_EXIT=str(adapter_exit),
+                                   TEST_MCP_ERROR=adapter_error)
+                result = subprocess.run([sys.executable, str(SLACK_SEND), json.dumps({
+                    "quest_id": quest_id, "channel_id": "C123", "message": "CLI fixture",
+                })], env=environment, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, expected_exit, result.stdout + result.stderr)
+                if event:
+                    entry = json.loads(timeline.read_text())
+                    self.assertEqual(entry["event"], event)
+                else:
+                    self.assertEqual(timeline.read_text(), "")
+                if expected_exit == 3:
+                    self.assertTrue(json.loads(result.stdout)["delivery_uncertain"])
+                    self.assertIn("inspect Slack before retrying", result.stderr)
+                    self.assertNotIn("response_ts", entry)
+                    self.assertNotIn("permalink", entry)
+                    self.assertEqual(entry["blocker_kind"], "delivery_uncertain")
+                elif expected_exit == 2:
+                    self.assertEqual(result.stdout, "")
+                if "mcp_externally_shared_channel_restricted" in body:
+                    self.assertIn("mcp_externally_shared_channel_restricted", result.stderr)
 
     def test_unusable_response_channel_does_not_replace_the_requested_one(self) -> None:
         """A response value only wins if it is itself a conversation id; otherwise the
@@ -489,12 +730,25 @@ class SlackSendAuthorizationTest(unittest.TestCase):
         call.assert_not_called()
 
     def test_reactions_dispatch_preserves_unscoped_send(self) -> None:
-        code, _, error, call = self._run({
+        code, output, error, call = self._run({
             "channel_id": "C123",
             "thread_ts": "1.000001",
             "message": "reaction response",
         }, target="reactions")
         self.assertEqual(code, 0, error)
+        call.assert_called_once()
+        self.assertTrue(json.loads(output)["logged"])
+        timeline = self.root / "state/quests/active/quest-inbox/timeline.ndjson"
+        self.assertEqual(json.loads(timeline.read_text())["message_text"], "reaction response")
+
+    def test_reaction_history_failure_does_not_fail_or_repeat_a_successful_send(self) -> None:
+        with patch("inbox.log_inbox", side_effect=OSError("disk unavailable")):
+            code, output, error, call = self._run({
+                "channel_id": "C123", "thread_ts": "1.000001", "message": "reaction response",
+            }, target="reactions")
+        self.assertEqual(code, 0, error)
+        self.assertFalse(json.loads(output)["logged"])
+        self.assertIn("do not repeat", error)
         call.assert_called_once()
 
     def test_draft_cannot_escape_its_dispatch_quest(self) -> None:

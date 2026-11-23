@@ -70,7 +70,8 @@ def _load_workspace_env(environment: dict[str, str], workspace: Workspace) -> di
     return environment
 
 
-def _environment(workspace: Workspace, extra_env: dict[str, str] | None = None) -> dict[str, str]:
+def _environment(workspace: Workspace, extra_env: dict[str, str] | None = None,
+                 *, load_dotenv: bool = True) -> dict[str, str]:
     environment = dict(os.environ)
     # Runtime scripts call bare `python3` and `sq`. An activated virtualenv used to put
     # this installation first; uv and pipx installs are never activated.
@@ -92,7 +93,8 @@ def _environment(workspace: Workspace, extra_env: dict[str, str] | None = None) 
         "SIDEQUESTOR_COMMIT": info["commit_full"],
         "SIDEQUESTOR_REF": info["ref"],
     })
-    _load_workspace_env(environment, workspace)
+    if load_dotenv:
+        _load_workspace_env(environment, workspace)
     runtime_python = str(RUNTIME_ROOT / "yaas-triage")
     current_pythonpath = environment.get("PYTHONPATH", "")
     environment["PYTHONPATH"] = (
@@ -131,7 +133,12 @@ def run_native(
     result = subprocess.run(
         command,
         cwd=workspace.root,
-        env=_environment(workspace, extra_env),
+        # These services reload configuration themselves. Baking .env into their
+        # inherited environment would shadow every later edit or deletion.
+        env=_environment(workspace, extra_env, load_dotenv=relative not in {
+            'yaas-triage/triage-loop.sh', 'yaas-triage/ops/heartbeat-loop.sh',
+            'yaas-triage/ops/dashboard-server.py',
+        }),
         timeout=timeout,
     )
     return result.returncode

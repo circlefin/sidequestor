@@ -19,12 +19,37 @@
 
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 
 
 SLACK_READ = re.compile(r"slack(?:\.|__)[^\s\"']*(?:read|search)", re.IGNORECASE)
-SHELL_SLACK_READ = re.compile(r"mcp-call\.sh\s+slack_(?:read|search)", re.IGNORECASE)
+def is_shell_slack_read(command):
+    if not isinstance(command, str) or any(c in command for c in ("\n", "\r", "$", "`", "#")):
+        return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    redirects = {">", ">>", "<", "<<", "<<<", "<>", ">&", "<&", "&>", "&>>", ">|"}
+    # shlex groups adjacent operators (e.g. ");", "|&"). Only simple
+    # foreground invocations and redirections provide an unambiguous exit status.
+    for token in tokens:
+        if token and all(c in ";&|()<>" for c in token) and token not in redirects:
+            return False
+    for index, token in enumerate(tokens[:-1]):
+        if Path(token).name != "mcp-call.sh" or not re.match(r"slack_(?:read|search)", tokens[index + 1], re.I):
+            continue
+        prefix = tokens[:index]
+        if prefix in ([], ["bash"], ["sh"], ["exec"], ["exec", "bash"], ["exec", "sh"]):
+            return True
+    return False
+
+
 TOOL_ERROR = re.compile(
     r"no such tool|tool[_ -]?not[_ -]?found|needs authentication|failed to connect|"
     r"mcp[^\n]*(?:unavailable|not exposed)",
@@ -81,9 +106,14 @@ def shell_read_succeeded(command, stdout, is_background=False):
     The wrapper emits Slack's text payload, not the surrounding JSON-RPC envelope. Its exit
     code already carries the mechanical auth/transport/API verdict from surfaces/client.py.
     """
-    if is_background or not command or not SHELL_SLACK_READ.search(command):
+    if is_background or not command or not is_shell_slack_read(command):
         return False
-    out = (stdout or "").strip()
+    if isinstance(stdout, list):
+        stdout = "\n".join(v.get("text", "") for v in stdout
+                           if isinstance(v, dict) and isinstance(v.get("text"), str))
+    if not isinstance(stdout, str):
+        return False
+    out = stdout.strip()
     if not out or failed(out):
         return False
     return True
@@ -106,7 +136,7 @@ def cursor_shell_read_succeeded(event):
 
 
 def has_successful_slack_read(path):
-    pending_claude_calls = set()
+    pending_claude_calls = {}
     for raw in path.read_text(errors="replace").splitlines():
         try:
             event = json.loads(raw)
@@ -138,21 +168,108 @@ def has_successful_slack_read(path):
         for block in blocks(message.get("content")):
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "tool_use" and is_slack_tool(block.get("name")):
-                pending_claude_calls.add(block.get("id"))
+            if block.get("type") == "tool_use":
+                if is_slack_tool(block.get("name")):
+                    pending_claude_calls[block.get("id")] = None
+                elif block.get("name") == "Bash":
+                    args = block.get("input") or {}
+                    command = args.get("command", "")
+                    if is_shell_slack_read(command) and not args.get("run_in_background"):
+                        pending_claude_calls[block.get("id")] = command
             if block.get("type") != "tool_result" or block.get("tool_use_id") not in pending_claude_calls:
                 continue
-            if not block.get("is_error", False) and not failed(block.get("content", "")):
+            if block.get("is_error", False) or failed(block.get("content", "")):
+                continue
+            command = pending_claude_calls[block.get("tool_use_id")]
+            if command is None:
+                return True
+            result = event.get("tool_use_result") or {}
+            if not isinstance(result, dict) or result.get("interrupted") or result.get("backgroundTaskId"):
+                continue
+            if result.get("exitCode", 0) != 0:
+                continue
+            if shell_read_succeeded(command, result.get("stdout", block.get("content", ""))):
+                return True
+    return False
+
+
+def has_failed_slack_access(path):
+    """Require a real failed read plus access/transport evidence, not message text.
+
+    A handled missing/deleted thread is not an access outage. Nor is a successful
+    read whose messages happen to discuss authentication or connection errors.
+    """
+    access_error = re.compile(
+        r"invalid_auth|not_authed|token_revoked|account_inactive|missing_scope|"
+        r"ratelimited|rate.limit|needs authentication|failed to connect|"
+        r"authorization must be completed again|rejected the long-lived credential|macOS Keychain|"
+        r"timed? ?out|timeout|connection (?:refused|reset)|network|socket|"
+        r"HTTP[ :]+(?:401|403|429|500|502|503|504)|service_unavailable", re.I)
+    pending = {}
+    for raw in path.read_text(errors="replace").splitlines():
+        try:
+            event = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        item = event.get("item") or {}
+        if isinstance(item, dict):
+            if (item.get("type") == "command_execution" and is_shell_slack_read(item.get("command"))
+                    and item.get("exit_code") in (1, 4)):
+                return True
+            if (item.get("type") == "mcp_tool_call" and is_slack_tool(item.get("tool"))
+                    and (item.get("error") or item.get("status") == "failed")
+                    and access_error.search(json.dumps(item.get("error")))):
+                return True
+        tool_call = event.get("tool_call") or {}
+        shell = tool_call.get("shellToolCall") if isinstance(tool_call, dict) else None
+        if isinstance(shell, dict):
+            args, result = shell.get("args") or {}, shell.get("result") or {}
+            failure = result.get("failure") if isinstance(result, dict) else None
+            if (isinstance(args, dict) and isinstance(result, dict)
+                    and is_shell_slack_read(args.get("command")) and failure is not None
+                    and ((isinstance(failure, dict) and failure.get("exitCode") in (1, 4))
+                         or access_error.search(json.dumps(failure)))):
+                return True
+        message = event.get("message") or {}
+        if not isinstance(message, dict):
+            continue
+        for block in blocks(message.get("content")):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                args = block.get("input") or {}
+                if is_slack_tool(block.get("name")):
+                    pending[block.get("id")] = "native"
+                elif (block.get("name") == "Bash" and isinstance(args, dict)
+                      and not args.get("run_in_background") and is_shell_slack_read(args.get("command"))):
+                    pending[block.get("id")] = "shell"
+            if block.get("type") != "tool_result" or block.get("tool_use_id") not in pending:
+                continue
+            result = event.get("tool_use_result") or {}
+            result = result if isinstance(result, dict) else {}
+            if pending[block["tool_use_id"]] == "shell" and result.get("exitCode") in (1, 4):
+                return True
+            # Observed Claude Code Bash failures use a string tool_use_result
+            # and an is_error content beginning "Exit code N", not exitCode.
+            content = block.get("content")
+            if (pending[block["tool_use_id"]] == "shell" and block.get("is_error")
+                    and isinstance(content, str)
+                    and re.match(r"\s*(?:Error:\s*)?Exit code [14]\b", content)):
+                return True
+            if block.get("is_error") and access_error.search(json.dumps(block.get("content"))):
                 return True
     return False
 
 
 def main():
-    if len(sys.argv) != 2:
-        print(f"usage: {Path(sys.argv[0]).name} <worker.ndjson>", file=sys.stderr)
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--failed-access"):
+        print(f"usage: {Path(sys.argv[0]).name} <worker.ndjson> [--failed-access]", file=sys.stderr)
         return 2
     path = Path(sys.argv[1])
-    return 0 if path.is_file() and has_successful_slack_read(path) else 1
+    check = has_failed_slack_access if len(sys.argv) == 3 else has_successful_slack_read
+    return 0 if path.is_file() and check(path) else 1
 
 
 if __name__ == "__main__":

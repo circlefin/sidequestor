@@ -55,10 +55,13 @@ sys.path.insert(0, str(_HERE))
 import tick_state
 import tick_check
 import tick_dispatch
+import system_health
+import reaction_lifecycle
 from reaction_config import load_reaction_emojis
 
 BOOTSTRAP_ITEM_ID = "sidequestor-bootstrap"
 BOOTSTRAP_ITEM_TYPE = "sidequestor_bootstrap"
+UNREADABLE_MANIFEST_ITEM_ID = "<unreadable-manifest>"
 LEGACY_BOOTSTRAP_REASON = (
     "Run the operator's initial request once, then wait for follow-up instructions."
 )
@@ -361,6 +364,9 @@ def check_quest(t, qid):
     for entry in order:
         wid = entry.get("watch_id")
         wtype = entry.get("type", "unknown")
+        if wtype == "health_issue":
+            # These are evaluated once, after current check/recovery evidence is collected.
+            continue
         # health for this watch: in_backoff (next_retry_ts still ahead) + consecutive_errors.
         hrec = t.checker_health_json.get(wid) if wid else None
         health = None
@@ -446,7 +452,7 @@ def check_quest(t, qid):
             continue
         if v == tick_check.BACKOFF:
             rows.append({"qid": qid, "status": "backoff", "watch_id": wid,
-                              "type": wtype, "reason": reason})
+                              "type": wtype, "reason": reason, "checked_error": bool(verdict.get("error"))})
             had_skip = True
             if verdict.get("error"):
                 t.run(t.py(t.helper("ledger", "checker-health.py"), "fail", wid, reason))
@@ -462,8 +468,11 @@ def check_quest(t, qid):
         advance_to = verdict.get("advance_to")
         complete = verdict.get("complete", True)
         if v == tick_check.DIRTY:
-            rows.append({"qid": qid, "status": "dirty", "watch_id": wid, "type": wtype,
-                              "advance_to": advance_to, "complete": complete, "reason": reason})
+            row = {"qid": qid, "status": "dirty", "watch_id": wid, "type": wtype,
+                   "advance_to": advance_to, "complete": complete, "reason": reason}
+            if wtype == "slack_search":
+                row["last_checked_ts"] = entry.get("last_checked_ts")
+            rows.append(row)
             had_dirty = True
         else:  # CLEAN
             rows.append({"qid": qid, "status": "ok", "watch_id": wid, "type": wtype,
@@ -673,6 +682,15 @@ def run_tick(t):
     # tick start stamp (health-monitor watches started-vs-completed)
     t._bump_state(tick_started_utc=t.now_utc)
 
+    cp = t.run(t.py(t.helper("ledger", "approval-helper.py"), "ensure-inbox"))
+    if cp.returncode != 0:
+        t.log(f"INBOX RECOVERY FAILED — {(cp.stderr or '').strip()[:300]}")
+    for check in (system_health.sync_updates, system_health.preflight):
+        try:
+            check(t)
+        except Exception as exc:
+            t.log(f"SYSTEM REVIEW SYNC FAILED [{check.__name__}] — {exc}")
+
     # Dashboard instructions are written to the approval ledger immediately, even
     # while a previous tick owns the global lock. Arm their watches only now, under
     # this tick's lock, so no concurrent watermark/housekeeping write can erase an
@@ -695,6 +713,13 @@ def run_tick(t):
         t.slog("Run OK — offline, tick skipped (will retry).")
         t._bump_state(**{"runs_offline+": 1})
         return 0
+
+    if t.slack_checkers_enabled:
+        try:
+            reaction_lifecycle.Lifecycle(t.repo_root, t.env).recover()
+            reaction_lifecycle.kick(t.repo_root, t.env)
+        except Exception as exc:
+            t.log(f"REACTION STATUS RECOVERY FAILED — {type(exc).__name__}: {exc}")
 
     quest_dirs = sorted(d for d in t.quests_dir.iterdir()
                         if d.is_dir()) if t.quests_dir.is_dir() else []
@@ -760,14 +785,12 @@ def run_tick(t):
     for qd in quest_dirs:
         qid = qd.name
         if qid in unreadable:
-            t.results.append({"qid": qid, "status": "skip",
-                              "reason": "watch_id migration failed; watermark held"})
+            t.results.append({"qid": qid, "status": "misconfig",
+                              "reason": "watch.json missing or invalid; watch IDs could not be ensured; watermark held"})
         elif qid in bootstrap_quests:
             t.results.append(bootstrap_result(t, qid))
         else:
             t.results.extend(computed.get(qid, []))
-
-    analyze(t)
 
     # ── Global reaction sweep ───────────────────────────────────────────────────
     # Reactions use the same local Slack adapter as slack_* checkers. When that adapter
@@ -789,6 +812,9 @@ def run_tick(t):
                   f"this cycle (exit {cp.returncode}{': ' + detail[:200] if detail else ''})")
             t.event({"event": "gate_reactions_checker_failed",
                      "exit_code": cp.returncode, "detail": detail[:500]})
+            t.reaction_check_error = detail[:500] or f"Reaction checker exited {cp.returncode}"
+        else:
+            t.reaction_check_ok = True
         if "REACTIONS_TRUNCATED=1" in react_out:
             t.log("REACTIONS TRUNCATED — the emoji search hit its page cap; older reacted messages were not seen.")
             t.event({"event": "gate_watch_backlog", "quest": "reactions",
@@ -796,6 +822,13 @@ def run_tick(t):
         if t.pending_reactions.exists():
             t.reactions_dirty = True
             t.log(f"DIRTY: reactions — pending in {t.pending_reactions}")
+
+    harness_problem = None
+    try:
+        harness_problem = system_health.collect(t)
+    except Exception as exc:
+        t.log(f"HEALTH REVIEW SYNC FAILED — {exc}")
+    analyze(t)
 
     # ── Advance clean watch watermarks ──────────────────────────────────────────
     clean_by_quest = {}
@@ -835,6 +868,10 @@ def run_tick(t):
                          or (r["status"] == "skip" and r.get("ratelimited"))
                      ]})
     housekeep(t, quest_dirs, skip_quests=activity_write_failures)
+
+    if harness_problem:
+        t.log(f"HARNESS UNAVAILABLE — {harness_problem}; review recovery steps in Inbox.")
+        return 0
 
     # ── Decide: idle? ────────────────────────────────────────────────────────────
     if dirty_count == 0 and not t.reactions_dirty:
@@ -882,7 +919,12 @@ def run_tick(t):
         targets_json = kept
 
     # ── Dispatch ──────────────────────────────────────────────────────────────────
-    return dispatch_loop(t, dispatch_targets, targets_json)
+    rc = dispatch_loop(t, dispatch_targets, targets_json)
+    # Commits can recreate a counter for a watch housekeep retired earlier in this tick, or
+    # the worker may have closed a quest; sweep again so the tick ends with no orphans.
+    prune_unacked(t, sorted(d for d in t.quests_dir.iterdir() if d.is_dir())
+                  if t.quests_dir.is_dir() else [])
+    return rc
 
 
 def analyze(t):
@@ -900,7 +942,9 @@ def analyze(t):
                 t.dirty_quests.append(qid)
             t.dirty_watches.append({"quest_id": qid, "watch_id": r["watch_id"], "type": r["type"],
                                     "checker_outcome": "dirty", "advance_to": r.get("advance_to"),
-                                    "complete": r.get("complete") is not False})
+                                    "complete": r.get("complete") is not False,
+                                    **({"last_checked_ts": r.get("last_checked_ts")}
+                                       if r["type"] == "slack_search" else {})})
             t.log(f"DIRTY: {qid} — {r.get('reason','')}")
         elif status == "hold":
             if qid not in t.skipped_quests:
@@ -997,7 +1041,83 @@ def housekeep(t, quest_dirs, skip_quests=None):
                t.env.get("YAAS_MANIFEST_RETAIN_DAYS", "7")))
     t.run(t.py(t.helper("ledger", "checker-health.py"), "prune",
                t.env.get("YAAS_CHECKER_HEALTH_RETAIN_DAYS", "30")))
+    t.run(t.py(t.helper("ledger", "checker-health.py"), "prune-inactive"))
+    prune_unacked(t, quest_dirs)
     _prune_worker_logs(t)
+
+
+def _live_unacked_items(t, quest_dir):
+    """Item IDs in one active quest that may legitimately own a no-progress counter, or None
+    when that cannot be established. None means 'prune nothing here', never 'prune all'."""
+    watch_doc = t._read_json(quest_dir / "watch.json", None)
+    meta = t._read_json(quest_dir / "meta.json", None)
+    if not isinstance(watch_doc, dict) or not isinstance(meta, dict):
+        return None
+    watches = watch_doc.get("watches")
+    if not isinstance(watches, list):
+        return None
+    live = {UNREADABLE_MANIFEST_ITEM_ID}
+    for w in watches:
+        wid = w.get("watch_id") if isinstance(w, dict) else None
+        if not isinstance(wid, str) or not wid:
+            return None   # an entry we cannot name could be the owner of any counter
+        live.add(wid)
+    if meta.get("sidequestor_bootstrap") is True:
+        live.add(BOOTSTRAP_ITEM_ID)
+    return live
+
+
+def prune_unacked(t, quest_dirs):
+    """Drop no-progress counters whose watch no longer exists.
+
+    Counters are removed only when the watch makes progress, so a watch retired by housekeep,
+    replaced by hand, or left behind when its quest closed kept its record forever — and the
+    dashboard kept rendering it as a watch "backing off" that nothing would ever retry. Runs
+    every online tick after housekeep and again after dispatch commits, so it also clears
+    records left by older versions.
+
+    Fails closed: an unreadable counter file, watch.json, or meta.json prunes nothing for that
+    scope. Reaction counters (commit_reactions owns them) and scopes that are not a known quest
+    are left alone.
+    """
+    if not t.unacked_file.exists():
+        return
+    counts = t._read_json(t.unacked_file, None)
+    if not isinstance(counts, dict):
+        return
+    active = {qd.name: _live_unacked_items(t, qd) for qd in quest_dirs}
+    quests_root = t.quests_dir.parent
+    try:
+        closed = {qid for bucket in ("completed", "archived")
+                  for qid in ({d.name for d in (quests_root / bucket).iterdir() if d.is_dir()}
+                              if (quests_root / bucket).is_dir() else set())}
+    except OSError:
+        return
+    dropped = []
+    for key in list(counts):
+        qid, sep, item = key.partition("|")
+        if not sep:
+            continue
+        if qid in active:
+            live = active[qid]
+            if live is None or item in live:
+                continue
+        elif qid not in closed:
+            continue
+        counts.pop(key)
+        dropped.append(key)
+    if not dropped:
+        return
+    try:
+        tmp = str(t.unacked_file) + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(counts, f, indent=2)
+        os.replace(tmp, t.unacked_file)
+    except OSError:
+        return
+    t.log(f"PRUNED {len(dropped)} no-progress counter(s) for retired watches: "
+          + ", ".join(dropped[:10]) + (" …" if len(dropped) > 10 else ""))
+    t.event({"event": "unacked_pruned", "keys": dropped})
 
 
 def _prune_worker_logs(t):
@@ -1026,6 +1146,17 @@ def _prune_worker_logs(t):
 def slack_health_ok(t):
     cp = t.run([t.mcp_call, "slack_search_public_and_private",
                 '{"query":"yaas-health-ping","limit":1}'])
+    if cp.returncode == 0:
+        # This existing per-tick probe is also recovery evidence for a cached block.
+        try:
+            from sidequestor.worker_readiness import save_state
+            from sidequestor.workspace import load_workspace
+            from sidequestor.job_path import find_agent
+            binary = find_agent(t.agent, t.env.get("PATH", os.environ.get("PATH", "")))
+            if binary:
+                save_state(load_workspace(t.repo_root), t.agent, binary, t.env, scope="slack")
+        except (ImportError, SystemExit, OSError):
+            pass
     return cp.returncode == 0
 
 
@@ -1057,7 +1188,8 @@ _RUN_DISCIPLINE = ("watch.json is not editable: append with yaas-triage/ledger/a
 
 def _dispatch_read_instructions(skill: str) -> str:
     """Return the invariant startup instructions for every worker dispatch."""
-    return ("First read .yaas/engine/current/OPERATING.md, then load and follow "
+    return ("First read .yaas/engine/current/OPERATING.md. Read and follow workspace "
+            "AGENTS.md if it exists, then load and follow "
             f".yaas/engine/current/skills/{skill}/SKILL.md. ")
 
 
@@ -1150,6 +1282,28 @@ def dispatch_loop(t, dispatch_targets, targets_json):
                      "dispatches_1h": recent})
             continue
 
+        # Positive credential failures pause work before any manifest or backoff changes.
+        try:
+            from sidequestor.worker_readiness import preflight
+            from sidequestor.workspace import load_workspace
+            from sidequestor.job_path import find_agent
+            worker_workspace = load_workspace(t.repo_root)
+            worker_binary = find_agent(t.agent, t.env.get("PATH", os.environ.get("PATH", "")))
+            if worker_binary:
+                reason = preflight(worker_workspace, t.agent, worker_binary, t.env,
+                                   needs_slack=tick_dispatch.needs_slack(target, dirty_watches_json))
+                if reason:
+                    t.log(f"WORKER PAUSED [{target}] — {reason}")
+                    t.event({"event": "gate_worker_not_ready", "target": target, "reason": reason})
+                    try:
+                        system_health.dependency_paused(t, target)
+                    except Exception as exc:
+                        t.log(f"DISPATCH HEALTH SYNC FAILED — {exc}")
+                    continue
+        except (ImportError, SystemExit):
+            pass  # Standalone runtime fixtures and legacy non-package workspaces.
+        except OSError as exc:
+            t.log(f"WORKER READINESS CHECK UNAVAILABLE — {type(exc).__name__}")
         timeout = min(t.worker_timeout, remaining)
         dispatch_one(t, target, timeout, dirty_watches_json)
         t.dispatched += 1
@@ -1162,6 +1316,10 @@ def dispatch_loop(t, dispatch_targets, targets_json):
             commit_reactions(t)
         else:
             commit_quest(t, target, dirty_watches_json)
+        try:
+            system_health.dispatch_result(t, target)
+        except Exception as exc:
+            t.log(f"DISPATCH HEALTH SYNC FAILED — {exc}")
 
     # persist rotation cursor
     if isinstance(st, dict) and t.triage_state.exists():
@@ -1182,13 +1340,22 @@ def dispatch_loop(t, dispatch_targets, targets_json):
 
 
 def _quest_dispatch_items(target, dirty_watches_json):
-    return [{"item_id": watch["watch_id"], "type": watch["type"],
-             "complete": watch.get("complete") is not False}
-            for watch in dirty_watches_json if watch["quest_id"] == target]
+    items = []
+    for watch in dirty_watches_json:
+        if watch["quest_id"] != target:
+            continue
+        item = {"item_id": watch["watch_id"], "type": watch["type"],
+                "complete": watch.get("complete") is not False}
+        if watch["type"] == "slack_search":
+            item["last_checked_ts"] = watch.get("last_checked_ts")
+            item["advance_to"] = watch.get("advance_to")
+        items.append(item)
+    return items
 
 
 def dispatch_one(t, target, timeout, dirty_watches_json):
     """One agent invocation for one target. Sets t.dispatch_* for the commit step."""
+    t.dispatch_dependency_blocked = False
     t.dispatch_exit = 1
     t.dispatch_wall = 0
     t.dispatch_slack_read_ok = 0
@@ -1202,15 +1369,35 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
     )
     if target == "reactions":
         kind = "reactions"
+        try:
+            reaction_lifecycle.Lifecycle(t.repo_root, t.env).prune_pending()
+        except Exception as exc:
+            t.log(f"REACTION RECEIPTS UNREADABLE — dispatch held: {type(exc).__name__}")
+            t.dispatch_exit = 8
+            return
         pend = t._read_json(t.pending_reactions, {}) or {}
         items = [{"item_id": f"{emoji}:{ts}", "type": emoji}
                  for emoji, tss in pend.items() for ts in tss]
+        try:
+            with reaction_lifecycle.Lifecycle(t.repo_root, t.env).locked() as receipts:
+                items = [item for item in items if not (
+                    receipts.get(item['item_id'], {}).get('final') or
+                    receipts.get(item['item_id'], {}).get('review_pending'))]
+        except Exception as exc:
+            t.log(f"REACTION RECEIPTS UNREADABLE — dispatch held: {type(exc).__name__}")
+            t.dispatch_exit = 8
+            return
+        sources = reaction_lifecycle.read(t.repo_root / 'state/reaction-sources.json', {})
+        for item in items:
+            source = sources.get(item['item_id'], {})
+            if isinstance(source, dict) and source.get('channel_id'):
+                item['channel_id'] = source['channel_id']
     else:
         kind = "quest"
         items = _quest_dispatch_items(target, dirty_watches_json)
     if not items:
         t.log(f"DISPATCH SKIPPED: {target} — no dispatchable items in manifest")
-        t.dispatch_exit = 8
+        t.dispatch_exit = 0 if target == 'reactions' else 8
         return
     # Compact separators to match the original shell orchestrator's `jq -c` output — the manifest JSON is embedded in
     # the worker prompt verbatim, and consumers (and the worker's own eyes) expect the compact
@@ -1226,6 +1413,20 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
 
     if target != "reactions":
         t.run(t.py(t.helper("ledger", "watch-guard.py"), "snapshot", target))
+    else:
+        # Persist pickup before starting the harness. A non-LLM delivery process
+        # applies emojis concurrently with harness startup, not after thread reads.
+        try:
+            lifecycle = reaction_lifecycle.Lifecycle(t.repo_root, t.env)
+            for item in items:
+                lifecycle.request(item, 'loading')
+            reaction_lifecycle.kick(t.repo_root, t.env)
+        except Exception as exc:
+            t.log(f"REACTION STATUS FAILED — {type(exc).__name__}: {exc}")
+            # An unreadable completion receipt must not become permission to
+            # repeat an external action. Hold this dispatch for health diagnosis.
+            t.dispatch_exit = 8
+            return
 
     ack_block = (f"ACK LEDGER (REQUIRED): this dispatch has run_id {t.dispatch_run_id}. Before "
                  f"you exit, close EVERY item listed above with exactly one call each: python3 "
@@ -1264,11 +1465,18 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
             "test to repository, issue, email-query, and other external watches whenever the "
             "source supports it. Only after verification, use `sq watch` to append at least one "
             "exact durable watch. If a live read is missing, forbidden, mismatched, or cannot be "
-            "performed, block instead of installing the watch. A legitimate one-shot request may "
+            "performed, do not install that external watch; queue a setup manual review instead. A legitimate one-shot request may "
             "instead be completed and moved out of "
             "state/quests/active according to OPERATING.md. If exact setup is ambiguous or a "
-            "dependency is unavailable, record a blocked timeline event and ack the bootstrap "
-            "item as blocked; do not install a speculative watch. Do not edit or remove the "
+            "dependency is unavailable, reuse any existing nonterminal quest_setup review and re-arm "
+            "its approval watch with `sq approval arm <id>`. Otherwise finish creation by calling `sq approval write` with "
+            "action_type `remote_request`, target {action: quest_setup}, the quest ID and title, "
+            "and message_text describing the concrete setup to resume after the operator answers. "
+            "Put all uncertainties and specific questions in context and risk_reason. This atomically "
+            "arms an approval watch; verify it exists, then ack the bootstrap item handled. "
+            "Keep allow_send false and install only verified external watches. The quest must appear "
+            "under manual review rather than remain initialising or require a terminal. If writing "
+            "the review itself fails, record the failure and ack blocked. Do not install a speculative watch. Do not edit or remove the "
             "sidequestor_bootstrap field yourself; triage clears it only after verifying a real "
             "watch or terminal quest state. The workspace has no yaas-triage/ source directory; "
             f"for helper commands use the packaged runtime path.{runtime_hint} "
@@ -1284,6 +1492,21 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
                   f"use the packaged runtime path.{runtime_hint} "
                   f"{ack_block} {_RUN_DISCIPLINE}")
 
+    prompt += (
+        f" Enabled checker connectors (SIDEQUESTOR_CHECKER_CONNECTORS): "
+        f"{','.join(sorted(t.cfg.checker_connectors)) or 'none'}. Slack checks are "
+        f"{'enabled' if t.cfg.checker_enabled('slack_thread') else 'disabled'}. "
+        "Create watches only for enabled connectors; do not use --allow-dormant unless the operator "
+        "explicitly requests inactive setup. Honor AGENTS.md source-routing overrides. "
+        "For watch setup when email is disabled, do not install an email watch or attempt gws to verify one; "
+        "an operator-provided local feed can instead be read through a scheduled quest."
+    )
+    health_watches = {w.get("watch_id"): w for w in system_health.quest_watches(t.quests_dir / target)}
+    health_instructions = [system_health.diagnosis(t.repo_root, health_watches.get(i["item_id"], {}))
+                           for i in items if i.get("type") == "health_issue"]
+    if any(health_instructions):
+        prompt += "\n" + "\n".join(s for s in health_instructions if s)
+
     run_agent = t.env.get("YAAS_RUN_AGENT", t.helper("dispatch", "run-agent.py"))
     cp = t.run(t.py(run_agent, "--prompt", prompt,
                     "--label", target, "--timeout", str(timeout),
@@ -1298,34 +1521,100 @@ def dispatch_one(t, target, timeout, dirty_watches_json):
         t.dispatch_exit = int(agent_json.get("exit", 1))
     except (TypeError, ValueError):
         t.dispatch_exit = 1
+    t.dispatch_launch_failed = (not agent_json and cp.returncode != 0) or t.dispatch_exit in (126, 127)
     try:
         t.dispatch_wall = int(agent_json.get("wall_sec", 0))
     except (TypeError, ValueError):
         t.dispatch_wall = 0
     worker_ndjson = agent_json.get("ndjson", "") or ""
     worker_log = agent_json.get("log", "")
+    t.dispatch_worker_log = worker_log
     t.log(f"Worker [{target}] exited with {t.dispatch_exit} in {t.dispatch_wall}s (readable: {worker_log})")
 
     t.dispatch_last_error = ""
+    if t.dispatch_exit != 0:
+        t.dispatch_last_error = system_health.safe_error((cp.stderr or "").strip()[-1500:])
     if t.dispatch_exit != 0 and worker_ndjson and os.path.exists(worker_ndjson):
-        t.dispatch_last_error = _worker_error_text(worker_ndjson)
+        t.dispatch_last_error = system_health.safe_error(_worker_error_text(worker_ndjson)) or t.dispatch_last_error
         if t.dispatch_last_error:
             t.log(f"WORKER ERROR [{target}] — {t.dispatch_last_error}")
             t.event({"event": "gate_dispatch_error", "targets": [target],
                      "exit_code": t.dispatch_exit, "error": t.dispatch_last_error})
 
-    # Slack infra-failure guard (Claude backend: read init .mcp_servers status).
-    if t.dispatch_exit == 0 and worker_ndjson and os.path.exists(worker_ndjson):
-        status = _slack_init_status(worker_ndjson)
-        if status in ("failed", "needs-auth") and tick_dispatch.needs_slack(target, dirty_watches_json):
-            t.log(f"INFRA FAILURE [{target}] — Slack MCP status='{status}'. Forcing exit 9.")
-            t.dispatch_exit = 9
+    if t.dispatch_exit != 0 and t.dispatch_last_error:
+        try:
+            from sidequestor.worker_readiness import invocation_failure
+            from sidequestor.workspace import load_workspace
+            from sidequestor.job_path import find_agent
+            binary = find_agent(t.agent, t.env.get("PATH", os.environ.get("PATH", "")))
+            if binary and invocation_failure(load_workspace(t.repo_root), t.agent, binary,
+                                             t.env, t.dispatch_last_error,
+                                             slack="slack" in t.dispatch_last_error.lower(),
+                                             trusted_cli=bool(worker_ndjson and Path(worker_ndjson).is_file() and Path(worker_ndjson).stat().st_size == 0)):
+                t.dispatch_dependency_blocked = True
+        except (ImportError, SystemExit, OSError):
+            pass
 
-    if t.dispatch_exit == 0:
+    # Prefer observed reads over the native MCP connection's startup status.
+    if t.dispatch_exit == 0 and worker_ndjson and os.path.exists(worker_ndjson):
         cpe = t.run(t.py(t.helper("dispatch", "slack-read-health.py"), worker_ndjson))
         if cpe.returncode == 0:
             t.dispatch_slack_read_ok = 1
             t.log(f"WORKER SLACK READ OK [{target}]: successful Slack read observed")
+
+        # A schedule can use Slack without a dirty Slack watch. Hold only work
+        # that actually attempted a read and has no successful read evidence;
+        # an unused native MCP server's startup status is not a dependency.
+        scheduled = any(w.get("quest_id") == target and w.get("type") == "schedule"
+                        for w in dirty_watches_json)
+        if scheduled and t.dispatch_slack_read_ok != 1:
+            attempted = t.run(t.py(t.helper("dispatch", "slack-read-health.py"),
+                                   worker_ndjson, "--failed-access"))
+            if attempted.returncode == 0:
+                # Existing read evidence is conservative and can reject text that
+                # merely quotes an error. Verify the supported helper before
+                # changing the outcome, as the native-MCP guard below does.
+                helper_ready = False
+                try:
+                    from sidequestor.worker_readiness import verify_slack_access
+                    from sidequestor.workspace import load_workspace
+                    from sidequestor.job_path import find_agent
+                    binary = find_agent(t.agent, t.env.get("PATH", os.environ.get("PATH", "")))
+                    if binary:
+                        helper_ready = verify_slack_access(
+                            load_workspace(t.repo_root), t.agent, binary, t.env) is None
+                except (ImportError, SystemExit, OSError):
+                    pass
+                if not helper_ready:
+                    t.dispatch_exit = 9
+                    # Keep bounded no-progress backoff: schedule-only dispatches
+                    # do not consult saved Slack readiness before their next run.
+                    t.dispatch_last_error = "Scheduled work attempted Slack reads but none were verified and the supported helper is unavailable; check Slack access."
+                    t.log(f"INCOMPLETE SLACK READ [{target}] — {t.dispatch_last_error}")
+
+    if worker_ndjson and os.path.exists(worker_ndjson):
+        status = _slack_init_status(worker_ndjson)
+        relevant = tick_dispatch.needs_slack(target, dirty_watches_json)
+        if relevant and (status in ("needs-auth", "failed") or t.dispatch_slack_read_ok == 1):
+            helper_ready = t.dispatch_slack_read_ok == 1
+            try:
+                from sidequestor.worker_readiness import verify_slack_access
+                from sidequestor.workspace import load_workspace
+                from sidequestor.job_path import find_agent
+                binary = find_agent(t.agent, t.env.get("PATH", os.environ.get("PATH", "")))
+                if binary:
+                    helper_ready = verify_slack_access(
+                        load_workspace(t.repo_root), t.agent, binary, t.env,
+                        read_succeeded=helper_ready) is None
+            except (ImportError, SystemExit, OSError):
+                pass
+            if status in ("needs-auth", "failed"):
+                if helper_ready:
+                    t.log(f"SLACK NATIVE MCP [{target}] status='{status}'; supported helper verified")
+                else:
+                    t.log(f"INFRA FAILURE [{target}] — native Slack MCP status='{status}' and helper read not verified. Forcing exit 9.")
+                    t.dispatch_exit = 9
+                    t.dispatch_dependency_blocked = True
 
     # Token accounting — emits gate_dispatch_tokens (the event snapshot reads for `dispatches`).
     if t.agent == "claude":
@@ -1438,6 +1727,8 @@ def _return_approval_for_review(t, approval_id, reason):
 def _record_progress(t, scope, committed_ids):
     """Bump the no-progress counter for every manifest item NOT in committed_ids; clear it for
     those that were. Mirrors the original shell orchestrator _record_progress."""
+    if getattr(t, "dispatch_dependency_blocked", False):
+        return  # Preserve existing receipts and counters; sq setup verifies recovery.
     manifest_path = t.manifest_dir / f"dispatch-{t.dispatch_run_id}.json"
     counts = t._read_json(t.unacked_file, {}) or {}
     if not isinstance(counts, dict):
@@ -1470,8 +1761,10 @@ def _record_progress(t, scope, committed_ids):
             for watch_id in approval_ids:
                 counts.pop(f"{scope}|{watch_id}", None)
         else:
-            bump(f"{scope}|<unreadable-manifest>")
+            bump(f"{scope}|{UNREADABLE_MANIFEST_ITEM_ID}")
     else:
+        # A readable manifest means the condition that recorded this sentinel has cleared.
+        counts.pop(f"{scope}|{UNREADABLE_MANIFEST_ITEM_ID}", None)
         committed = set(committed_ids or [])
         for item in manifest.get("items", []):
             iid = item.get("item_id", "")
@@ -1532,6 +1825,11 @@ def mark_recovered_if_blocked(t, qid, source, note, run_start_utc):
     except (IndexError, ValueError, OSError):
         return
     if rec.get("event") != "blocked":
+        return
+    # A later successful read proves access recovered, not whether an earlier
+    # write landed. Only explicit delivery reconciliation can clear this blocker.
+    if (rec.get("blocker_kind") == "delivery_uncertain"
+            or rec.get("delivery_status") == "uncertain"):
         return
     # Never let this dispatch's own evidence clear a blocker created during the same dispatch.
     try:
@@ -1691,6 +1989,19 @@ def commit_quest(t, qid, dirty_watches_json):
 
 
 def commit_reactions(t):
+    # Worker exit is not a reliable business receipt: terminal per-item acks
+    # survive a later worker failure, and their status updates still need delivery.
+    lifecycle = reaction_lifecycle.Lifecycle(t.repo_root, t.env)
+    try:
+        lifecycle.recover()
+        lifecycle.prune_pending()
+        manifest = t._read_json(t.manifest_dir / f"dispatch-{t.dispatch_run_id}.json", {}) or {}
+        for item in manifest.get('items', []):
+            if not item.get('acked_utc'):
+                lifecycle.request(item, 'blocked', reason='Worker stopped without an outcome receipt.')
+        reaction_lifecycle.kick(t.repo_root, t.env)
+    except Exception as exc:
+        t.log(f"REACTION STATUS FAILED — {type(exc).__name__}: {exc}")
     if t.dispatch_exit not in (0, 124):
         t.log(f"WORKER FAILURE [reactions] — exit {t.dispatch_exit}; pending_reactions.json left intact.")
         t.event({"event": "gate_dispatch_failure", "exit_code": t.dispatch_exit,
@@ -1714,7 +2025,8 @@ def commit_reactions(t):
     state_files = {t.reaction_emojis["process"]: "claude_intensifies_replied.json",
                    t.reaction_emojis["draft"]: "writing_hand_replied.json",
                    t.reaction_emojis["save"]: "floppy_disk_saved.json",
-                   t.reaction_emojis["adopt"]: "incoming_envelope_adopted.json"}
+                   t.reaction_emojis["adopt"]: "incoming_envelope_adopted.json",
+                   t.reaction_emojis["expand"]: "magic_wand_expanded.json"}
     state_dir = t.repo_root / "state"
     parked, remaining = [], {}
     status_by_iid = {i.get("item_id"): i.get("status", "pending")
@@ -1734,6 +2046,17 @@ def commit_reactions(t):
             rec["type"] = emoji
             counts[key] = rec
             if rec["count"] >= promote and emoji in state_files:
+                # Persist a real Inbox review before removing the retry item. The
+                # spinner becomes an honest blocked marker, never a fake success.
+                try:
+                    lifecycle.review({'item_id': iid},
+                        f"Stopped after {rec['count']} dispatches without progress. Last status: "
+                        f"{status_by_iid.get(iid, 'pending')}. Reconcile before retrying.")
+                    reaction_lifecycle.kick(t.repo_root, t.env)
+                except Exception as exc:
+                    t.log(f"REACTION REVIEW FAILED [{iid}] — {type(exc).__name__}: {exc}")
+                    keep.append(ts)
+                    continue
                 sp = state_dir / state_files[emoji]
                 sdata = t._read_json(sp, {}) or {}
                 notes = sdata.setdefault("skipped_notes", {})
@@ -1785,7 +2108,7 @@ def main():
     # ── Config + knob validation (Config raises BadEnvKnob → exit 2 like the shell) ──
     try:
         t = Tick()
-    except tick_state.BadEnvKnob as e:
+    except (tick_state.BadEnvKnob, ValueError, SystemExit) as e:
         # Best-effort run-log; repo paths are derivable without the knobs.
         try:
             root = tick_state._repo_root(_HERE)
@@ -1794,7 +2117,11 @@ def main():
                                     "bad": str(e)}) + "\n")
         except Exception:
             pass
-        sys.stderr.write(f"BAD ENV KNOB — {e} must be numeric. Refusing to run.\n")
+        try:
+            system_health.configuration_failure(str(e))
+        except Exception as exc:
+            sys.stderr.write(f"Could not queue configuration review: {exc}\n")
+        sys.stderr.write(f"INVALID CONFIGURATION — {e}. Refusing to run.\n")
         return 2
 
     os.makedirs(t.log_dir, exist_ok=True)
@@ -1822,6 +2149,7 @@ def main():
             pass
         t.log(f"SKIP — previous triage still running (holder pid: {holder}). Will retry next tick.")
         t.event({"event": "gate_skip_locked", "holder_pid": holder})
+        lock_fd.close()
         return 0
     try:
         holderfile.write_text(str(os.getpid()))
@@ -1833,9 +2161,33 @@ def main():
     # EXIT`. Only a SIGKILL/hang skips it, which is exactly the "started but never completed"
     # state health-monitor is built to catch.
     try:
-        return run_tick(t)
+        code = run_tick(t)
+        if t.results:
+            try:
+                health = system_health.Health(t.repo_root, t.env)
+                if "tick-crash" in health.sources:
+                    health.observe("tick-crash", healthy=True)
+                    health.reconcile(can_launch=system_health.harness_problem(t.env) is None)
+            except Exception as exc:
+                t.log(f"TICK RECOVERY SYNC FAILED — {exc}")
+        return code
+    except Exception as exc:
+        detail = system_health.safe_error(f"{type(exc).__name__}: {exc}")
+        t.log(f"TICK ABORTED — {detail}")
+        try:
+            health = system_health.Health(t.repo_root, t.env)
+            health.helper("ensure-inbox")
+            health.observe("tick-crash", kind="config", reason=f"Sidequestor tick aborted: {detail}",
+                           diagnosis_unavailable=True)
+            health.reconcile(can_launch=False)
+        except Exception as review_error:
+            t.log(f"COULD NOT QUEUE TICK FAILURE — {review_error}")
+        return 1
     finally:
-        _on_exit(t)
+        try:
+            _on_exit(t)
+        finally:
+            lock_fd.close()
 
 
 def _on_exit(t):

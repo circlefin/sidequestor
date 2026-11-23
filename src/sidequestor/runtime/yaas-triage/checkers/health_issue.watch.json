@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "required": [["issue_id"]],
+  "identity": ["issue_id"],
+  "checker_example": {"type": "health_issue", "issue_id": "not-an-issue", "last_checked_ts": "1"},
+  "open_loop": false,
+  "user_creatable": false,
+  "upstream": null
+}

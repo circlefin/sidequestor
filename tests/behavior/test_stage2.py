@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import fcntl
 import os
 import subprocess
@@ -253,8 +254,14 @@ class Stage2BehaviorTest(unittest.TestCase):
         self.assertEqual(len(plists), 2)
         self.assertFalse(any("heartbeat" in path.name for path in plists))
 
+        try:
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+        except PermissionError:
+            self.skipTest("sandbox does not permit localhost socket binding")
         process = subprocess.Popen(
-            [str(YAAS), "--workspace", str(self.workspace), "dashboard", "serve", "0"],
+            [str(YAAS), "--workspace", str(self.workspace), "dashboard", "serve", str(port)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

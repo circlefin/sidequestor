@@ -29,6 +29,7 @@ import os
 import sys
 import time
 from datetime import datetime
+from email.utils import getaddresses, parseaddr
 from pathlib import Path
 
 
@@ -50,6 +51,27 @@ def _repo_root(start):
 
 
 REPO_ROOT = _repo_root(__file__)
+
+
+def _sender_audience(target):
+    sender = os.environ.get("SIDEQUESTOR_FROM_EMAIL") or os.environ.get("YAAS_FROM_EMAIL") or ""
+    _, sender_address = parseaddr(sender)
+    if not sender_address:
+        return False
+
+    def values(value):
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, dict):
+            return sum((values(v) for v in value.values()), [])
+        if isinstance(value, list):
+            return sum((values(v) for v in value), [])
+        return []
+    audience = values(target.get('to')) + values(target.get('cc')) + values(target.get('recipients'))
+    for _, address in getaddresses(audience):
+        if address.casefold() == sender_address.casefold():
+            return True
+    return False
 
 
 def attachment_record(path):
@@ -82,7 +104,13 @@ def _claimed_approval(quest_id, approval_id, target, message_text):
             return False
         if item.get("status") != "executing" or item.get("action_type") != "remote_request":
             return False
-        if item.get("target") != target or (item.get("message_text") or "") != message_text:
+        approved_target = dict(item.get("target") or {})
+        if approved_target.get("report_kind") == "package_bug":
+            # These fields describe provenance, not an email destination. Only the
+            # health producer can create this shape; recipient/body remain exact.
+            for key in ("system_key", "report_kind", "installed_version"):
+                approved_target.pop(key, None)
+        if approved_target != target or (item.get("message_text") or "") != message_text:
             return False
         expiry = datetime.fromisoformat(str(item["lease_expires_at"]).replace("Z", "+00:00"))
         return expiry.timestamp() >= time.time()
@@ -112,8 +140,12 @@ def send_policy_reason(quest_id, approval_id, target, message_text):
             raise ValueError("invalid quest policy file")
     except Exception as exc:
         return f"cannot read quest policy for {quest_id}: {exc}"
-    if not meta.get("allow_send") and not _claimed_approval(
+    # An explicitly supplied approval is always binding, even for a normally
+    # send-enabled quest. A bad/unreadable report claim must never fail open.
+    sender_recipient = _sender_audience(target)
+    if (not meta.get("allow_send") or approval_id or sender_recipient) and not _claimed_approval(
             quest_id, approval_id, target, message_text):
-        return (f"quest {quest_id} has allow_send false and no claimed approval for this exact "
-                "email; run with --approval-spec and queue it for review")
+        return (f"quest {quest_id} has allow_send false or the email targets its configured sender "
+                "address, and no claimed approval for this exact email; run with --approval-spec "
+                "and queue it for review")
     return None

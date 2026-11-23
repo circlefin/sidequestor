@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "required": [
+    [
+      "block_id"
+    ]
+  ],
+  "identity": [
+    "block_id",
+    "subpage_depth",
+    "include_subpage_content",
+    "include_subpage_comments"
+  ],
+  "checker_example": {
+    "type": "notion_comments",
+    "block_id": "00000000-0000-0000-0000-000000000001",
+    "last_checked_ts": "1"
+  },
+  "open_loop": true,
+  "user_creatable": true,
+  "upstream": "notion"
+}

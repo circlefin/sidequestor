@@ -43,6 +43,7 @@ import os
 import json
 import subprocess
 import time
+import math
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CRON_DUE = os.path.join(SCRIPT_DIR, "cron-due.py")
@@ -53,16 +54,22 @@ import result
 
 def main():
     entry = json.loads(sys.argv[1])
+    # The tick's start can precede a slot that becomes due while other checkers
+    # run. Evaluate against, and return, one checker-owned boundary so an ack
+    # cannot bookmark a time before the slot this check actually handled.
+    # Match result.emit's microsecond truncation BEFORE cron's datetime parser
+    # can round a sub-microsecond value into the next scheduled minute.
+    checked_through = math.floor(time.time() * 1_000_000) / 1_000_000
 
     # One-shot schedule: fire once when next_fire_ts has passed.
     if "cron" not in entry and "next_fire_ts" in entry:
         next_fire = float(entry["next_fire_ts"])
-        now = time.time()
+        now = checked_through
         last = float(entry.get("last_checked_ts") or 0)
         if now >= next_fire and last < next_fire:
-            result.counted(1, "one-shot schedule due")
+            result.counted(1, "one-shot schedule due", advance_to=checked_through)
         else:
-            result.counted(0, "")
+            result.counted(0, "", advance_to=checked_through)
         return
 
     cron_expr = str(entry["cron"])
@@ -70,18 +77,21 @@ def main():
     since = str(entry.get("last_checked_ts", ""))
 
     r = subprocess.run(
-        ["python3", CRON_DUE, cron_expr, tz, since],
+        ["python3", CRON_DUE, cron_expr, tz, since, str(checked_through)],
         capture_output=True, text=True, timeout=10,
     )
     if r.returncode == 2:
         result.misconfig(f"bad cron expression: {r.stderr.strip()}")
         return
+    if r.returncode != 0 or r.stdout.strip() not in ("due", "not-due"):
+        result.error("cron evaluation failed; schedule watermark held")
+        return
 
     cron_verdict = r.stdout.strip()
     if cron_verdict == "due":
-        result.counted(1, f"schedule due '{cron_expr} ({tz})'")
+        result.counted(1, f"schedule due '{cron_expr} ({tz})'", advance_to=checked_through)
     else:
-        result.counted(0, "")
+        result.counted(0, "", advance_to=checked_through)
 
 
 if __name__ == "__main__":

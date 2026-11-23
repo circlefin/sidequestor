@@ -67,6 +67,29 @@ internal channel message
 
 
 class SlackMessageParserTest(unittest.TestCase):
+    def test_blank_workflow_parent_is_skipped_but_counts_coverage(self):
+        text = THREAD.replace('From: Guangmian Kung <g@example.com> (U1)', 'From: ', 1)
+        got = slack_utils._parse_thread_page(text, 100.5)
+        self.assertEqual(got, (2, 'second reply', 102.0, True, 3))
+        parent = text.split('=== THREAD REPLIES', 1)[0]
+        self.assertEqual(slack_utils._parse_thread_page(parent, 0), (0, '', 0.0, False, 1))
+
+    def test_blank_author_remains_invalid_for_replies_and_included_parent(self):
+        text = THREAD.replace('From: Guangmian Kung <g@example.com> (U1)', 'From: ')
+        with self.assertRaisesRegex(ValueError, 'incomplete slack thread response record'):
+            slack_utils._parse_thread_page(text, 100.5)
+        with self.assertRaisesRegex(ValueError, 'incomplete slack thread response record'):
+            slack_utils._parse_thread_page(text, 100.5, until=100.75)
+        with self.assertRaisesRegex(ValueError, 'incomplete slack thread response record'):
+            slack_utils._parse_thread_page(text, 0, include_parent=True)
+
+    def test_excluded_parent_still_requires_exactly_one_timestamp(self):
+        parent = THREAD.split('=== THREAD REPLIES', 1)[0]
+        for text in (parent.replace('Message TS: 100.000000', 'Message TS: broken'),
+                     parent + '\nMessage TS: 101.000000\n'):
+            with self.assertRaises(ValueError):
+                slack_utils._parse_thread_page(text, 0)
+
     def test_external_channel_author_is_counted_and_filterable(self):
         got = slack_utils.parse_slack_messages(MIXED_CHANNEL, 100.0, ["UEXT3"])
         self.assertEqual(got, (1, "external channel message"))
@@ -239,6 +262,86 @@ class SlackThreadHandoffCheckerTest(unittest.TestCase):
         self.assertEqual(result["outcome"], "dirty")
         self.assertEqual(result["count"], 1)
         self.assertEqual(result["advance_to"], "100.000000")
+
+
+
+
+
+class SlackThreadCommandFailureTest(unittest.TestCase):
+    def check(self, exit_code=2, stdout="", stderr=""):
+        with tempfile.TemporaryDirectory(prefix="sidequestor-thread-error-") as folder:
+            mcp = Path(folder) / "mcp-call"
+            mcp.write_text("#!" + sys.executable + "\n"
+                           "import json, os, sys\n"
+                           "r = json.loads(os.environ['TEST_MCP_RESPONSE'])\n"
+                           "sys.stdout.write(r['stdout'])\n"
+                           "sys.stderr.write(r['stderr'])\n"
+                           "sys.exit(r['code'])\n")
+            mcp.chmod(0o755)
+            watch = {"type": "slack_thread", "channel_id": "C123TEST", "thread_ts": "100.000000", "last_checked_ts": "100.000000"}
+            response = subprocess.run(
+                [sys.executable, str(CHECKERS / 'slack_thread.py'), json.dumps(watch)],
+                env={**os.environ, 'MCP_CALL': str(mcp), 'TEST_MCP_RESPONSE': json.dumps({'code': exit_code, 'stdout': stdout, 'stderr': stderr})},
+                text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(response.returncode, 0, response.stderr)
+            self.assertEqual(len(response.stdout.splitlines()), 1)
+            return json.loads(response.stdout)
+
+    def assert_failed_without_advancing(self, result):
+        self.assertEqual(result['outcome'], 'error')
+        self.assertFalse(result['complete'])
+        self.assertNotIn('advance_to', result)
+        self.assertLessEqual(len(result['reason']), 300)
+
+    def test_exit_two_retains_real_stderr_error(self):
+        result = self.check(stderr='ERROR: ValueError: unexpected MCP response envelope\n')
+        self.assert_failed_without_advancing(result)
+        self.assertIn('exit 2', result['reason'])
+        self.assertIn('stderr: ERROR: ValueError: unexpected MCP response envelope', result['reason'])
+
+    def test_traceback_tail_and_both_streams_survive_reason_limit(self):
+        traceback = 'Traceback (most recent call last):\n' + ('  frame in helper.py\n' * 80) + 'NameError: response_decoder is not defined\n'
+        result = self.check(stdout='request diagnostics', stderr=traceback)
+        self.assert_failed_without_advancing(result)
+        self.assertIn('NameError: response_decoder is not defined', result['reason'])
+        self.assertIn('stdout: request diagnostics', result['reason'])
+        self.assertIn('stderr: ...', result['reason'])
+
+    def test_stdout_only_failure_stays_visible(self):
+        result = self.check(stdout='JSON-RPC parser rejected the response')
+        self.assert_failed_without_advancing(result)
+        self.assertIn('stdout: JSON-RPC parser rejected the response', result['reason'])
+
+    def test_empty_failure_names_the_missing_output(self):
+        result = self.check()
+        self.assert_failed_without_advancing(result)
+        self.assertIn('no stdout or stderr', result['reason'])
+
+    def test_unknown_stderr_does_not_invent_a_slack_rate_limit(self):
+        result = self.check(stderr='NameError: rate_limited_response is not defined')
+        self.assert_failed_without_advancing(result)
+        self.assertIn('NameError', result['reason'])
+
+    def test_legacy_rate_limit_result_still_retains_stderr(self):
+        result = self.check(stdout='ratelimited', stderr='ERROR: JSON-RPC read request rejected')
+        self.assertEqual(result['outcome'], 'ratelimited')
+        self.assertIn('stderr: ERROR: JSON-RPC read request rejected', result['reason'])
+        self.assertFalse(result['complete'])
+        self.assertNotIn('advance_to', result)
+
+    def test_existing_auth_and_transient_exit_classes_are_preserved(self):
+        for code, stderr, outcome in [(1, 'invalid_auth', 'misconfig'), (4, 'TimeoutError: timed out', 'ratelimited')]:
+            with self.subTest(code=code):
+                result = self.check(exit_code=code, stderr=stderr)
+                self.assertEqual(result['outcome'], outcome)
+                self.assertFalse(result['complete'])
+                self.assertNotIn('advance_to', result)
+
+    def test_successful_response_ignores_nonfatal_stderr(self):
+        result = self.check(exit_code=0, stdout=json.dumps({'messages': ''}), stderr='SDK deprecation warning')
+        self.assertEqual(result['outcome'], 'clean')
+        self.assertTrue(result['complete'])
 
 
 if __name__ == "__main__":

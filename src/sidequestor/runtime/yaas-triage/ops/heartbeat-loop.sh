@@ -90,7 +90,14 @@ PY
 )"
 [ -n "$INTERVAL" ] || INTERVAL=300
 
+UPDATE_PID=""
 while true; do
+  # Release check, backgrounded so a slow network can never delay the monitor below. At
+  # most one runs at a time however short the interval; it rate-limits itself to once a day.
+  if [ -z "$UPDATE_PID" ] || ! kill -0 "$UPDATE_PID" 2>/dev/null; then
+    "$PYTHON_BIN" -m sidequestor.update_check --notify >/dev/null 2>&1 &
+    UPDATE_PID=$!
+  fi
   # Non-zero just means "something is unhealthy" — that is the normal reporting path,
   # not a failure of this loop, so never let it exit.
   "$PYTHON_BIN" "$SCRIPT_DIR/health-monitor.py" --notify >/dev/null 2>&1 || true

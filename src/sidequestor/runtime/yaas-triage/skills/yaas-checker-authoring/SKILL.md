@@ -85,7 +85,7 @@ to `misconfig` with a reason that names the fix.
    assert it goes strictly up. A checker that cannot advance is a livelock that looks healthy.
 
 **Pre-dispatch filters.** If the type can wake the worker on things nobody cares about, accept
-filter fields (`filter_user_ids`, `filter_keywords` on the Slack types) and evaluate them
+filter fields (`filter_user_ids`, `filter_keywords` on Slack conversation watches) and evaluate them
 *inside the checker*. A rejection there is free; a rejection after dispatch costs a model
 round-trip. Note in the docstring that extra watch fields are passed through unvalidated, so a
 misspelled filter key is silently ignored.

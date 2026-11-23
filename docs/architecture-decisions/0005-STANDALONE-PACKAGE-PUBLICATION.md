@@ -70,11 +70,15 @@ state, runtime-root resolution for packaged helpers, canonical
 user-facing labels, and package-owned setup/OAuth entry points. The complete
 file-level list and rationale live in [ADR 0004](0004-STAGE5-FILE-PORT-INVENTORY.md).
 
-`sq stop` defaults to the initialized workspace containing the current
-directory, including descendant directories, when no instance identifier is
-provided. Explicit `--workspace` and `--instance` selection remains supported.
-The same ancestor discovery is used consistently by every workspace-aware
-command, including instance maintenance and migration.
+Lifecycle and setup commands select an explicit `--workspace PATH` or `--instance ID`
+first, then an exported workspace, then the saved default. Current-directory ancestor
+discovery is the fallback when neither environment nor registry selects a workspace.
+Conflicting explicit selectors are rejected. `sq init PATH` prints an explicitly
+targeted setup command; setup recipes use `sq --workspace . setup` so a new folder
+does not configure an existing default by accident. The default-workspace picker
+excludes stale/missing registrations and rechecks the selected identity before saving.
+Instance maintenance and migration use their explicit path, then an exported
+workspace, then the current folder independently of the lifecycle default.
 
 ### Installed launchd lifecycle
 
@@ -85,8 +89,9 @@ the venv interpreter path instead of resolving through its symlink to a global
 Python. This keeps a persistent installation independent of the invoking
 shell and source checkout.
 
-The production dashboard starts scanning at port 8877, skips occupied ports,
-and publishes the selected loopback URL only after successful bind.
+The production dashboard defaults to port 8877, preserves a workspace's saved port,
+and reports occupied ports without silently switching. It publishes the selected
+loopback URL only after successful bind.
 Its header identifies the selected workspace by configured display name and
 canonical path; the path truncates visually but remains available as a tooltip,
 and the compact mobile layout keeps the name while hiding the path.
@@ -94,7 +99,7 @@ and the compact mobile layout keeps the name while hiding the path.
 normal start path brings up triage, heartbeat, and dashboard together.
 `sq dashboard url` retrieves the URL later. `sq dashboard serve` remains a
 foreground developer escape hatch rather than a second persistent lifecycle.
-`sq stop` unloads the containing workspace's jobs and also cleans up a matching
+`sq stop` unloads the selected workspace's jobs and also cleans up a matching
 foreground dashboard controller. It retains the manifest but removes the plists
 so the instance stays stopped across reboots; `sq start` recreates them. Full
 removal is explicit:
