@@ -81,7 +81,7 @@ class GmailReplyTest(unittest.TestCase):
             **os.environ,
             "GWS_BIN": str(self.fake_gws),
             "GWS_CALLS_FILE": str(self.calls_file),
-            "SIDEQUESTOR_FROM_EMAIL": "Me <me@example.com>",
+            "SIDEQUESTOR_FROM_EMAIL": "Guangmian <me@example.com>",
             "YAAS_WORKSPACE": str(root),
         }
         self.env.pop("SIDEQUESTOR_WORKSPACE", None)
@@ -294,12 +294,12 @@ class GmailReplyTest(unittest.TestCase):
         self.assertEqual(reworded.returncode, 1)
         self.assertEqual(sum("+reply-all" in call for call in self.recorded_calls()), 1)
 
-    def test_unapproved_sender_address_reply_and_cc_are_blocked_on_send_enabled_quest(self):
-        cc = self.run_reply('message-1', '--reply-all', '--cc', 'me@example.com',
+    def test_unapproved_maintainer_reply_and_cc_are_blocked_on_send_enabled_quest(self):
+        cc = self.run_reply('message-1', '--reply-all', '--cc', 'guangmian.kung+bug@circle.com',
                             '--send', '--quest-id', QUEST, '--body', 'Report')
         self.assertEqual(cc.returncode, 1)
         self.env['GWS_METADATA'] = json.dumps({'payload': {'headers': [
-            {'name': 'From', 'value': 'Me <me@example.com>'},
+            {'name': 'From', 'value': 'Guangmian <guangmian.kung@circle.com>'},
             {'name': 'To', 'value': 'me@example.com'}]}})
         reply = self.run_reply('message-1', '--reply-sender', '--send', '--quest-id', QUEST, '--body', 'Report')
         self.assertEqual(reply.returncode, 1)

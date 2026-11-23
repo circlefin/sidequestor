@@ -8,9 +8,6 @@ Versions are dated by the day the snapshot was published.
 
 - Add user-creatable Slack text-search watches with bounded, watermark-safe polling,
   backfill support, and search-scope and privacy guidance.
-- Make package bug-report recipients workspace-configurable, with no baked-in address;
-  an unset recipient produces a non-sending review. Require explicit approval for email
-  addressed to the workspace's configured sender, even when a quest allows sends.
 
 ## 0.2.11 - 2026-11-10
 

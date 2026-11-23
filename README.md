@@ -777,17 +777,15 @@ and a repair proposal for review; it does not apply the repair during diagnosis.
 state whether the fix can run headlessly, needs an interactive terminal/browser session, or
 needs further investigation. Shared problems go to Inbox; quest-specific problems stay with
 their quest. If the harness cannot launch, Sidequestor writes recovery directions directly.
-Suspected packaged-code defects can produce a sanitized email bug report for manual review
-when `SIDEQUESTOR_BUG_REPORT_EMAIL` is set to a bare address in the workspace `.env`. No
-recipient is built in. If the setting is empty or invalid, diagnosis creates a non-sending
-review and asks the owner to choose a next step. No report is sent without approval. Reports
+Suspected packaged-code defects instead produce a sanitized email bug report addressed to
+`guangmian.kung@circle.com` for manual review. No report is sent without approval. Reports
 include the verified running version and a minimal reproduction, not private Slack content
 or credentials. Installed package files and watch watermarks are not edited as a workaround;
 an upgrade is a remedy only when a released fix has been verified. Reporting a defect is not
 proof of recovery: the health issue remains until a real check succeeds.
-The Gmail helpers require exact claimed approval for email addressed to the configured
-`SIDEQUESTOR_FROM_EMAIL`, even in a send-enabled quest. Real replies resolve their audience
-before applying this check; drafts remain unsent and ungated.
+The Gmail helpers require exact claimed approval for maintainer-directed mail, including
+replies, CCs and plus aliases, even in a send-enabled quest. Real replies resolve their
+audience before applying this check; drafts remain unsent and ungated.
 Inbox is permanent and is restored automatically, including outstanding review watches.
 Reaction actions, source/result links where available, and outcomes are recorded in Inbox.
 

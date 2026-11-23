@@ -237,12 +237,10 @@ def cmd_write(payload_json: str):
         except (OSError, ValueError, StopIteration):
             raise SystemExit("error:unknown or inactive health issue")
         repair = target.get("action") == "health_repair" and target.get("repair_mode") in ("headless", "interactive", "uncertain")
-        from system_health import bug_report_email
+        from system_health import BUG_REPORT_EMAIL
         from sidequestor import __version__
-        report_email = bug_report_email(tick_state.load_environment(REPO_ROOT))
         report = (target.get("report_kind") == "package_bug" and target.get("surface") == "gmail"
-                  and target.get("action") == "send" and report_email
-                  and target.get("to") == report_email
+                  and target.get("action") == "send" and target.get("to") == BUG_REPORT_EMAIL
                   and target.get("installed_version") == __version__ and bool(target.get("subject"))
                   and set(target) == {"system_key", "surface", "action", "to", "subject", "report_kind", "installed_version"})
         if (issue.get("owner") != quest_id or payload.get("action_type") != "remote_request"

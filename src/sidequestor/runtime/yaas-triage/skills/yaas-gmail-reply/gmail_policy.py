@@ -29,7 +29,7 @@ import os
 import sys
 import time
 from datetime import datetime
-from email.utils import getaddresses, parseaddr
+from email.utils import getaddresses
 from pathlib import Path
 
 
@@ -53,12 +53,7 @@ def _repo_root(start):
 REPO_ROOT = _repo_root(__file__)
 
 
-def _sender_audience(target):
-    sender = os.environ.get("SIDEQUESTOR_FROM_EMAIL") or os.environ.get("YAAS_FROM_EMAIL") or ""
-    _, sender_address = parseaddr(sender)
-    if not sender_address:
-        return False
-
+def _maintainer_audience(target):
     def values(value):
         if isinstance(value, str):
             return [value]
@@ -69,7 +64,8 @@ def _sender_audience(target):
         return []
     audience = values(target.get('to')) + values(target.get('cc')) + values(target.get('recipients'))
     for _, address in getaddresses(audience):
-        if address.casefold() == sender_address.casefold():
+        local, sep, domain = address.lower().rpartition('@')
+        if sep and domain == 'circle.com' and local.split('+', 1)[0].replace('.', '') == 'guangmiankung':
             return True
     return False
 
@@ -142,10 +138,9 @@ def send_policy_reason(quest_id, approval_id, target, message_text):
         return f"cannot read quest policy for {quest_id}: {exc}"
     # An explicitly supplied approval is always binding, even for a normally
     # send-enabled quest. A bad/unreadable report claim must never fail open.
-    sender_recipient = _sender_audience(target)
-    if (not meta.get("allow_send") or approval_id or sender_recipient) and not _claimed_approval(
+    report_recipient = _maintainer_audience(target)
+    if (not meta.get("allow_send") or approval_id or report_recipient) and not _claimed_approval(
             quest_id, approval_id, target, message_text):
-        return (f"quest {quest_id} has allow_send false or the email targets its configured sender "
-                "address, and no claimed approval for this exact email; run with --approval-spec "
-                "and queue it for review")
+        return (f"quest {quest_id} has allow_send false and no claimed approval for this exact "
+                "email; run with --approval-spec and queue it for review")
     return None

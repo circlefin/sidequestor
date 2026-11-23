@@ -12,26 +12,14 @@ import shutil
 import subprocess
 import sys
 import time
-from email.utils import parseaddr
 from pathlib import Path
 
 from inbox import INBOX_QUEST, write_json
-import tick_state
 
 HERE = Path(__file__).resolve().parent
 AUTH = re.compile(r"\bauth(?:entication|orization)?\b|\boauth\b|unauthori[sz]ed|forbidden|credential|keychain|token.expired|invalid.token|needs.login|not.logged.in|\b401\b|\b403\b", re.I)
 RECURRENCE_COOLDOWN_SEC = 3600
-
-
-def bug_report_email(env):
-    """Return a configured bare recipient address, or empty when none is usable."""
-    value = str(env.get("SIDEQUESTOR_BUG_REPORT_EMAIL") or "").strip()
-    if not value:
-        return ""
-    display, address = parseaddr(value)
-    if display or address != value or address.count("@") != 1 or any(c.isspace() for c in address):
-        return ""
-    return address
+BUG_REPORT_EMAIL = "guangmian.kung@circle.com"
 
 
 def read_json(path, default):
@@ -211,35 +199,25 @@ def dependency_paused(t, target):
 
 def diagnosis(root, entry, now=None):
     from sidequestor import __version__
-    env = tick_state.load_environment(root)
-    h = Health(root, env, now)
+    h = Health(root, os.environ, now)
     issue = h.issues.get(entry.get("issue_id"), {})
     if (not issue.get("active") or h.has_review(issue)
             or issue.get("next_diagnosis_ts", 0) > h.now):
         return None
-    prompt = ("HEALTH DIAGNOSIS ONLY. Read OPERATING.md health protocol. "
+    return ("HEALTH DIAGNOSIS ONLY. Read OPERATING.md health protocol. "
             "Investigate these failures using read-only checks, then use sq approval write to propose "
-            "a review. Do not apply changes or authentication. "
+            "a repair or a package bug report. Do not apply changes or authentication. "
             f"Verified running Sidequestor version: {__version__}; ignore stale version claims in evidence. "
             "Configuration/authentication repairs use action=health_repair and repair_mode=headless|interactive|uncertain. "
             "If the defect is in packaged code, do NOT propose editing installed/package source files, "
-            "changing watch state to bypass it, or upgrading unless a released fix is verified. ")
-    recipient = bug_report_email(env)
-    if recipient:
-        prompt += (f"Propose a sanitized email bug report to the configured recipient {recipient}: "
-                   f"target surface=gmail, action=send, to={recipient}, subject describing the defect, "
-                   f"report_kind=package_bug, installed_version={__version__}. Put only the email body in "
-                   "message_text. Include verified vs suspected findings, minimal synthetic reproduction "
-                   "and impact; exclude secrets, private messages, people, channel/thread IDs and internal "
-                   "links by default. Sending requires approval through send_fresh.py. ")
-    else:
-        prompt += ("No valid SIDEQUESTOR_BUG_REPORT_EMAIL is configured. Do not propose or send an email. "
-                   "Instead propose a non-sending health_repair review with repair_mode=uncertain that "
-                   "summarizes the suspected packaged-code defect and asks the owner to configure a recipient "
-                   "in the workspace .env or choose another manual next step. ")
-    prompt += (f"The approval target MUST include system_key={issue['system_key']!r}. "
+            "changing watch state to bypass it, or upgrading unless a released fix is verified. "
+            f"Instead propose a sanitized email bug report to {BUG_REPORT_EMAIL}: target surface=gmail, action=send, "
+            f"to={BUG_REPORT_EMAIL}, subject describing the defect, report_kind=package_bug, "
+            f"installed_version={__version__}. Put only the email body in message_text. Include verified vs suspected "
+            "findings, minimal synthetic reproduction and impact; exclude secrets, private messages, people, "
+            "channel/thread IDs and internal links by default. Send only after approval through send_fresh.py. "
+            f"Either approval target MUST include system_key={issue['system_key']!r}. "
             f"Approval quest_id MUST be {issue['owner']}. Evidence: {json.dumps(issue['evidence'])}")
-    return prompt
 
 
 def collect(t):

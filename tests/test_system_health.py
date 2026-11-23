@@ -313,20 +313,17 @@ class SystemHealthTest(unittest.TestCase):
         self.helper("resolve-system-items", json.dumps({"installed": "9.0.0"}))
         self.assertEqual(self.queue()[0]["status"], "cancelled")
 
-    def test_package_bug_report_uses_configured_recipient_and_verified_version(self):
+    def test_package_bug_report_uses_verified_version_and_stable_health_identity(self):
         from sidequestor import __version__
-        (self.root / ".env").write_text("SIDEQUESTOR_BUG_REPORT_EMAIL=bugs@example.com\n")
-        self.env["SIDEQUESTOR_BUG_REPORT_EMAIL"] = "bugs@example.com"
         self.h.observe('quest-test|watch-abc', quest='quest-test', reason='incomplete slack thread response record')
         self.h.reconcile()
         issue_id, issue = next(iter(self.h.issues.items()))
-        with patch.dict(os.environ, {'SIDEQUESTOR_BUG_REPORT_EMAIL': 'bugs@example.com'}):
-            text = diagnosis(self.root, {'issue_id': issue_id}, now=1000)
+        text = diagnosis(self.root, {'issue_id': issue_id}, now=1000)
         self.assertIn(f'Verified running Sidequestor version: {__version__}', text)
         self.assertIn('minimal synthetic reproduction', text)
         payload = {'quest_id': 'quest-test', 'action_type': 'remote_request',
                    'target': {'system_key': issue['system_key'], 'surface': 'gmail', 'action': 'send',
-                              'to': 'bugs@example.com', 'subject': 'Parser bug',
+                              'to': 'guangmian.kung@circle.com', 'subject': 'Parser bug',
                               'report_kind': 'package_bug', 'installed_version': __version__},
                    'message_text': 'Synthetic reproduction and verified facts'}
         self.helper('write', json.dumps(payload))

@@ -56,26 +56,21 @@ automatically replaying the original reaction. Do not edit processed timestamps
 or watch watermarks to force a replay. Worker outcome acknowledgements, not direct
 emoji edits, drive reaction lifecycle status.
 
-For a suspected packaged-code defect, create a bug-report email review only when the
-workspace has a valid bare `SIDEQUESTOR_BUG_REPORT_EMAIL` in its `.env`. Use
-`action_type: remote_request` and target fields `surface: gmail`, `action: send`, `to`
-equal to that configured recipient, a descriptive `subject`, `report_kind: package_bug`,
-`installed_version` from the verified running version in the dispatch, and the exact
-supplied `system_key`. The approval's `quest_id` stays with the affected quest. Put ONLY
-the proposed email body in `message_text`. Include verified versus suspected cause,
-installed version, impact, minimal synthetic reproduction, expected/actual behavior, and
-non-sensitive verification. Omit secrets, private message contents, names, channel/thread
-IDs and internal links by default. Sending requires human approval even when the quest
-normally allows sends. Execute the exact approved report through the managed
-`send_fresh.py` with `--quest-id` and `--approval-id`, using the normal claim/reconciliation
-protocol. Report delivery is not recovery; keep the underlying watch/watermark intact until
-real checks succeed. Never blindly resend after a timeout or expired claim; reconcile Gmail
-Sent first.
-
-If `SIDEQUESTOR_BUG_REPORT_EMAIL` is unset or invalid, do not propose or send an email.
-Create a non-sending `health_repair` review with `repair_mode: uncertain`, summarize the
-suspected defect, and ask the owner to configure a recipient or choose another manual next
-step. Do not submit anything to PyPI: it is a package index, not a package bug tracker.
+For a suspected packaged-code defect, create a bug-report email review instead of a
+repair review. Use `action_type: remote_request` and target fields `surface: gmail`,
+`action: send`, `to: guangmian.kung@circle.com`, a descriptive `subject`,
+`report_kind: package_bug`, `installed_version` from the verified running version in
+the dispatch, and the exact supplied `system_key`. The approval's `quest_id` stays
+with the affected quest. Put ONLY the proposed email body in `message_text`.
+Include verified versus suspected cause, installed version, impact, minimal synthetic
+reproduction, expected/actual behavior, and non-sensitive verification. Omit secrets,
+private message contents, names, channel/thread IDs and internal links by default.
+Do not submit anything to PyPI: it is a package index, not a package bug tracker.
+Sending requires human approval even when the quest normally allows sends. Execute
+the exact approved report through the managed `send_fresh.py` with `--quest-id` and
+`--approval-id`, using the normal claim/reconciliation protocol. Report delivery is
+not recovery; keep the underlying watch/watermark intact until real checks succeed.
+Never blindly resend after a timeout or expired claim; reconcile Gmail Sent first.
 
 A `sidequestor_upgrade` notice can be approved or dismissed. An approved notice is
 executed deterministically by an independent launchd job after triage releases its

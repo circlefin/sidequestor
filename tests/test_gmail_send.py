@@ -51,7 +51,7 @@ class GmailSendTest(unittest.TestCase):
         )
         fake_gws.chmod(fake_gws.stat().st_mode | stat.S_IXUSR)
         self.env = {**os.environ, "GWS_BIN": str(fake_gws), "GWS_ARGS_FILE": str(self.args_file),
-                    "SIDEQUESTOR_FROM_EMAIL": "Me <me@example.com>",
+                    "SIDEQUESTOR_FROM_EMAIL": "Guangmian <me@example.com>",
                     "YAAS_WORKSPACE": str(self.root)}
         self.env.pop("SIDEQUESTOR_WORKSPACE", None)
         self.env.pop("SIDEQUESTOR_DISPATCH_TARGET", None)
@@ -141,9 +141,9 @@ class GmailSendTest(unittest.TestCase):
         sent = self.send('Sanitized report', '--quest-id', QUEST, '--approval-id', 'report-1')
         self.assertEqual(sent.returncode, 0, sent.stderr)
 
-    def test_configured_sender_destination_requires_review_even_for_send_enabled_quest(self):
+    def test_maintainer_destination_requires_review_even_for_send_enabled_quest(self):
         body = self.root / 'report.txt'; body.write_text('Sanitized bug report')
-        for address in ('me@example.com', 'Me <me@example.com>'):
+        for address in ('guangmian.kung@circle.com', 'Guangmian <guangmian.kung+bug@circle.com>', 'guangmiankung@circle.com'):
             result = subprocess.run([sys.executable, str(SEND), '--to', address,
                                      '--subject', 'Package bug', '--body-file', str(body), '--quest-id', QUEST],
                                     text=True, capture_output=True, env=self.env)
