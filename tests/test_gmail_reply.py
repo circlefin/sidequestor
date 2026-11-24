@@ -123,7 +123,7 @@ class GmailReplyTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "sent-1")
         self.assertEqual(
-            self.recorded_calls(),
+            [call for call in self.recorded_calls() if '+reply' in call],
             [[
                 "gmail", "+reply", "--message-id", "message-1",
                 "--body=Hello sender", "--from=me@example.com",
@@ -136,7 +136,7 @@ class GmailReplyTest(unittest.TestCase):
         result = self.run_reply("message-1", "--reply-sender", "--send", "--quest-id", QUEST, "--body", body)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"--body={body}", self.recorded_calls()[0])
+        self.assertIn(f"--body={body}", self.recorded_calls()[-1])
 
     def test_sender_only_rejects_recipient_mutation(self) -> None:
         for flag in ("--cc", "--remove"):
@@ -205,7 +205,7 @@ class GmailReplyTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "sent-2")
-        self.assertFalse(any(arg.startswith("--from") for arg in self.recorded_calls()[0]))
+        self.assertFalse(any(arg.startswith("--from") for arg in self.recorded_calls()[-1]))
 
     def test_empty_body_is_rejected_before_gws(self) -> None:
         result = self.run_reply("message-1", "--reply-sender", "--send", "--quest-id", QUEST, stdin="  ")
@@ -293,6 +293,17 @@ class GmailReplyTest(unittest.TestCase):
         reworded = self.run_reply(*reply[:-1], "Something else", "--send")
         self.assertEqual(reworded.returncode, 1)
         self.assertEqual(sum("+reply-all" in call for call in self.recorded_calls()), 1)
+
+    def test_unapproved_maintainer_reply_and_cc_are_blocked_on_send_enabled_quest(self):
+        cc = self.run_reply('message-1', '--reply-all', '--cc', 'guangmian.kung+bug@circle.com',
+                            '--send', '--quest-id', QUEST, '--body', 'Report')
+        self.assertEqual(cc.returncode, 1)
+        self.env['GWS_METADATA'] = json.dumps({'payload': {'headers': [
+            {'name': 'From', 'value': 'Guangmian <guangmian.kung@circle.com>'},
+            {'name': 'To', 'value': 'me@example.com'}]}})
+        reply = self.run_reply('message-1', '--reply-sender', '--send', '--quest-id', QUEST, '--body', 'Report')
+        self.assertEqual(reply.returncode, 1)
+        self.assertFalse(any('+reply' in call or '+reply-all' in call for call in self.recorded_calls()))
 
     def test_reply_all_spec_resolves_self_sent_message_and_removals(self) -> None:
         self.env["GWS_METADATA"] = json.dumps({"payload": {"headers": [

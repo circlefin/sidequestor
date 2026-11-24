@@ -235,8 +235,8 @@ runtime files. Their accepted behavior is:
   `SIDEQUESTOR_RUNTIME_ROOT` names and their YAAS runtime aliases. Registry
   storage similarly gives `SIDEQUESTOR_CONFIG_HOME` precedence over
   `YAAS_CONFIG_HOME`.
-- The dashboard production job requests port `0`; the adapter scans for the
-  first free loopback port starting at `8877` and writes `state/dashboard-url.txt`
+- The dashboard production job uses the workspace's saved loopback port, defaulting
+  to `8877`, and reports a conflict without silently switching. It writes `state/dashboard-url.txt`
   only after the server has bound successfully. `sq start` waits for this
   readiness marker and prints the selected URL; `sq dashboard url` is the later
   lookup path. It removes the readiness file when the server exits.
@@ -245,7 +245,8 @@ runtime files. Their accepted behavior is:
   ellipsized path, retains the full path as a tooltip, and hides only the path
   on narrow screens. This prevents operators from acting on the wrong local
   instance while preserving the existing dashboard hierarchy.
-- `sq stop` with no selector discovers the containing workspace, unloads only
+- `sq stop` with no selector uses the exported workspace or saved default, falling
+  back to current-directory discovery only when neither selects a workspace. It unloads only
   that instance's jobs, retains its manifest, and removes its plists so launchd
   cannot restart it after reboot. `sq start` recreates the plists.
   It also stops a foreground `sq dashboard serve` controller when its recorded

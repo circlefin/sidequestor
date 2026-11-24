@@ -616,17 +616,11 @@ def _parse_thread_page(text, since, filter_user_ids=None, filter_keywords=None,
         segment = text[start.end():segment_end]
         from_matches = list(_THREAD_FROM.finditer(segment))
         ts_matches = list(_THREAD_TS.finditer(segment))
-        if len(from_matches) != 1 or len(ts_matches) != 1:
+        if len(ts_matches) != 1:
             raise ValueError("incomplete slack thread response record")
-        from_match, ts_match = from_matches[0], ts_matches[0]
-        if from_match.start() > ts_match.start():
-            raise ValueError("invalid slack thread response record order")
-
-        user_id = from_match.group(1)
+        ts_match = ts_matches[0]
         ts = float(ts_match.group(1))
         raw_seen += 1
-        if until is not None and ts > until:
-            continue
         if ts <= since:
             saw_old = True
 
@@ -638,6 +632,15 @@ def _parse_thread_page(text, since, filter_user_ids=None, filter_keywords=None,
             # terminate drain() merely because that page has no replies.
             continue
 
+        if len(from_matches) != 1:
+            raise ValueError("incomplete slack thread response record")
+        from_match = from_matches[0]
+        if from_match.start() > ts_match.start():
+            raise ValueError("invalid slack thread response record order")
+        user_id = from_match.group(1)
+
+        if until is not None and ts > until:
+            continue
         if ts <= since:
             continue
 

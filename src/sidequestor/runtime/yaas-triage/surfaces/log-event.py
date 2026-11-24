@@ -51,12 +51,17 @@ Usage
     message_text  (optional)  verbatim body, when the event carries one
     channel_id    (optional)  Slack channel/DM the event relates to
     thread_ts     (optional)  parent ts, when thread-scoped
+    source_event_ts (optional) original observed message/event time, copied from
+                              the source: Unix seconds or timezone-aware ISO.
+                              Invalid/future values are ignored. `ts` remains
+                              recording time; information events can display
+                              at source time without backdating actions.
     link_url      (optional)  permalink to the source
     reason        (optional)  why, for `blocked`
 
     Any other key is passed through to the entry unchanged, so callers can
     record event-specific detail without a change here. `ts` is the sole
-    exception: it is always replaced.
+    exception: it is always replaced. `source_event_ts` is normalized to UTC.
 
 Output (stdout): compact JSON, e.g.
     {"ok":true,"quest_id":"quest-...","event":"note","ts":"2026-08-14T20:41:07Z"}
@@ -80,7 +85,7 @@ def _repo_root(start):
 
     NOT counted as `parent.parent`: that is correct only while every script sits directly
     in yaas-triage/, and silently resolves to yaas-triage/ itself once a script moves into
-    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on CLAUDE.md
+    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on AGENTS.md
     (a fresh clone has only CLAUDE.example.md) and NOT on .git (two git dirs here, none in
     fixtures). Ambient $REPO_ROOT is deliberately ignored: a stale value pointing at another
     checkout would pass any marker check and silently redirect writes. Test fixtures copy
@@ -104,6 +109,8 @@ def _repo_root(start):
 REPO_ROOT = _repo_root(__file__)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from timeline_io import utc_now, quest_dir, append_timeline
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from timeline_time import source_event_time
 
 # The documented vocabulary, and the only names anything switches on: the
 # dashboard classifies these as agent/external/system, and the ack ledger and
@@ -150,6 +157,7 @@ def _payload_from_argv(argv) -> dict:
     ap.add_argument("--message-text")
     ap.add_argument("--channel-id")
     ap.add_argument("--thread-ts")
+    ap.add_argument("--source-event-ts")
     ap.add_argument("--link-url")
     ap.add_argument("--reason")
     args = ap.parse_args(argv)
@@ -179,6 +187,14 @@ def main(argv) -> int:
 
     supplied_ts = p.pop("ts", None)
     entry = {"ts": utc_now(), "event": event}
+    supplied_source_ts = p.pop("source_event_ts", None)
+    if supplied_source_ts is not None:
+        source_ts = source_event_time(supplied_source_ts, entry["ts"])
+        if source_ts is not None:
+            entry["source_event_ts"] = source_ts
+        else:
+            print("warning: invalid or future source_event_ts ignored; recording time retained",
+                  file=sys.stderr)
     for key, value in p.items():
         if key in ("quest_id", "event") or value in (None, ""):
             continue

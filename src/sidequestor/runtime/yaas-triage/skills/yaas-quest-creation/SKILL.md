@@ -1,6 +1,6 @@
 ---
 name: yaas-quest-creation
-description: Scaffold a new quest folder under state/quests/active/. Use this when the user wants to start tracking a Slack thread, a reaction-triggered follow-up, or an ongoing conversation with a specific person. Invoke interactively — ask the user for title and watch targets, then create the 4-file quest folder. Does NOT create a quest without user confirmation.
+description: Scaffold a new quest folder under state/quests/active/. Use this when the user wants to start tracking a Slack thread, a reaction-triggered follow-up, or an ongoing conversation with a specific person. Invoke interactively — ask the user for title and watch targets, then create the 4-file quest folder. An explicit creation request authorizes scaffolding; unresolved details go to manual review.
 ---
 
 # yaas-quest-creation
@@ -24,7 +24,7 @@ Scaffold a new yaas quest. A quest is a folder under `state/quests/active/` cont
 
 ### 1. Gather inputs interactively
 
-Ask the user for, in order:
+Use information already supplied and reasonable defaults. An explicit request to create or track authorizes creation. Missing details are collected through manual review after scaffolding (see Edge cases below), and must not hold creation open in a terminal. Gather the following when available:
 
 1. **Title** — one short line, used both as the display name and to generate the quest ID slug.
 2. **What to watch** — at least one entry, each with a `type`:
@@ -32,11 +32,16 @@ Ask the user for, in order:
    - **`slack_channel`** — provide channel name or ID. Watches entire channel for new top-level messages. Does NOT catch replies inside existing threads; for those, add the specific thread as `slack_thread`.
    - **`slack_dm`** — needs BOTH `user_id` and `channel_id` (the DM channel, `D…`). Resolve a name → user ID via `mcp__slack__slack_search_users`, then resolve that user's DM channel; a `user_id` is not a channel. Fires on new DMs from that person.
    - **`slack_mention`** — a Slack `user_id`. Fires on any new message that @mentions that user, anywhere the searcher can see (global, not channel-scoped). No channel field; the worker re-runs the mention search to locate each hit. Use for "back me up: respond when anyone @mentions me." Skips `[BOT]` authors and the watched user's own messages.
+   - **`slack_search`** — a Slack search `query` expression. Finds new matching messages across conversations the connected account can search, including private channels and DMs it can access. Quote a phrase for phrase matching, such as `"docs.google.com"` or `"Jane Doe"`. Optional `in:` and `from:` modifiers can narrow it. Add `-from:<@USER_ID>` whenever Sidequestor may post messages matching the query, to prevent self-triggering; omit it only when intentionally tracking the connected user's messages. Do not include `after:`, `before:`, `on:`, or `during:` because the checker adds its own watermark boundary; quote literal text that looks like one of these modifiers. Slack search uses its own indexing and matching rules, so verify important link queries against known messages.
    - **`schedule`** — fires the quest at a time you choose, in one of two shapes:
      - **repeating**: `cron` (5-field) + `tz` (IANA timezone). `tz` is required alongside `cron` — a bare cron is ambiguous.
      - **one-shot**: `next_fire_ts` (epoch seconds), and no `cron`. Fires once, then the watch is spent.
      Cron cannot express "every other week" and similar; for those, schedule the inner interval and have `context.md` gate on a state file the worker writes after it acts.
    - **`email`** — field name is `query` (a Gmail search string, e.g. `from:partner@example.com subject:invoice`). Matches any email matching the query that arrived after the watermark.
+   - **`notion_page`** — `page_id` UUID. Covers root properties/content, nested blocks and their comments/replies; new blocks enroll automatically. One page remains one watch.
+   - **`notion_data_source`** — `data_source_id`, or single-source `database_id`. Every existing/new item receives page/block/comment coverage. `include_archived` defaults true; trash is not enumerable through source queries.
+   - **`notion_comments`** — `block_id` UUID (page IDs also work). Comments-only coverage throughout that page/block tree, without body-edit triggers.
+     For all three, subpages are opt-in: `subpage_depth` defaults 0 (0–100), with independent boolean `include_subpage_content` and `include_subpage_comments` flags defaulting false. Positive depth with a flag includes that many generations; each database item starts at depth 0. Nested ordinary blocks do not consume page depth. Child databases and links are boundaries; add an explicit source watch for database items. Use the `notion` connector with Read content/Read comments and parent-page access. `max_requests` defaults 8 (1–50), `scan_seconds` 8 (3–30), `max_entities` 10000 (1–100000). Legacy `max_pages` aliases the request budget. Scans resume across ticks; inspect coverage age/limits on the dashboard. Scanning has no LLM cost but consumes API calls; avoid promising instant or complete event history. Scope settings are identity fields; use supported retire/recreate rather than editing existing watch entries. The stored cursor is a local delivery cursor, not Notion event time.
    - **`jira`** — a JQL string (e.g. `labels=my-label`, `project=PROJ AND assignee=currentUser()`). Fires when any issue in that set changes: status transition, new comment, or any field edit. Reads through the packaged bridge at `$SIDEQUESTOR_RUNTIME_ROOT/yaas-triage/surfaces/jira-call.sh`, so it works headless (the Atlassian MCP does not). Requires the Keychain API token `jira-api-token`/`yaas`. Do NOT include `ORDER BY` in the JQL: the checker adds its own ordering, and a caller-supplied one disables its early stop and makes every tick page to the cap.
    - **`github_pr`**: a `repo` as `owner/name`. Fires on any PR update in that repo: new PR, new commit, review, comment, or merge. Use it alongside `jira` when a fix lands as a PR, because **a PR review comment does not bump the linked Jira issue**, so the `jira` watch cannot see it. Optional `search` (extra GitHub qualifiers), `limit` (default 100), and `gh_account` (a `gh` login whose token to use when the active account cannot see a private repo). Two traps before you add a `search`: repeated qualifiers AND rather than OR (`author:a author:b` matches nothing and the watch reports clean forever), and full-text terms only match what a PR happens to say. Also avoid `is:open`, which hides merges. Verify recall against a known PR set first; the details are in `checkers/github_pr.py`'s docstring.
 
@@ -49,9 +54,20 @@ Ask the user for, in order:
    - **`x_home`** — the authorized account's reverse-chronological home timeline. `credential_id` is required. Optional `filter_keywords` and `exclude_user_ids`.
    - **`x_dm`** — incoming X direct messages visible to the authorized account. `credential_id` is required. Optional `conversation_id`, `participant_id`, and `filter_keywords`; omit both selectors to watch all accessible conversations. X exposes only the last 30 days of DM events.
 
+   One-shot `schedule` watches use `next_fire_ts`: a finite positive Unix timestamp
+   in seconds, as a JSON number or numeric string (fractions are accepted). Compute
+   a minute ahead with `python3 -c 'import time; print(int(time.time()) + 60)'`.
+   Do not use an ISO date. Repeating schedules use `cron` plus `tz` instead.
+
    External watches run only when their connector is present in
-   `SIDEQUESTOR_CHECKER_CONNECTORS`. The default is `slack,email,github,jira`; adding a Telegram
-   or X watch without enabling its connector intentionally leaves its watermark frozen.
+   `SIDEQUESTOR_CHECKER_CONNECTORS`. The default is `slack,email,github,jira`.
+   Read the enabled connector list in the dispatch and honor workspace AGENTS.md
+   routing overrides. For watch setup, never use a disabled connector or attempt `gws`
+   to verify an email watch when email is disabled.
+   An operator-provided local email feed can be read by a scheduled quest instead.
+   Creation rejects disabled watch types. Only if the operator explicitly asks to stage
+   inactive setup, pass `--allow-dormant` to `sq new-quest` or `sq watch`; its watermark
+   remains frozen until the connector is enabled. Never use that flag to bypass a setup failure.
 
    GitHub and broad Telegram/X searches can fire on items unrelated to the quest. Say so in the `reason`, and make the quest's `context.md` tell the worker to exit immediately without acting when the changed item is out of scope.
    - **`approval`** — effectively runtime-only: the worker appends one itself when it queues a manual-review item (§3c of the `yaas-quest-dispatch` skill). Do not put one in a creation spec — there is no approval to track before the quest exists. `new-quest.py` does accept the type (with a required `approval_id`) so its type list matches `checkers/`, so this is a rule you follow, not one the script enforces.
@@ -81,7 +97,7 @@ Ask the user for, in order:
    verbatim and NOT validated, so a typo like `filter_keyword` (singular) is silently
    written and silently ignored — spell them exactly.
 
-   **Note:** reaction-workflow triggers (`process`, `draft`, `save`, and `adopt`) are tracked globally by the triage orchestrator and are NOT a per-quest watch input. Do not include them in `watches[]`.
+   **Note:** reaction-workflow triggers (`process`, `draft`, `save`, `adopt`, and `expand`) are tracked globally by the triage orchestrator and are NOT a per-quest watch input. Do not include them in `watches[]`.
 3. **Priority** — high / normal / low. Default to normal if unspecified.
 4. **Context** — ask the user to paste or describe what this quest is about. Turn it into a
    compact mission brief: objective, durable decision rules, important links, and the
@@ -132,9 +148,11 @@ Spec fields:
 - `watches` (required) — entries WITHOUT `last_checked_ts`; the script injects it
 - `priority` — `"high"` | `"normal"` | `"low"` (default: `"normal"`)
 - `allow_send` — `true` | `false` (default: `false`)
-- `sidequestor_bootstrap` is an internal dashboard-only flag. With `true`, `watches` must be
+- `allow_send_channels` — optional list of Slack conversation IDs authorized by the owner for text messages through `slack-send.py`. Grants no other send authority. Guided onboarding may grant its live-verified owner DM and the private interface channel explicitly approved by the owner; an ongoing interface quest may grant that approved channel only. Never widen permissions without authorization.
+- `sidequestor_bootstrap` is an internal dashboard/onboarding flag. With `true`, `watches` must be
   empty and triage uses its dedicated bootstrap dispatch to resolve and install exact watches.
-  Ordinary interactive creation must omit it and provide at least one confirmed watch.
+  Interactive creation with confirmed watches omits it; authorized creation with unresolved
+  details uses it with empty watches, then queues the setup manual review described below.
 - `context` — body text for `context.md`
 - `note` — short note for the `created` timeline event (defaults to first 80 chars of context)
 - `retire_slack_threads_after_days` — non-negative int or `false`:
@@ -226,7 +244,7 @@ Always watch the **parent thread_ts**, not a reply's ts.
 
 ## Error handling
 
-If the user's input is ambiguous or missing required fields, ask a clarifying question. Never create a quest with placeholder content — either get real values or don't create the quest.
+Missing details must not stall an authorized quest creation. Use the supplied objective and a short derived title; never invent external identifiers. Scaffold the quest with `watches: []` and `sidequestor_bootstrap: true` when exact watches are unresolved. After creation, use `sq approval write` with action_type `remote_request`, target `{"action":"quest_setup"}`, the quest ID/title, and concrete setup instructions in message_text. List uncertainties and questions in context and risk_reason. The helper arms an approval watch; verify it exists and let bootstrap finish with that durable watch. Keep allow_send false. Users answer through Request change in manual review; do not require a terminal. Install only live-verified external watches after the answers arrive.
 
 ## Resolving names to user IDs
 
@@ -236,4 +254,10 @@ If the user gives a name instead of a Slack user ID, look it up via:
 mcp__slack__slack_search_users with query="<name>"
 ```
 
-Present the result for confirmation before using it in watch.json. If multiple matches, list them and ask which one.
+Verify an unambiguous match by live read before installing a watch. If multiple matches remain, create the quest and list the candidates in its setup manual review; do not stall creation.
+
+Notion multi-tick progress returns clean with the same delivery cursor, so ordinary
+scanning never increments stalled-watch backoff. Descendant 400/404 reads produce
+`coverage_gap` events and partial coverage while other branches continue. Root
+failures still require repair. The worker inspector fails when state/scope is missing;
+only dashboard reads may explicitly request not_started status.

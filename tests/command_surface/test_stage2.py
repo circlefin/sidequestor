@@ -19,12 +19,16 @@ SIDEQUESTOR = Path(os.environ.get("SIDEQUESTOR_BIN", PACKAGE / ".venv" / "bin" /
 def run(*args: str, home: Path | None = None) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["HOME"] = str(home or PACKAGE / ".test-home")
+    env["SIDEQUESTOR_CONFIG_HOME"] = str(Path(env["HOME"]) / ".config")
+    env["YAAS_CONFIG_HOME"] = env["SIDEQUESTOR_CONFIG_HOME"]
     return subprocess.run([str(YAAS), *args], text=True, capture_output=True, env=env)
 
 
 def run_sidequestor(*args: str, home: Path | None = None) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["HOME"] = str(home or PACKAGE / ".test-home")
+    env["SIDEQUESTOR_CONFIG_HOME"] = str(Path(env["HOME"]) / ".config")
+    env["YAAS_CONFIG_HOME"] = env["SIDEQUESTOR_CONFIG_HOME"]
     return subprocess.run([str(SIDEQUESTOR), *args], text=True, capture_output=True, env=env)
 
 
@@ -49,9 +53,9 @@ class Stage2CommandSurfaceTest(unittest.TestCase):
 
     def test_every_public_command_has_help(self) -> None:
         commands = (
-            "init", "instances", "setup", "start", "stop", "tick", "loop", "dashboard", "doctor",
+            "init", "instances", "setup", "start", "stop", "pause", "resume", "tick", "loop", "dashboard", "doctor",
             "migrate", "sync-resources", "upgrade", "watch", "ack", "approval", "log", "slack-send",
-            "slack-file", "telegram-send", "telegram-auth", "x-auth", "x-send", "react", "mcp-call", "jira-call",
+            "slack-file", "slack-channel", "telegram-send", "telegram-auth", "x-auth", "x-send", "react", "mcp-call", "jira-call",
         )
         for command in commands:
             result = run(command, "--help")
@@ -120,7 +124,7 @@ class Stage2CommandSurfaceTest(unittest.TestCase):
             }) + "\n")
             stopped = subprocess.run(
                 [str(YAAS), "stop"], cwd=nested, text=True, capture_output=True,
-                env={**os.environ, "HOME": str(home_path)},
+                env={**os.environ, "HOME": str(home_path), "SIDEQUESTOR_CONFIG_HOME": str(home_path / ".config"), "YAAS_CONFIG_HOME": str(home_path / ".config")},
             )
             self.assertEqual(stopped.returncode, 0, stopped.stderr)
             self.assertIn(marker["instance_id"], stopped.stdout)
@@ -133,7 +137,7 @@ class Stage2CommandSurfaceTest(unittest.TestCase):
             initialized = run("init", str(workspace), home=home_path)
             self.assertEqual(initialized.returncode, 0, initialized.stderr)
             nested.mkdir(parents=True)
-            env = {**os.environ, "HOME": str(home_path)}
+            env = {**os.environ, "HOME": str(home_path), "SIDEQUESTOR_CONFIG_HOME": str(home_path / ".config"), "YAAS_CONFIG_HOME": str(home_path / ".config")}
 
             for args in (
                 ("doctor",),

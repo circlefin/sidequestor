@@ -246,6 +246,16 @@ PY
       fail "SIDEQUESTOR_CODEX_PERMISSION_MODE=$CODEX_PERMISSION_MODE is invalid (expected workspace-write or bypassPermissions)"
       ;;
   esac
+
+  CURSOR_PERMISSION_MODE="$(_setting SIDEQUESTOR_CURSOR_PERMISSION_MODE YAAS_CURSOR_PERMISSION_MODE default)"
+  case "$CURSOR_PERMISSION_MODE" in
+    default|bypassPermissions)
+      ok "SIDEQUESTOR_CURSOR_PERMISSION_MODE=$CURSOR_PERMISSION_MODE"
+      ;;
+    *)
+      fail "SIDEQUESTOR_CURSOR_PERMISSION_MODE=$CURSOR_PERMISSION_MODE is invalid (expected default or bypassPermissions)"
+      ;;
+  esac
 fi
 
 # ── 3. Slack token in Keychain ──────────────────────────────────────────────

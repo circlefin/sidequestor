@@ -17,6 +17,35 @@ TRIAGE_ROOT = RUNTIME_ROOT / "yaas-triage"
 
 
 class ApprovalFailureTest(unittest.TestCase):
+    def test_setup_retry_reuses_review_and_repairs_watch_and_preserves_source(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw)
+            quest = workspace / "state/quests/active/quest-setup"
+            quest.mkdir(parents=True)
+            watch = quest / "watch.json"
+            watch.write_text('{"watches": []}')
+            (quest / "meta.json").write_text('{"status":"active","allow_send":false}')
+            env = {**os.environ, "YAAS_WORKSPACE": raw,
+                   "YAAS_RUNTIME_ROOT": str(RUNTIME_ROOT)}
+            payload = {"quest_id": "quest-setup", "action_type": "remote_request",
+                       "target": {"action": "quest_setup"}, "message_text": "First plan",
+                       "source_url": "https://example.com/original"}
+            def write():
+                result = subprocess.run([sys.executable,
+                    str(TRIAGE_ROOT / "ledger/approval-helper.py"), "write", json.dumps(payload)],
+                    env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result.stdout.strip()
+            first = write()
+            watch.write_text('{"watches": []}')  # Interrupted watch installation.
+            payload["message_text"] = "Reworded retry plan"
+            self.assertEqual(write(), first)
+            items = json.loads((workspace / "state/pending-approvals.json").read_text())["items"]
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["source_url"], payload["source_url"])
+            self.assertTrue(items[0]["watch_armed"])
+            self.assertEqual(json.loads(watch.read_text())["watches"][0]["approval_id"], first)
+
     def test_failure_returns_reviewed_item_to_pending_review(self) -> None:
         sys.path.insert(0, str(TRIAGE_ROOT))
         try:

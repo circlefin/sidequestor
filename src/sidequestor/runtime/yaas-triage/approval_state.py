@@ -113,6 +113,13 @@ def is_stalled(item, now) -> bool:
 
 def available_actions(item, now) -> list[str]:
     status = item.get("status")
+    if item.get("target", {}).get("action") == "sidequestor_upgrade":
+        if item.get("target", {}).get("execution_protocol") != "independent-v1":
+            return ["cancel"] if status in ("pending_review", "needs_reply", "reviewed") else []
+        if is_stalled(item, now):
+            return ["reclaim"]
+        return {"pending_review": ["review", "cancel"], "needs_reply": ["review", "cancel"],
+                "reviewed": ["cancel", "undo"], "cancelled": ["undo"]}.get(status, [])
     actions = []
     for action in HTTP_ACTIONS:
         meta = TRANSITIONS.get((status, action))
@@ -127,6 +134,14 @@ def available_actions(item, now) -> list[str]:
 def apply_transition(item, action, payload, now):
     payload = payload or {}
     status = item.get("status")
+    if item.get("target", {}).get("action") == "sidequestor_upgrade":
+        if action in ("review", "start") and item.get("target", {}).get("execution_protocol") != "independent-v1":
+            return ILLEGAL
+        if action in ("revise", "edit"):
+            return ILLEGAL
+        if action == "review" and (payload.get("review_note") or
+                                   ("message_text" in payload and payload["message_text"] != item.get("message_text"))):
+            raise InvalidPayload("Upgrade approval executes the fixed upgrade lifecycle; dismiss it and use a terminal for custom instructions")
     meta = TRANSITIONS.get((status, action))
     if not meta:
         return ILLEGAL

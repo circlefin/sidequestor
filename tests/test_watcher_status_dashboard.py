@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -36,6 +38,87 @@ class WatcherStatusDashboardTest(unittest.TestCase):
         with patch.object(sys, "argv", ["dashboard-server.py"]):
             spec.loader.exec_module(self.server)
 
+    def test_rate_limit_display_ignores_legacy_shared_deadline(self):
+        path = self.workspace / 'state/triage/slack-read-cooldown.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"retry_at": 9999999999}')
+        before = path.read_bytes()
+        for kind in ['github_pr', 'slack_thread']:
+            with self.subTest(kind=kind):
+                issue = self.server._watch_issue('transient', {'type': kind, 'reason': 'HTTP 429 ratelimited'}, 1000)
+                self.assertIsNone(issue['retry_at'])
+                self.assertNotIn('Slack reads resume', issue['next'])
+                self.assertIn('retries automatically', issue['next'])
+        self.assertIsNone(self.server.build_control()['slack_read_retry_at'])
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_closed_quest_approvals_do_not_count_as_live_work(self) -> None:
+        quests = self.workspace / "state/quests"
+        for bucket, qid in (("archived", "cancelled-quest"),
+                            ("completed", "completed-quest"),
+                            ("active", "active-quest")):
+            folder = quests / bucket / qid
+            folder.mkdir(parents=True)
+            (folder / "meta.json").write_text(json.dumps({"title": qid, "status":
+                "active" if bucket == "active" else "cancelled" if bucket == "archived" else "completed"}))
+            (folder / "watch.json").write_text('{"watches": []}')
+        items = [{"id": f"{qid}-{status}", "quest_id": qid, "status": status,
+                  "action_type": "remote_request", "message_text": "Review this", "target": {}}
+                 for qid in ("cancelled-quest", "completed-quest", "active-quest")
+                 for status in ("pending_review", "needs_reply", "reviewed", "executing")]
+        queue = {"items": items}
+        self.server.APPROVALS_FILE.write_text(json.dumps(queue))
+        before = self.server.APPROVALS_FILE.read_bytes()
+        with patch.object(self.server, "_read_approvals", return_value=queue):
+            messages = self.server.build_messages()
+            control = self.server.build_control()
+            dashboard = self.server.build_dashboard()
+        live = messages["needs_you"] + messages["other_actions"] + messages["queued_items"]
+        self.assertEqual({card["quest_id"] for card in live}, {"active-quest"})
+        self.assertEqual(len(live), 4)
+        self.assertEqual(len([a for a in control["attention"] if a["kind"] == "review"]), 2)
+        self.assertEqual(len(control["queued"]), 2)
+        self.assertEqual({i["quest_id"] for i in dashboard["pending_review"]}, {"active-quest"})
+        self.assertEqual(self.server.APPROVALS_FILE.read_bytes(), before)
+
+    def test_active_copy_and_unknown_quest_approvals_remain_visible(self) -> None:
+        quests = self.workspace / "state/quests"
+        (quests / "active/restored").mkdir(parents=True)
+        (quests / "archived/restored").mkdir(parents=True)
+        items = [{"quest_id": qid, "status": "pending_review"}
+                 for qid in ("restored", "missing")]
+        self.assertEqual(self.server._live_approval_items({"items": items}), items)
+        # Missing directories and unreadable closure state must not hide work.
+        with patch.object(Path, "iterdir", side_effect=PermissionError):
+            self.assertEqual(self.server._live_approval_items({"items": items}), items)
+
+    def test_notion_targets_link_and_access_remediation(self) -> None:
+        page_id = "00000000-0000-0000-0000-000000000001"
+        for kind, key in (("notion_page", "page_id"),
+                          ("notion_data_source", "database_id"),
+                          ("notion_comments", "block_id")):
+            link, surface = self.server._watch_link({key: page_id}, kind, None, None)
+            self.assertEqual(surface, "notion")
+            self.assertTrue(link.endswith(page_id.replace("-", "")))
+            issue = self.server._watch_issue("misconfig", {"type": kind})
+            self.assertIn("page access grants", issue["next"])
+        self.assertEqual(self.server._watch_link({"page_id": "https://evil"},
+                                                "notion_page", None, None), (None, None))
+
+    def test_notion_coverage_read_is_visible_without_creating_state(self) -> None:
+        page_id = "00000000-0000-0000-0000-000000000001"
+        entry = {"watch_id": "watch-abcd", "type": "notion_page", "page_id": page_id}
+        self.assertEqual(self.server._notion_coverage(entry)["status"], "not_started")
+        self.assertFalse((self.workspace / "state" / "notion").exists())
+        with patch.dict(os.environ, {"NOTION_STATE_DIR": str(self.workspace / "notion-test")}):
+            module = self.server._NOTION_INSPECTOR
+            with patch.object(module, "inspect", return_value={"coverage": {
+                    "status": "scanning", "pending_tasks": 99, "last_complete_scan": None}}):
+                coverage = self.server._notion_coverage(entry)
+            self.assertEqual(coverage["pending_tasks"], 99)
+            self.assertIsNone(coverage["last_complete_scan"])
+        self.assertIsNone(self.server._notion_coverage({"type": "slack_thread"}))
+
     def _quest(self) -> Path:
         quest = self.workspace / "state" / "quests" / "active" / "quest-one"
         quest.mkdir(parents=True)
@@ -45,6 +128,78 @@ class WatcherStatusDashboardTest(unittest.TestCase):
             {"watch_id": "watch-abcd", "type": "x_mentions", "last_checked_ts": "0"},
         ]}))
         return quest
+
+    def test_disabled_watches_are_visible_without_changing_state(self) -> None:
+        quest = self._quest()
+        path = quest / "watch.json"
+        path.write_text(json.dumps({"watches": [
+            {"watch_id": "slack-one", "type": "slack_thread", "last_checked_ts": "123.000001"},
+            {"watch_id": "x-one", "type": "x_mentions", "last_checked_ts": "456.000001"},
+        ]}))
+        before = path.read_bytes()
+        triage = self.workspace / "state/triage"
+        triage.mkdir(parents=True)
+        records = {
+            "unacked-counts.json": {"quest-one|x-one": {"count": 3, "type": "x_mentions",
+                                    "next_retry_ts": "9999999999", "last_error": "Old timeout"}},
+            "checker-health.json": {"x-one": {"consecutive_errors": 3,
+                                    "next_retry_ts": "9999999999", "last_error": "Old timeout"}},
+            "last-run.json": {"watch_issues": [{"quest": "quest-one", "watch_id": "x-one",
+                                "type": "x_mentions", "status": "skip", "reason": "Old rate limit"}]},
+        }
+        for name, record in records.items():
+            (triage / name).write_text(json.dumps(record))
+        before_state = {name: (triage / name).read_bytes() for name in records}
+        with patch.dict(os.environ, {"SIDEQUESTOR_CHECKER_CONNECTORS": "email"}):
+            dashboard = self.server.build_dashboard()
+            detail = self.server.build_quest_detail("quest-one")
+            control = self.server.build_control()
+        summary = dashboard["quests"][0]
+        self.assertEqual(summary["active_watch_count"], 0)
+        self.assertEqual(summary["inactive_watch_count"], 2)
+        self.assertTrue(summary["all_watches_inactive"])
+        self.assertFalse(control["reactions_enabled"])
+        self.assertTrue(all(w["monitoring_enabled"] is False for w in detail["watches"]))
+        self.assertEqual(detail["monitoring"]["inactive_watch_count"], 2)
+        self.assertEqual(detail["open_items"]["backoff_watches"], [])
+        self.assertEqual(detail["open_items"]["watch_issues"], [])
+        self.assertEqual({name: (triage / name).read_bytes() for name in records}, before_state)
+        self.assertFalse(any(a["kind"] == "quest_health" for a in control["attention"]))
+        self.assertEqual(path.read_bytes(), before)
+        # Re-enabling a connector updates the projection, not its bookmark.
+        with patch.dict(os.environ, {"SIDEQUESTOR_CHECKER_CONNECTORS": "slack,email,x",
+                                     "SIDEQUESTOR_SLACK_CHECKERS_ENABLED": "1"}):
+            detail = self.server.build_quest_detail("quest-one")
+            self.assertEqual(detail["monitoring"]["active_watch_count"], 2)
+            self.assertTrue(self.server.build_dashboard()["reactions_enabled"])
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_slack_kill_switch_leaves_local_schedules_active(self) -> None:
+        quest = self._quest()
+        (quest / "watch.json").write_text(json.dumps({"watches": [
+            {"watch_id": "slack-one", "type": "slack_thread"},
+            {"watch_id": "clock-one", "type": "schedule", "next_fire_ts": "2000000000"},
+        ]}))
+        with patch.dict(os.environ, {"SIDEQUESTOR_SLACK_CHECKERS_ENABLED": "0"}):
+            detail = self.server.build_quest_detail("quest-one")
+            self.assertEqual(detail["monitoring"]["active_watch_count"], 1)
+            self.assertEqual(detail["monitoring"]["inactive_watch_count"], 1)
+            self.assertFalse(detail["monitoring"]["all_watches_inactive"])
+            self.assertEqual([w["monitoring_enabled"] for w in detail["watches"]], [False, True])
+            self.assertFalse(self.server.build_dashboard()["reactions_enabled"])
+
+    def test_invalid_config_does_not_claim_monitoring_is_disabled(self) -> None:
+        summary = self.server._monitoring_summary([], SimpleNamespace(validation_error="bad settings"))
+        self.assertIsNone(summary["active_watch_count"])
+        self.assertIsNone(summary["inactive_watch_count"])
+        self.assertFalse(summary["all_watches_inactive"])
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed for dashboard behavior checks")
+    def test_inactive_watch_rendering(self) -> None:
+        root = TRIAGE_ROOT.parents[3]
+        result = subprocess.run(["node", str(root / "tests/dashboard_monitoring.cjs")],
+                                cwd=root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def _snapshot(self, issues: list[dict]) -> None:
         triage = self.workspace / "state" / "triage"

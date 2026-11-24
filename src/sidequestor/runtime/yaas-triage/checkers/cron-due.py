@@ -18,7 +18,7 @@
 """
 cron-due.py — decide whether a cron schedule is due to fire.
 
-Usage: cron-due.py CRON_EXPR TZ LAST_TS
+Usage: cron-due.py CRON_EXPR TZ LAST_TS [CHECKED_THROUGH_TS]
 
     CRON_EXPR  Standard 5-field cron (minute hour dom month dow).
                Supports *, */N, N, N-M, N,M. Vixie OR semantics when both
@@ -26,6 +26,7 @@ Usage: cron-due.py CRON_EXPR TZ LAST_TS
     TZ         IANA timezone (e.g., "Asia/Singapore"). Empty = UTC.
     LAST_TS    Previous last_checked_ts: unix epoch (Slack-style "123.456"
                or plain int) or ISO 8601. Empty = "never run" → not-due.
+    CHECKED_THROUGH_TS Optional evaluation boundary supplied by schedule.py.
 
 Output: "due" or "not-due". Exit 0 on success, 2 on bad input.
 
@@ -87,8 +88,8 @@ def day_matches(dt, dom_set, dow_set, dom_raw, dow_raw):
 
 
 def main():
-    if len(sys.argv) != 4:
-        print("usage: cron-due.py CRON_EXPR TZ LAST_TS", file=sys.stderr)
+    if len(sys.argv) not in (4, 5):
+        print("usage: cron-due.py CRON_EXPR TZ LAST_TS [CHECKED_THROUGH_TS]", file=sys.stderr)
         sys.exit(2)
     expr, tz_name, last_arg = sys.argv[1:4]
     tz = ZoneInfo(tz_name) if tz_name else timezone.utc
@@ -113,7 +114,7 @@ def main():
         sys.exit(2)
 
     last_utc = parse_last(last_arg)
-    now_utc = datetime.now(timezone.utc)
+    now_utc = parse_last(sys.argv[4]) if len(sys.argv) == 5 else datetime.now(timezone.utc)
     if last_utc is None or last_utc >= now_utc:
         print("not-due")
         return

@@ -16,7 +16,7 @@
 # limitations under the License.
 
 """
-checkers/reactions.py — scan Slack for the configured process, draft, save, and adopt reactions
+checkers/reactions.py — scan Slack for the configured process, draft, save, adopt, and expand reactions
 applied by the user since the 60-day cutoff. Diffs against processed-set state files. Writes
 state/triage/pending_reactions.json if anything is new.
 
@@ -101,7 +101,7 @@ def initialization_epoch(repo_root):
     return None
 
 
-def main():
+def _main():
     mcp_call, cutoff, repo_root, pending_path = sys.argv[1:5]
     state_dir = os.path.join(repo_root, "state")
     init_epoch = initialization_epoch(repo_root)
@@ -117,6 +117,7 @@ def main():
         (emojis["draft"],   "writing_hand_replied.json",      "replied_timestamps"),
         (emojis["save"],    "floppy_disk_saved.json",         "saved_timestamps"),
         (emojis["adopt"],   "incoming_envelope_adopted.json", "adopted_timestamps"),
+        (emojis["expand"],  "magic_wand_expanded.json", "expanded_timestamps"),
     ]
 
     # A blocked worker item may no longer carry its original trigger reaction. Keep
@@ -125,6 +126,24 @@ def main():
     existing_pending = load_pending(pending_path)
     pending = dict(existing_pending)
     truncated = []
+    sources_path = os.path.join(state_dir, "reaction-sources.json")
+    receipt_path = Path(state_dir) / 'triage/reaction-lifecycle.json'
+    receipt_data = json.loads(receipt_path.read_text()) if receipt_path.exists() else {'items': {}}
+    terminal = receipt_data.get('items') if isinstance(receipt_data, dict) else None
+    if not isinstance(terminal, dict) or any(not isinstance(r, dict) for r in terminal.values()):
+        raise ValueError('invalid reaction lifecycle receipts; dispatch must remain held')
+    try:
+        with open(sources_path) as handle:
+            sources = json.load(handle)
+    except (OSError, ValueError):
+        sources = {}
+    if not isinstance(sources, dict):
+        sources = {}
+
+    baseline_path = Path(state_dir) / "triage/reaction-expand-baseline.json"
+    baseline = json.loads(baseline_path.read_text()) if baseline_path.exists() else {}
+    if not isinstance(baseline, dict) or not isinstance(baseline.get("seen_timestamps", []), list):
+        raise ValueError("invalid expand baseline; dispatch must remain held")
 
     for emoji, fname, key in emoji_specs:
         state_file = os.path.join(state_dir, fname)
@@ -137,6 +156,11 @@ def main():
             except Exception:
                 pass
         known = processed | skipped
+        initializing_expand = emoji == emojis["expand"] and baseline.get("emoji") != emoji
+        if emoji == emojis["expand"] and not initializing_expand:
+            known.update(baseline.get("seen_timestamps", []))
+        known.update(iid.partition(':')[2] for iid, record in terminal.items()
+                     if iid.partition(':')[0] == emoji and (record.get('final') or record.get('review_pending')))
 
         cursor = ""
         new_ts = []
@@ -146,10 +170,18 @@ def main():
                     "sort": "timestamp", "sort_dir": "desc"}
             if cursor:
                 args["cursor"] = cursor
-            r = subprocess.run(
-                [mcp_call, "slack_search_public_and_private", json.dumps(args)],
-                capture_output=True, text=True, timeout=30,
-            )
+            try:
+                r = subprocess.run(
+                    [mcp_call, "slack_search_public_and_private", json.dumps(args)],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                # The adapter's own HTTP timeout is also 30s, so this deadline can win
+                # the race before the adapter reports exit 4. Same transient class;
+                # nothing has been written yet, so the next sweep retries cleanly.
+                print("REACTIONS_TRANSIENT_ERROR: Slack adapter timed out", file=sys.stderr)
+                print(f"{sgtnow()}  REACTIONS_TRANSIENT_ERROR=1")
+                return 4
             if r.returncode != 0:
                 detail = (r.stderr or r.stdout or "Slack adapter failed").strip().splitlines()[0]
                 kind = {1: "AUTH", 3: "BAD_ARGS", 4: "TRANSIENT"}.get(r.returncode, "ERROR")
@@ -172,7 +204,16 @@ def main():
             for b in blocks[1:]:
                 m = re.search(r"Message_ts: ?([0-9]+\.[0-9]+)", b)
                 if m:
-                    page_ts.append(m.group(1))
+                    ts = m.group(1)
+                    page_ts.append(ts)
+                    url = re.search(r"https://[A-Za-z0-9.-]+\.slack\.com/archives/([A-Z0-9]+)/p\d+[^\s<>`\"')]*", b)
+                    channel = re.search(r"Channel(?:_id)?:\s*([CDG][A-Z0-9]+)\b", b)
+                    source = {"message_ts": ts}
+                    if url:
+                        source.update(permalink=url.group(0), channel_id=url.group(1))
+                    elif channel:
+                        source["channel_id"] = channel.group(1)
+                    sources[f"{emoji}:{ts}"] = source
             for ts in page_ts:
                 # Slack search is date-granular. Filter again by exact timestamp so a
                 # same-day reaction from before `yaas init` cannot enter the first run.
@@ -193,7 +234,20 @@ def main():
                 truncated.append(emoji)
                 break
 
-        retained = [ts for ts in existing_pending.get(emoji, []) if ts not in known]
+        if initializing_expand:
+            # Enabling a new action must not turn existing decorative reactions
+            # into edit/execute requests. Only subsequent new matches are queued.
+            if emoji not in truncated:
+                baseline_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = baseline_path.with_suffix(".tmp")
+                with temporary.open("w") as stream:
+                    json.dump({"emoji": emoji, "seen_timestamps": normalized_timestamps(new_ts + existing_pending.get(emoji, []))}, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, baseline_path)
+            new_ts = []
+
+        retained = [] if initializing_expand else [ts for ts in existing_pending.get(emoji, []) if ts not in known]
         merged = normalized_timestamps(retained + new_ts)
         if merged:
             pending[emoji] = merged
@@ -204,6 +258,14 @@ def main():
     if truncated:
         print(f"REACTIONS_TRUNCATED={','.join(sorted(set(truncated)))}", file=sys.stderr)
         print(f"{sgtnow()}  REACTIONS_TRUNCATED=1")
+
+    # Preserve source coordinates so save/skip acknowledgments have useful receipts.
+    os.makedirs(state_dir, exist_ok=True)
+    source_tmp = sources_path + ".tmp"
+    with open(source_tmp, "w") as handle:
+        json.dump({f"{emoji}:{ts}": sources.get(f"{emoji}:{ts}", {"message_ts": ts})
+                   for emoji, timestamps in pending.items() for ts in timestamps}, handle)
+    os.replace(source_tmp, sources_path)
 
     if pending:
         pending_parent = os.path.dirname(pending_path)
@@ -220,6 +282,14 @@ def main():
             pass
         print(f"{sgtnow()}  REACTIONS_DIRTY=0")
     return 0
+
+
+def main():
+    try:
+        return _main()
+    except (ValueError, TypeError, OSError) as exc:
+        print(f"REACTIONS_ERROR: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

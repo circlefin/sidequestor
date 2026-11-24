@@ -21,13 +21,13 @@ quest's timeline in one atomic step.
 
 Why this exists
 ===============
-CLAUDE.md requires every outbound send to be logged to timeline.ndjson with a
+AGENTS.md requires every outbound send to be logged to timeline.ndjson with a
 `message_text` field carrying the exact text sent, because the Sidequestor
 dashboard only surfaces a message when that field is present. Relying on the LLM
 worker to remember that as a separate step is fragile (and fails outright on the
-non-Claude backends). This helper makes body-capture structural: the send and
-the timeline write happen together, so a message can never land in Slack without
-its body also landing in the timeline.
+non-Claude backends). This helper makes body-capture structural: confirmed sends
+are recorded here, while missing confirmation is recorded as an uncertain attempt
+that must be checked in Slack before retrying.
 
 Send through this helper instead of calling slack_send_message directly whenever
 the send belongs to a quest.
@@ -46,16 +46,16 @@ Usage
                                  (nothing is sent; logged as draft_posted)
     approval_id       (optional)  reviewed approval being executed; its reviewed_at
                                   participates in the stale-reply freshness check
-    quest_id         (optional)  quest to log under. If omitted, nothing is
-                                 logged (send-only; e.g. reactions fast path).
+    quest_id         (optional)  quest to log under. Reaction dispatches with no
+                                 quest log to Inbox, retaining send-only authorization.
     event            (optional)  timeline event name. Default "message_sent"
                                  ("draft_posted" when draft=true).
     note             (optional)  short human summary for the timeline `note`.
 
 Non-draft sends are authorized here before Slack is called. Quest sends require an
-active quest with `allow_send: true`, or a claimed `slack_message` approval whose
-reviewed target matches this channel and thread. The reactions dispatch is the sole
-quest-less send path.
+active quest with `allow_send: true`, a channel listed in the quest's
+`allow_send_channels`, or a claimed `slack_message` approval whose reviewed target
+matches this channel and thread. The reactions dispatch is the sole quest-less send path.
 
 Output (stdout): compact JSON, e.g.
     {"response_ts":"1784280637.486119","permalink":"https://...","channel_id":"C...","logged":true}
@@ -64,13 +64,15 @@ Callers use response_ts to build the follow-up watch.json entry (`yaas-quest-dis
 Exit codes:
     0  sent (or drafted) successfully
     1  bad arguments
-    2  send failed (Slack/MCP error) — nothing sent, nothing logged
+    2  Slack/MCP failure — no success logged
+    3  delivery uncertain — inspect Slack before retrying; no follow-up coordinates
 """
 
 from __future__ import annotations  # PEP 604 unions below must not be
 # evaluated at def time: this file has to import on Python < 3.10.
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -85,7 +87,7 @@ def _repo_root(start):
 
     NOT counted as `parent.parent`: that is correct only while every script sits directly
     in yaas-triage/, and silently resolves to yaas-triage/ itself once a script moves into
-    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on CLAUDE.md
+    a subdirectory, producing a parallel state/ tree nothing reads. NOT keyed on AGENTS.md
     (a fresh clone has only CLAUDE.example.md) and NOT on .git (two git dirs here, none in
     fixtures). Ambient $REPO_ROOT is deliberately ignored: a stale value pointing at another
     checkout would pass any marker check and silently redirect writes. Test fixtures copy
@@ -113,6 +115,19 @@ from timeline_io import utc_now, quest_dir, append_timeline
 from tick_state import SLACK_CONVERSATION_RE, SLACK_MEMBER_RE
 import approval_store
 MCP_CALL = os.environ.get("MCP_CALL", str(Path(__file__).parent / "mcp-call.sh"))
+# These explicit Slack rejections preserve the existing restricted-channel draft
+# fallback and credential guidance even when the MCP tool returns plain text.
+SLACK_REJECTION_RE = re.compile(
+    r"\b(?:mcp_externally_shared_channel_restricted|invalid_auth|not_authed|"
+    r"token_revoked|token_expired|account_inactive|missing_scope|unauthenticated|"
+    r"channel_not_found|not_in_channel|restricted_action\w*|is_archived|msg_too_long|"
+    r"no_text|invalid_arguments|ratelimited|rate_limited)\b", re.I)
+RATE_LIMIT_RE = re.compile(r"\bHTTP\s+429\b|\bratelimited\b|\brate_limited\b|rate limit", re.I)
+PRE_SEND_CREDENTIAL_RE = re.compile(r"\bmacOS Keychain\b|\bSlack credential refresh\b", re.I)
+
+
+class ReceiptUnavailable(RuntimeError):
+    """The write may have reached Slack, but no receipt was returned."""
 
 
 def _call_slack(tool: str, args: dict) -> str:
@@ -121,26 +136,88 @@ def _call_slack(tool: str, args: dict) -> str:
         capture_output=True, text=True, timeout=60,
     )
     if r.returncode != 0:
+        detail = (r.stderr or r.stdout).strip()[:200]
+        if (tool in ("slack_send_message", "slack_send_message_draft")
+                and r.returncode == 4 and not RATE_LIMIT_RE.search(detail)
+                and not PRE_SEND_CREDENTIAL_RE.search(detail)):
+            # Adapter exit 4 also covers a timeout/reset after a POST or a gateway
+            # failure. It is not evidence the write never reached Slack. A 429 is
+            # an explicit rejection. Known credential failures happen before the
+            # write POST, so both retain the existing failure behavior.
+            raise ReceiptUnavailable(f"{tool} transient failure (exit 4): {detail}")
         raise RuntimeError(
             f"{tool} failed (exit {r.returncode}): "
-            f"{(r.stderr or r.stdout).strip()[:200]}"
+            f"{detail}"
         )
     body = r.stdout.strip()
     if not body:
-        raise RuntimeError(f"{tool} returned empty response")
+        raise ReceiptUnavailable(f"{tool} returned empty response")
     return body
 
 
 def _text(value) -> str:
     """A response field as a string, or "" if it is anything else.
 
-    Every read of the Slack response goes through this. The parse below runs AFTER the
-    message has already been delivered, and its only `except` is for JSONDecodeError, so
-    an unexpected type (an int channel_id, a null link) would raise past it and exit
-    non-zero with the send done but the timeline never written — the exact split-brain the
-    helper exists to prevent, and one a retry would turn into a duplicate message.
+    The parse runs after the write was attempted. An unexpected type must not raise
+    past receipt validation: a lost receipt is uncertain delivery, not permission
+    to retry a message that may already exist.
     """
     return value if isinstance(value, str) else ""
+
+
+def _receipt_problem(payload, is_draft, response_ts, channel_id, permalink):
+    """Validate evidence returned by the existing adapter, without another send/read.
+
+    A missing or malformed receipt is NOT proof the write failed: the message may
+    already exist. Keep that distinct from an explicit rejection so callers do not
+    blindly retry a write whose result was lost.
+    """
+    if any((not is_draft and payload.get("delivered") is False, payload.get("ok") is False,
+            payload.get("isError") is True, bool(payload.get("error")),
+            payload.get("adapter") == "isolated")):
+        error = payload.get("error")
+        detail = _text(error.get("message")) if isinstance(error, dict) else _text(error)
+        detail = detail or _text(payload.get("message"))
+        return 2, ("Slack returned a rejection or a non-delivering adapter response"
+                   + (f": {detail[:200]}" if detail else ""))
+    if is_draft:
+        # Draft receipts do not contain a sent timestamp. Keep the real observed
+        # channel_link/widget response shapes, including unfamiliar link formats.
+        if permalink or _text(payload.get("widget_id")):
+            return None
+    elif (re.fullmatch(r"[0-9]+\.[0-9]{6}", response_ts)
+          and response_ts.replace(".", "").strip("0")
+          and SLACK_CONVERSATION_RE.fullmatch(str(channel_id))):
+        return None
+    return 3, "Slack did not return usable confirmation of the requested write"
+
+
+def _log_uncertain(quest_id, channel_id, thread_ts, message, is_draft, reason, approval_id=None):
+    """Keep evidence for the next worker without claiming delivery or coordinates."""
+    event = "draft_delivery_uncertain" if is_draft else "message_delivery_uncertain"
+    entry = {"ts": utc_now(), "event": event, "channel_id": channel_id,
+             "message_text": message, "delivery_status": "uncertain",
+             "blocker_kind": "delivery_uncertain", "succeeded": False, "note": reason}
+    if thread_ts:
+        entry["thread_ts"] = thread_ts
+    if approval_id:
+        entry["approval_id"] = approval_id
+    try:
+        if quest_id:
+            qdir = quest_dir(REPO_ROOT, quest_id)
+            if qdir is not None:
+                append_timeline(qdir, entry)
+                return True
+        elif os.environ.get("SIDEQUESTOR_DISPATCH_TARGET") == "reactions":
+            from inbox import try_log_inbox
+            digest = hashlib.sha256(message.encode()).hexdigest()[:16]
+            return try_log_inbox(REPO_ROOT, f"{event}:{channel_id}:{thread_ts}:{digest}", entry)
+    except Exception as exc:
+        # The uncertain write must never be reclassified as a safe-to-retry failure
+        # just because its local audit write also failed.
+        print(f"warning: could not record uncertain delivery: {type(exc).__name__}",
+              file=sys.stderr)
+    return False
 
 
 def _channel_id_from_link(link: str) -> str:
@@ -335,6 +412,11 @@ def _send_policy_reason(p):
     except Exception as exc:
         return f"cannot read quest policy for {quest_id}: {exc}"
 
+    # A per-channel grant lets a quest such as onboarding DM its owner without gaining
+    # send authority anywhere else; every other send surface still sees allow_send false.
+    channels = meta.get("allow_send_channels")
+    if isinstance(channels, list) and p.get("channel_id") in channels:
+        return None
     approved = _claimed_slack_approval(p.get("approval_id"), quest_id,
                                        p.get("channel_id"), p.get("thread_ts"))
     if not meta.get("allow_send") and not approved:
@@ -444,7 +526,7 @@ def main():
     #    worker the OLDEST unread slice first, so without this it would march forward
     #    through days of backlog answering questions that were resolved without it.
     #    Enforced here, in the only sanctioned send path, rather than as a rule in
-    #    CLAUDE.md, because a rule the model can forget is not a guard.
+    #    AGENTS.md, because a rule the model can forget is not a guard.
     if not is_draft:
         reason = _stale_reason(
             channel_id, thread_ts, approval_id=p.get("approval_id"), quest_id=quest_id,
@@ -463,9 +545,13 @@ def main():
                               "approval_id": appr_id, "response_ts": "", "permalink": ""}))
             return 0
 
-    # 2. Send / draft. On any failure nothing is logged (the message never landed).
+    # 2. Send / draft. A transport failure is not proof the write never landed.
+    receipt_detail = ""
     try:
         body = _call_slack(tool, args)
+    except (ReceiptUnavailable, subprocess.TimeoutExpired) as exc:
+        receipt_detail = str(exc)[:200]
+        body = ""  # handled below as an uncertain write, never a safe retry
     except Exception as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)
@@ -476,7 +562,9 @@ def main():
     resolved_channel_id = channel_id
     try:
         d = json.loads(body)
-        d = d if isinstance(d, dict) else {}
+        if not isinstance(d, dict):
+            d = {}
+            receipt_detail = body[:200]
         # slack_send_message: {"message_link":..,"message_context":{"message_ts":..,"channel_id":..}}
         ctx = d.get("message_context", {})
         ctx = ctx if isinstance(ctx, dict) else {}
@@ -507,13 +595,40 @@ def main():
                 resolved_channel_id = candidate
                 break
     except json.JSONDecodeError:
-        # Non-JSON body usually means an error string slipped through (e.g. a
-        # restricted channel). Surface it and treat the send as failed.
-        print(f"error: unexpected response from {tool}: {body[:200]}", file=sys.stderr)
-        sys.exit(2)
+        # The request has already been made. An unreadable receipt cannot tell us
+        # whether it reached Slack; do not report success or suggest a blind retry.
+        d = {}
+        receipt_detail = receipt_detail or body[:200]
+
+    problem = _receipt_problem(d, is_draft, response_ts, resolved_channel_id, permalink)
+    if not d and SLACK_REJECTION_RE.search(body):
+        problem = (2, f"Slack rejected the write: {body[:200]}")
+    if problem:
+        code, reason = problem
+        if code == 3:
+            if receipt_detail:
+                reason += f": {receipt_detail}"
+            reason += "; inspect Slack before retrying and do not create a follow-up watch"
+            from system_health import safe_error
+            reason = safe_error(reason)
+            logged = _log_uncertain(quest_id, channel_id, thread_ts, message, is_draft,
+                                    reason, p.get("approval_id"))
+            print(json.dumps({"delivery_uncertain": True, "reason": reason,
+                              "response_ts": "", "permalink": "",
+                              "channel_id": channel_id, "logged": logged}))
+        print(f"error: {reason}", file=sys.stderr)
+        return code
 
     # 4. Log the verbatim body to the quest timeline (the whole point).
     logged = False
+    if not quest_id and os.environ.get("SIDEQUESTOR_DISPATCH_TARGET") == "reactions":
+        from inbox import try_log_inbox
+        digest = hashlib.sha256(message.encode()).hexdigest()[:16]
+        logged = try_log_inbox(REPO_ROOT, f"reaction-send:{resolved_channel_id}:{response_ts or thread_ts}:{event}:{digest}", {
+            "event": event, "channel_id": resolved_channel_id, "thread_ts": thread_ts,
+            "response_ts": response_ts or "", "permalink": permalink or "",
+            "message_text": message, "note": note or "Reaction action",
+        })
     if quest_id:
         qdir = quest_dir(REPO_ROOT, quest_id)
         if qdir is None:
@@ -547,4 +662,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
